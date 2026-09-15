@@ -1,0 +1,17 @@
+{
+  "name": "T-Music",
+  "short_name": "T-Music",
+  "description": "Standalone Telegram Cloud Audio Streamer",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#141210",
+  "theme_color": "#141210",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

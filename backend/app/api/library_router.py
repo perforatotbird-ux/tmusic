@@ -1,0 +1,175 @@
+"""
+T-Music Library API Router
+Endpoints for artist lists, album discographies, direct album catalog, statistics, and secure cover proxying.
+"""
+import os
+import hashlib
+from typing import Optional, List
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile, File, Form
+from fastapi.responses import FileResponse, Response as RawResponse
+from sqlalchemy.orm import Session
+
+from app.core.database import get_db
+from app.api.dependencies import get_current_user
+from app.models.auth import AppUser
+from app.schemas.library import (
+    MusicArtistCard, MusicArtistDetail, MusicAlbumCard, LibraryStats, SetCoverRequest
+)
+from app.services.music_library_service import library_service
+from app.services.cover_cache_service import cover_cache, is_safe_host, MAX_IMAGE_BYTES
+
+router = APIRouter(prefix="/api/library", tags=["library"])
+
+# Hard cap on multipart uploads: read is bounded so a giant file cannot OOM the worker.
+# The 10 MB image check happens after decode; this cap only bounds RAM during upload.
+MAX_UPLOAD_BYTES = MAX_IMAGE_BYTES + 1
+
+
+@router.get("/artists", response_model=List[MusicArtistCard])
+async def get_artists(
+    kind: Optional[str] = Query(None, description="artist, compilation, standalone_album, genre_collection"),
+    search: Optional[str] = Query(None, description="Search query"),
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user)
+):
+    """Retrieve catalog artists with pagination and search."""
+    return library_service.list_artists(db, kind=kind, search=search, limit=limit, offset=offset)
+
+
+@router.get("/albums", response_model=List[MusicAlbumCard])
+async def get_albums(
+    search: Optional[str] = Query(None, description="Search query"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user)
+):
+    """Retrieve all catalog albums with pagination and search."""
+    return library_service.list_albums(db, search=search, limit=limit, offset=offset)
+
+
+@router.get("/artists/{artist_id}", response_model=MusicArtistDetail)
+async def get_artist_detail(
+    artist_id: int,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user)
+):
+    """Retrieve detailed artist card with albums, track cards, and biography."""
+    return library_service.get_artist_detail(db, artist_id)
+
+
+@router.get("/stats", response_model=LibraryStats)
+async def get_library_stats(
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user)
+):
+    """Get high-level statistics of the audio catalog."""
+    return library_service.get_stats(db)
+
+
+@router.get("/cover")
+async def get_cover(
+    key: Optional[str] = Query(None, description="Direct cached key"),
+    url: Optional[str] = Query(None, description="Remote URL to fetch and cache"),
+    custom: Optional[int] = Query(0, description="1 if custom uploaded cover"),
+    v: Optional[str] = Query(None, description="Cache-busting version/timestamp"),
+    user: AppUser = Depends(get_current_user)
+):
+    """
+    Secure cover proxy with permanent caching headers and SSRF defense.
+    Requires authentication — an open proxy would allow unauthenticated
+    SSRF probing and cache-key enumeration.
+    Supports both migrated CloudByte cache (.bin/.meta) and newly fetched images.
+    """
+    if key:
+        is_custom = custom == 1
+        cached = cover_cache.get_cached_item(key, is_custom=is_custom)
+        if cached:
+            data, mime = cached
+            etag = f'"{hashlib.md5(key.encode("utf-8")).hexdigest()}"'
+            headers = {
+                "Cache-Control": "public, max-age=604800, immutable",
+                "ETag": etag
+            }
+            return RawResponse(content=data, media_type=mime, headers=headers)
+
+        path = cover_cache.get_cached_path(key, is_custom=is_custom)
+        if path:
+            etag = f'"{hashlib.md5(key.encode("utf-8")).hexdigest()}"'
+            headers = {
+                "Cache-Control": "public, max-age=604800, immutable",
+                "ETag": etag
+            }
+            return FileResponse(path, headers=headers)
+        raise HTTPException(status_code=404, detail="Image not found in cache.")
+
+    if url:
+        data, mime = await cover_cache.fetch_and_cache(url)
+        if not data or not mime:
+            raise HTTPException(status_code=502, detail="Failed to fetch image or unsupported format.")
+
+        etag = f'"{hashlib.md5(url.encode("utf-8")).hexdigest()}"'
+        headers = {
+            "Cache-Control": "public, max-age=604800, immutable",
+            "ETag": etag
+        }
+        return RawResponse(content=data, media_type=mime, headers=headers)
+
+    raise HTTPException(status_code=400, detail="Either 'key' or 'url' must be specified.")
+
+
+@router.post("/cover")
+async def set_cover(
+    request: Request,
+    target_type: str = Form(...),
+    target_id: int = Form(...),
+    url: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user)
+):
+    """Upload custom cover image or download from URL with SSRF validation."""
+    custom_key = None
+
+    if file:
+        # Pre-check declared size before buffering anything into RAM.
+        declared = request.headers.get("content-length")
+        if declared is not None:
+            try:
+                if int(declared) > MAX_UPLOAD_BYTES + 1024 * 1024:  # +multipart overhead margin
+                    raise HTTPException(status_code=413, detail="Uploaded file is too large.")
+            except ValueError:
+                pass
+        # Bounded read: never buffer more than the cap, even if the client lies.
+        content = await file.read(MAX_UPLOAD_BYTES)
+        if len(content) >= MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Uploaded file is too large.")
+        custom_key = cover_cache.save_custom_cover(content)
+        if not custom_key:
+            raise HTTPException(status_code=400, detail="Invalid image file or unsupported format.")
+    elif url:
+        if not await is_safe_host(url):
+            raise HTTPException(status_code=400, detail="Restricted or invalid image URL.")
+        data, _ = await cover_cache.fetch_and_cache(url)
+        if not data:
+            raise HTTPException(status_code=502, detail="Failed to download image from provided URL.")
+        custom_key = cover_cache.save_custom_cover(data)
+    else:
+        raise HTTPException(status_code=400, detail="Provide either an image file or a valid URL.")
+
+    library_service.set_custom_cover(db, target_type, target_id, custom_key)
+    return {"status": "ok", "custom_key": custom_key}
+
+
+@router.delete("/cover")
+async def reset_cover(
+    target_type: str = Query(...),
+    target_id: int = Query(...),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user)
+):
+    """Reset custom cover to default auto-enriched image."""
+    library_service.set_custom_cover(db, target_type, target_id, None)
+    return {"status": "ok", "message": "Cover reset to default."}
