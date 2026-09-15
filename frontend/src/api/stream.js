@@ -15,6 +15,9 @@ export const streamApi = {
 
   getStreamUrlWithToken: async (fileId) => {
     const { stream_token } = await streamApi.mintStreamToken()
+    if (!stream_token || typeof stream_token !== 'string') {
+      throw new Error('Stream token unavailable')
+    }
     return `/api/stream/${fileId}?token=${encodeURIComponent(stream_token)}`
   },
 }

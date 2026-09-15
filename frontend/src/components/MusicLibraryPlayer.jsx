@@ -51,7 +51,7 @@ export function MusicLibraryPlayer() {
 
   if (!currentTrack) return null
 
-  const trackTitle = currentTrack.name.replace(/\.[^/.]+$/, '')
+  const trackTitle = (currentTrack.name || 'Без названия').replace(/\.[^/.]+$/, '')
   const artistName = currentRelease?.artistName || 'T-Music'
   const albumTitle = currentRelease?.title || ''
   const coverUrl = currentRelease?.coverUrl || '/icon.svg'

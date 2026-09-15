@@ -113,9 +113,15 @@ class FastStreamer:
                         m = await asyncio.wait_for(client.get_messages("me", mid), timeout=10)
                         if m and not m.empty:
                             media = m.document or m.audio or m.video or m.photo
-                            s_size = getattr(media, "file_size", 0)
-                            self._media_size_cache[(aid, mid)] = s_size
-                            break
+                            # A message without media reports size 0 — treat it as a
+                            # dead mirror, not a zero-length segment (which would
+                            # shift every subsequent byte offset).
+                            if media is not None:
+                                s_size = getattr(media, "file_size", 0) or 0
+                                if s_size > 0:
+                                    self._media_size_cache[(aid, mid)] = s_size
+                                    break
+                            continue
                     except errors.FloodWait as fw:
                         tg_manager.mark_flood(aid, fw.value)
                         logger.warning("Account %d FloodWait (%ds) during metadata fetch, switching mirror.", aid, fw.value)
@@ -144,6 +150,11 @@ class FastStreamer:
             else:
                 current_offset -= seg["size"]
                 start_idx = i + 1
+
+        if start_idx >= len(segment_map):
+            # Offset beyond the real Telegram payload (metadata drift): fail loudly
+            # instead of yielding an empty body under a nonzero Content-Length.
+            raise RuntimeError("Stream offset is beyond available Telegram segments.")
 
         yielded_total = 0
 

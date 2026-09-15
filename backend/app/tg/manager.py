@@ -95,43 +95,57 @@ class TelegramManager:
                     accounts = db.scalars(select(TGAccount).where(TGAccount.is_active == True)).all()
                     healed = False
                     for acc in accounts:
-                        decrypted_session = decrypt_session_string(acc.session_string, settings.SESSION_SECRET)
-                        api_id = acc.api_id or settings.TG_API_ID
-                        # api_hash may also be Fernet-encrypted at rest
-                        raw_api_hash = acc.api_hash or settings.TG_API_HASH
-                        api_hash = decrypt_session_string(raw_api_hash, settings.SESSION_SECRET) if raw_api_hash else None
+                        # Per-account isolation: one corrupt row must not abort
+                        # the rest of the cluster (api_id is a String column and
+                        # Fernet decryption raises on tampered values).
+                        try:
+                            decrypted_session = decrypt_session_string(acc.session_string, settings.SESSION_SECRET)
+                            api_id = acc.api_id or settings.TG_API_ID
+                            # api_hash may also be Fernet-encrypted at rest
+                            raw_api_hash = acc.api_hash or settings.TG_API_HASH
+                            api_hash = decrypt_session_string(raw_api_hash, settings.SESSION_SECRET) if raw_api_hash else None
 
-                        # Self-heal: persist Telegram credentials ENCRYPTED at rest.
-                        # Plaintext rows (legacy installs) are transparently re-encrypted.
-                        if settings.SESSION_SECRET:
-                            if acc.session_string and not is_encrypted(acc.session_string, settings.SESSION_SECRET):
-                                acc.session_string = encrypt_session_string(decrypted_session, settings.SESSION_SECRET)
-                                healed = True
-                                logger.info("Re-encrypted plaintext session_string for TG account %d at rest.", acc.id)
-                            if acc.api_hash and not is_encrypted(acc.api_hash, settings.SESSION_SECRET):
-                                acc.api_hash = encrypt_session_string(api_hash, settings.SESSION_SECRET)
-                                healed = True
-                                logger.info("Re-encrypted plaintext api_hash for TG account %d at rest.", acc.id)
+                            # Self-heal: persist Telegram credentials ENCRYPTED at rest.
+                            # Plaintext rows (legacy installs) are transparently re-encrypted.
+                            if settings.SESSION_SECRET:
+                                if acc.session_string and not is_encrypted(acc.session_string, settings.SESSION_SECRET):
+                                    acc.session_string = encrypt_session_string(decrypted_session, settings.SESSION_SECRET)
+                                    healed = True
+                                    logger.info("Re-encrypted plaintext session_string for TG account %d at rest.", acc.id)
+                                if acc.api_hash and not is_encrypted(acc.api_hash, settings.SESSION_SECRET):
+                                    acc.api_hash = encrypt_session_string(api_hash, settings.SESSION_SECRET)
+                                    healed = True
+                                    logger.info("Re-encrypted plaintext api_hash for TG account %d at rest.", acc.id)
 
-                        if not api_id or not api_hash or not decrypted_session:
-                            logger.warning("Skipping account %d (%s): missing credentials or session.", acc.id, acc.name)
+                            if not api_id or not api_hash or not decrypted_session:
+                                logger.warning("Skipping account %d (%s): missing credentials or session.", acc.id, acc.name)
+                                continue
+
+                            tasks.append(self._start_single_client(
+                                account_id=acc.id,
+                                name=acc.name,
+                                session_string=decrypted_session,
+                                api_id=int(api_id),
+                                api_hash=api_hash,
+                                is_primary=acc.is_primary
+                            ))
+                        except Exception as e:
+                            logger.warning("Skipping TG account %d (%s): %s", acc.id, acc.name, e)
                             continue
-
-                        tasks.append(self._start_single_client(
-                            account_id=acc.id,
-                            name=acc.name,
-                            session_string=decrypted_session,
-                            api_id=int(api_id),
-                            api_hash=api_hash,
-                            is_primary=acc.is_primary
-                        ))
                     if healed:
                         db.commit()
             except Exception as e:
                 logger.error("Failed to load Telegram accounts from database: %s", e)
 
-            # 2. Fallback to settings if no database accounts configured
-            if not tasks and settings.TG_API_ID and settings.TG_API_HASH:
+            # 2. Fallback to settings if no database accounts configured.
+            # A non-numeric TG_API_ID must degrade to "no streaming", never crash startup.
+            fallback_aid = None
+            if settings.TG_API_ID:
+                try:
+                    fallback_aid = int(settings.TG_API_ID)
+                except (TypeError, ValueError):
+                    logger.error("Invalid TG_API_ID in music.env: %r — must be numeric.", settings.TG_API_ID)
+            if not tasks and fallback_aid and settings.TG_API_HASH:
                 fallback_session = settings.TG_SESSION_STRING
                 if fallback_session:
                     logger.info("Starting fallback standalone Telegram client from config...")
@@ -139,7 +153,7 @@ class TelegramManager:
                         account_id=0,
                         name="Standalone",
                         session_string=fallback_session,
-                        api_id=int(settings.TG_API_ID),
+                        api_id=fallback_aid,
                         api_hash=settings.TG_API_HASH,
                         is_primary=True
                     ))

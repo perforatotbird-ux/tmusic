@@ -3,6 +3,8 @@ import { streamApi } from '../api/stream'
 
 const precachedTracks = new Set()
 
+const storedVolume = parseFloat(localStorage.getItem('tmusic_volume') || '0.9')
+
 export const usePlayerStore = create((set, get) => ({
   currentTrack: null,
   currentRelease: null, // { title, artistName, coverUrl }
@@ -11,7 +13,7 @@ export const usePlayerStore = create((set, get) => ({
   isPlaying: false,
   currentTime: 0,
   duration: 0,
-  volume: parseFloat(localStorage.getItem('tmusic_volume') || '0.9'),
+  volume: Number.isFinite(storedVolume) ? storedVolume : 0.9,
   isMuted: false,
   shuffle: false,
   repeat: 'off', // 'off' | 'all' | 'one'

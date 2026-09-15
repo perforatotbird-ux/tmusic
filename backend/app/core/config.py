@@ -129,11 +129,12 @@ if not settings.DATABASE_URL:
 
 # REQUIRE_AUTH=false silently impersonates the admin account for every request
 # (see dependencies._authenticate_request). That is a development-only escape
-# hatch: refuse to boot with it in production instead of just logging a warning.
-if not settings.REQUIRE_AUTH and settings.ENVIRONMENT.lower() == "production":
+# hatch: refuse to boot unless ENVIRONMENT is explicitly "development".
+# (An empty ENVIRONMENT must not slip through the check either.)
+if not settings.REQUIRE_AUTH and (settings.ENVIRONMENT or "").lower() != "development":
     raise RuntimeError(
-        "REQUIRE_AUTH=false is forbidden with ENVIRONMENT=production: it disables "
-        "all API authentication. Set REQUIRE_AUTH=true or run with ENVIRONMENT=development."
+        "REQUIRE_AUTH=false is allowed only with ENVIRONMENT=development: it disables "
+        "all API authentication."
     )
 
 # Ensure runtime directories exist

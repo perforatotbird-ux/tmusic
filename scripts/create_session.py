@@ -34,6 +34,10 @@ async def main():
     api_id = env.get("TG_API_ID") or input("Enter Telegram API ID: ").strip()
     api_hash = env.get("TG_API_HASH") or input("Enter Telegram API HASH: ").strip()
 
+    while not str(api_id).isdigit():
+        print("Error: API ID must contain digits only.")
+        api_id = input("Enter Telegram API ID (digits only): ").strip()
+
     if not api_id or not api_hash:
         print("Error: API ID and API HASH are required.")
         sys.exit(1)

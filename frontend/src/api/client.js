@@ -7,7 +7,14 @@ const BASE_URL = ''
 
 function getCookie(name) {
   const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'))
-  return match ? decodeURIComponent(match[1]) : null
+  if (!match) return null
+  try {
+    return decodeURIComponent(match[1])
+  } catch {
+    // Malformed cookie value (stale garbage): treat as absent rather than
+    // throwing URIError on every mutating request.
+    return null
+  }
 }
 
 export async function request(endpoint, options = {}) {
