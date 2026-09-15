@@ -4,6 +4,7 @@ Coordinates audio track resolution, HTTP Range requests (RFC 7233),
 AES-256-GCM block decryption with multi-key trial, header caching, and RAM buffer.
 """
 import logging
+from collections import OrderedDict
 from typing import Optional, Tuple, AsyncGenerator, Dict, Any
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -20,9 +21,13 @@ logger = logging.getLogger(__name__)
 class StreamService:
     """Service coordinating audio stream delivery and decryption."""
 
+    # Cap for the encryption-header cache: entries are tiny, but the key space
+    # is unbounded (one per seeked track), so evict LRU beyond this.
+    HEADER_CACHE_MAX_ITEMS = 2000
+
     def __init__(self):
         # Cache for encryption headers: file_id -> (salt, base_nonce, block_size)
-        self._header_cache: Dict[int, Tuple[bytes, bytes, int]] = {}
+        self._header_cache: OrderedDict[int, Tuple[bytes, bytes, int]] = OrderedDict()
 
     @staticmethod
     def get_track_or_404(db: Session, file_id: int) -> VFile:
@@ -139,6 +144,7 @@ class StreamService:
                 # Check header cache first
                 cached_hdr = self._header_cache.get(file_id)
                 if cached_hdr:
+                    self._header_cache.move_to_end(file_id)
                     salt, base_nonce, block_size = cached_hdr
                 else:
                     header_bytes = b""
@@ -157,6 +163,9 @@ class StreamService:
 
                     salt, base_nonce, block_size = DecryptionService.parse_header(header_bytes[:32])
                     self._header_cache[file_id] = (salt, base_nonce, block_size)
+                    self._header_cache.move_to_end(file_id)
+                    while len(self._header_cache) > self.HEADER_CACHE_MAX_ITEMS:
+                        self._header_cache.popitem(last=False)
 
                 enc_bs = DecryptionService.encrypted_block_size(block_size)
                 start_block = start // block_size

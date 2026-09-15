@@ -50,4 +50,13 @@ export const libraryApi = {
     request(`/api/library/cover?target_type=${targetType}&target_id=${targetId}`, {
       method: 'DELETE',
     }),
+
+  coversManifest: (keys, custom = 0) => {
+    if (!keys || keys.length === 0) return Promise.resolve({ found: {}, missing: [] })
+    const qs = new URLSearchParams({
+      keys: keys.slice(0, 500).join(','),
+      custom: String(custom ? 1 : 0),
+    })
+    return request(`/api/library/covers/manifest?${qs.toString()}`)
+  },
 }

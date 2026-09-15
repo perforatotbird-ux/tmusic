@@ -3,6 +3,7 @@ T-Music Library API Router
 Endpoints for artist lists, album discographies, direct album catalog, statistics, and secure cover proxying.
 """
 import os
+import re
 import hashlib
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile, File, Form
@@ -67,6 +68,45 @@ async def get_library_stats(
 ):
     """Get high-level statistics of the audio catalog."""
     return library_service.get_stats(db)
+
+
+# Key charset for the manifest endpoint: mirrors save_custom_cover keys
+# (32 hex chars + optional image extension) and CloudByte cache keys.
+_MANIFEST_KEY_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_MANIFEST_MAX_KEYS = 500
+
+
+@router.get("/covers/manifest")
+async def get_covers_manifest(
+    keys: str = Query(..., description="Comma-separated cache keys, max 500"),
+    custom: int = Query(0, description="1 to look in the custom-cover dir first"),
+    user: AppUser = Depends(get_current_user),
+):
+    """Batch existence probe so the grid can skip hopeless cover fetches.
+
+    Returns {"found": {key: etag}, "missing": [key]} using filesystem stats
+    only (no file content is read). Auth required like /cover itself — an open
+    endpoint would allow unauthenticated cache-key enumeration.
+    """
+    raw = [k.strip() for k in keys.split(",") if k.strip()][: _MANIFEST_MAX_KEYS + 1]
+    if len(raw) > _MANIFEST_MAX_KEYS:
+        raise HTTPException(status_code=400, detail=f"Too many keys (max {_MANIFEST_MAX_KEYS}).")
+    if not raw:
+        raise HTTPException(status_code=400, detail="No keys provided.")
+    for k in raw:
+        if not _MANIFEST_KEY_RE.match(k):
+            raise HTTPException(status_code=400, detail=f"Invalid key format: {k[:32]}")
+
+    is_custom = custom == 1
+    found = {}
+    missing = []
+    for k in raw:
+        path = cover_cache.get_cached_path(k, is_custom=is_custom)
+        if path:
+            found[k] = f'"{hashlib.md5(k.encode("utf-8")).hexdigest()}"'
+        else:
+            missing.append(k)
+    return {"found": found, "missing": missing}
 
 
 @router.get("/cover")

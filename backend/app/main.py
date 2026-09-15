@@ -22,7 +22,8 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from app.core.config import settings
 from app.core.csrf import csrf_check_failed
-from app.core.database import wait_for_database, ensure_performance_indexes, ensure_auth_schema, SessionLocal
+from app.core.database import wait_for_database, ensure_performance_indexes, ensure_auth_schema, ensure_trigram_indexes, SessionLocal
+from app.core.token_store import purge_expired_revocations
 from app.core.rate_limiter import limiter
 from app.tg.manager import tg_manager
 from app.services.cover_cache_service import cover_cache
@@ -64,6 +65,14 @@ async def lifespan(app: FastAPI):
         logger.info("Database connection established successfully.")
         ensure_performance_indexes()
         ensure_auth_schema()
+        ensure_trigram_indexes()
+        try:
+            with SessionLocal() as db:
+                removed = purge_expired_revocations(db)
+                if removed:
+                    logger.info("Purged %d expired token revocations.", removed)
+        except Exception as e:
+            logger.warning("Revocation purge failed: %s", e)
         # Self-heal admin credentials (removes default/legacy passwords and PINs)
         try:
             with SessionLocal() as db:

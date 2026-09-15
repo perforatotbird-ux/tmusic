@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { libraryApi } from '../api/library'
 import { streamApi } from '../api/stream'
+import { missingCoverKeys, parseCoverKey } from '../services/coverMissing'
 import { usePlayerStore } from '../store/playerStore'
 import { useAuthStore } from '../store/authStore'
 import {
@@ -80,7 +81,12 @@ function ImgWithFallback({ name, kind = 'artist', src, alt = '', style = {}, siz
     }
   }, [src])
 
-  if (!src || hasError) {
+  // Skip requests the manifest already proved missing (no GET + no retries).
+  const coverKey = parseCoverKey(src)
+  const manifestMissing =
+    !!coverKey && missingCoverKeys.has(`${coverKey.custom ? 1 : 0}:${coverKey.key}`)
+
+  if (!src || hasError || manifestMissing) {
     return <Fallback name={name} kind={kind} size={size} />
   }
 
@@ -127,6 +133,9 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   const [search, setSearch] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [stats, setStats] = useState(null)
+  // Bumped when the cover manifest arrives so the grid re-renders with fresh
+  // missing-cover knowledge (the registry itself is not React state).
+  const [, setManifestTick] = useState(0)
   // Monotonic request id: a slow earlier fetch must not overwrite a newer one
   // (fast typing fires parallel loadData calls that resolve out of order).
   const loadSeq = useRef(0)
@@ -142,6 +151,43 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       setIsLoading(false)
     }
   }, [activeKind, isAuthenticated])
+
+  // Prefetch cover existence for the current grid: images proven missing render
+  // the fallback badge without firing a GET (+retries). Fire-and-forget — any
+  // failure leaves the registry empty, i.e. previous behavior.
+  useEffect(() => {
+    const byCustom = { 0: [], 1: [] }
+    for (const it of items) {
+      for (const u of [it?.custom_image_url, it?.image_url]) {
+        const p = parseCoverKey(u)
+        if (p && !missingCoverKeys.has(`${p.custom ? 1 : 0}:${p.key}`)) {
+          byCustom[p.custom ? 1 : 0].push(p.key)
+        }
+      }
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const missing = []
+        for (const c of [0, 1]) {
+          if (byCustom[c].length === 0) continue
+          const res = await libraryApi.coversManifest(byCustom[c], c)
+          if (res && Array.isArray(res.missing)) {
+            for (const k of res.missing) missing.push(`${c}:${k}`)
+          }
+        }
+        if (!cancelled) {
+          for (const k of missing) missingCoverKeys.add(k)
+          if (missing.length > 0) setManifestTick((t) => t + 1)
+        }
+      } catch {
+        // Ignore — images fall back to individual fetching.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [items])
 
   const loadStats = async () => {
     try {

@@ -70,6 +70,27 @@ def ensure_performance_indexes() -> None:
         logger.warning("Failed to ensure performance indexes: %s", e)
 
 
+def ensure_trigram_indexes() -> None:
+    """Trigram GIN indexes for case-insensitive LIKE search.
+
+    Best-effort: CREATE EXTENSION needs a superuser, so on installs where the
+    app role is not one this logs a warning and search keeps working via
+    sequential scan (fine for small catalogs, GIN kicks in at scale).
+    """
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_artists_name_trgm "
+                "ON music_artists USING gin (lower(display_name) gin_trgm_ops)"))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_albums_title_trgm "
+                "ON music_albums USING gin (lower(title) gin_trgm_ops)"))
+        logger.info("Trigram indexes ensured.")
+    except Exception as e:
+        logger.warning("Trigram indexes unavailable (needs superuser for pg_trgm): %s", e)
+
+
 def ensure_auth_schema() -> None:
     """Additive schema patch for existing databases (no migration framework in use).
 
