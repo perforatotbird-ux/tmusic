@@ -199,14 +199,21 @@ class DecryptionService:
             if active_file_key is None:
                 if not salt:
                     raise ValueError("Salt required for trailing block.")
+                key_found = False
                 for mk in master_keys:
                     cand_fk = cls.derive_file_key(mk, salt)
                     try:
                         plain = cls.decrypt_block(bytes(buffer), cand_fk, base_nonce, block_index)
                         active_file_key = cand_fk
+                        key_found = True
                         break
                     except Exception:
                         continue
+                if not key_found:
+                    logger.error(
+                        "Failed to decrypt trailing block %d with any configured master keys.", block_index)
+                    raise InvalidTag(
+                        f"Authentication failed: unable to decrypt trailing block {block_index}.")
             else:
                 plain = cls.decrypt_block(bytes(buffer), active_file_key, base_nonce, block_index)
 

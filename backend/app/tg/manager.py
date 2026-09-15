@@ -197,6 +197,14 @@ class TelegramManager:
 
             await client.start()
             me = await client.get_me()
+            if me is None:
+                # Started but unusable: stop it here, otherwise the connected
+                # client leaks (registered nowhere, stopped never).
+                try:
+                    await client.stop()
+                except Exception:
+                    pass
+                raise RuntimeError(f"TG Account {account_id}: get_me() returned nothing.")
             username = getattr(me, "username", None) or getattr(me, "first_name", "Account")
             logger.info("Connected TG Account %d ('%s') as @%s (User ID: %s, Primary: %s)",
                         account_id, name, username, me.id, is_primary)

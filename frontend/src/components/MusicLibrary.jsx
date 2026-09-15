@@ -127,6 +127,9 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   const [search, setSearch] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [stats, setStats] = useState(null)
+  // Monotonic request id: a slow earlier fetch must not overwrite a newer one
+  // (fast typing fires parallel loadData calls that resolve out of order).
+  const loadSeq = useRef(0)
 
   const { playQueue } = usePlayerStore()
   const { user, isAuthenticated, logout, setAuthModalOpen } = useAuthStore()
@@ -150,6 +153,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   }
 
   const loadData = async (searchQuery = search) => {
+    const mySeq = ++loadSeq.current
     setIsLoading(true)
     try {
       if (activeKind === 'albums') {
@@ -157,20 +161,20 @@ export function MusicLibrary({ onOpenCoverPicker }) {
           search: searchQuery || null,
           limit: 500,
         })
-        setItems(data || [])
+        if (mySeq === loadSeq.current) setItems(data || [])
       } else {
         const data = await libraryApi.getArtists({
           kind: activeKind === 'all' ? null : activeKind,
           search: searchQuery || null,
           limit: 500,
         })
-        setItems(data || [])
+        if (mySeq === loadSeq.current) setItems(data || [])
       }
     } catch (e) {
       console.error('Failed to load library catalog:', e)
-      setItems([])
+      if (mySeq === loadSeq.current) setItems([])
     } finally {
-      setIsLoading(false)
+      if (mySeq === loadSeq.current) setIsLoading(false)
     }
   }
 

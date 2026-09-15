@@ -40,8 +40,12 @@ export function CoverPicker({ target, onClose, onUpdated }) {
     try {
       if (activeTab === 'file' && file) {
         await libraryApi.uploadCoverFile(target.type, target.id, file)
-      } else if (activeTab === 'url' && url) {
-        await libraryApi.setCoverUrl(target.type, target.id, url)
+      } else if (activeTab === 'url' && url.trim()) {
+        await libraryApi.setCoverUrl(target.type, target.id, url.trim())
+      } else {
+        setError('Выберите файл или вставьте ссылку на изображение')
+        setIsLoading(false)
+        return
       }
       onUpdated?.()
       onClose?.()

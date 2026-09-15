@@ -22,7 +22,7 @@ export function setupMediaSession(playerStore) {
 export function updateMediaSessionMetadata(track, release) {
   if (!('mediaSession' in navigator) || !track) return
 
-  const title = track.name.replace(/\.[^/.]+$/, '')
+  const title = (track.name || 'Без названия').replace(/\.[^/.]+$/, '')
   const artist = release?.artistName || 'T-Music'
   const album = release?.title || ''
   const coverUrl = release?.coverUrl || '/icon.svg'

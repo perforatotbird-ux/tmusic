@@ -51,10 +51,14 @@ class RamCacheService:
                 self._cache[file_id] = data
                 self._current_bytes += len(data)
 
-            # Evict least-recently-used entries until both caps are satisfied
+            # Evict least-recently-used entries until both caps are satisfied.
+            # The per-file lock is dropped together with its entry: holders keep
+            # their own reference, so in-flight operations are unaffected, while
+            # the dict itself cannot grow unbounded over process lifetime.
             while len(self._cache) > self.max_items or self._current_bytes > self.max_bytes:
-                _, evicted = self._cache.popitem(last=False)
+                evicted_id, evicted = self._cache.popitem(last=False)
                 self._current_bytes -= len(evicted)
+                self._locks.pop(evicted_id, None)
 
 
 ram_cache = RamCacheService(
