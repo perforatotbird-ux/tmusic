@@ -183,7 +183,12 @@ async def set_cover(
             except ValueError:
                 pass
         # Bounded read: never buffer more than the cap, even if the client lies.
-        content = await file.read(MAX_UPLOAD_BYTES)
+        try:
+            content = await file.read(MAX_UPLOAD_BYTES)
+        finally:
+            # Release the spool file descriptor deterministically instead of
+            # relying on garbage collection (matters for on-disk spooling).
+            await file.close()
         if len(content) >= MAX_UPLOAD_BYTES:
             raise HTTPException(status_code=413, detail="Uploaded file is too large.")
         custom_key = cover_cache.save_custom_cover(content)

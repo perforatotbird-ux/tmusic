@@ -2,6 +2,17 @@ import { create } from 'zustand'
 import { streamApi } from '../api/stream'
 
 const precachedTracks = new Set()
+// In-flight prefetch aborters, keyed by track id: a new playQueue aborts
+// previous prefetches so they stop consuming bandwidth/connections.
+const prefetchAborts = new Map()
+
+function rememberPrecached(id) {
+  precachedTracks.add(id)
+  // Bounded: ids are tiny, but the set must not grow for the whole session.
+  if (precachedTracks.size > 500) {
+    precachedTracks.delete(precachedTracks.values().next().value)
+  }
+}
 
 const storedVolume = parseFloat(localStorage.getItem('tmusic_volume') || '0.9')
 
@@ -35,6 +46,11 @@ export const usePlayerStore = create((set, get) => ({
 
   playQueue: (tracks, startIndex = 0, releaseInfo = null) => {
     if (!tracks || tracks.length === 0) return
+    // New queue: previous prefetches belong to an obsolete queue — abort them.
+    for (const ctrl of prefetchAborts.values()) {
+      try { ctrl.abort() } catch { /* ignore */ }
+    }
+    prefetchAborts.clear()
     const current = tracks[startIndex] || tracks[0]
     set({
       queue: tracks,
@@ -149,17 +165,28 @@ export const usePlayerStore = create((set, get) => ({
     // Pre-cache next 2 tracks in queue
     const targets = [queue[queueIndex + 1], queue[queueIndex + 2]].filter(Boolean)
     for (const track of targets) {
-      if (precachedTracks.has(track.id)) continue
-      precachedTracks.add(track.id)
+      if (precachedTracks.has(track.id) || prefetchAborts.has(track.id)) continue
+      rememberPrecached(track.id)
 
+      const ctrl = new AbortController()
+      prefetchAborts.set(track.id, ctrl)
       const url = streamApi.getStreamUrl(track.id)
-      // Fetch initial 2MB chunk with Range header
+      // Fetch initial 2MB chunk with Range header. The body is consumed (into
+      // the HTTP cache) so the connection is released instead of dangling.
       fetch(url, {
         headers: { Range: 'bytes=0-2097152' },
-      }).catch((e) => {
-        // Silent background pre-cache error
-        precachedTracks.delete(track.id)
+        signal: ctrl.signal,
       })
+        .then((resp) => resp.arrayBuffer().catch(() => {}))
+        .catch(() => {
+          // Silent background pre-cache error (incl. abort on queue change)
+          precachedTracks.delete(track.id)
+        })
+        .finally(() => {
+          if (prefetchAborts.get(track.id) === ctrl) {
+            prefetchAborts.delete(track.id)
+          }
+        })
     }
   },
 }))

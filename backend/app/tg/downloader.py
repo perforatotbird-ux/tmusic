@@ -5,6 +5,7 @@ Supports HTTP Range requests (RFC 7233), byte-accurate seeking, and True Mid-Str
 """
 import logging
 import asyncio
+from collections import OrderedDict
 from typing import AsyncGenerator, Optional, List, Tuple, Union, Dict, Any
 
 from pyrogram import errors
@@ -16,13 +17,23 @@ logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 1048576  # 1 MiB chunk size for Pyrogram stream_media seek
 
+# Cap for the (account_id, msg_id) -> size cache: metadata is stable, but the
+# key space grows with the library, so evict LRU beyond this.
+MEDIA_SIZE_CACHE_MAX_ITEMS = 100_000
+
 
 class FastStreamer:
     """High-speed streaming engine for audio playback with multi-account failover."""
 
     def __init__(self):
         # Cache for Telegram message sizes: (account_id, msg_id) -> size_in_bytes
-        self._media_size_cache: Dict[Tuple[int, int], int] = {}
+        self._media_size_cache: OrderedDict[Tuple[int, int], int] = OrderedDict()
+
+    def _remember_media_size(self, aid: int, mid: int, size: int) -> None:
+        self._media_size_cache[(aid, mid)] = size
+        self._media_size_cache.move_to_end((aid, mid))
+        while len(self._media_size_cache) > MEDIA_SIZE_CACHE_MAX_ITEMS:
+            self._media_size_cache.popitem(last=False)
 
     async def stream_file(
         self,
@@ -102,6 +113,7 @@ class FastStreamer:
             for aid, mid in sources:
                 if (aid, mid) in self._media_size_cache:
                     s_size = self._media_size_cache[(aid, mid)]
+                    self._media_size_cache.move_to_end((aid, mid))
                     break
 
             if s_size is None:
@@ -119,7 +131,7 @@ class FastStreamer:
                             if media is not None:
                                 s_size = getattr(media, "file_size", 0) or 0
                                 if s_size > 0:
-                                    self._media_size_cache[(aid, mid)] = s_size
+                                    self._remember_media_size(aid, mid, s_size)
                                     break
                             continue
                     except errors.FloodWait as fw:

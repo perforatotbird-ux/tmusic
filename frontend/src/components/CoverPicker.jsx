@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { libraryApi } from '../api/library'
 import { Upload, Link as LinkIcon, Trash2, X, Check } from 'lucide-react'
 
@@ -9,14 +9,34 @@ export function CoverPicker({ target, onClose, onUpdated }) {
   const [preview, setPreview] = useState(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState(null)
+  // Every createObjectURL must be paired with revokeObjectURL, otherwise each
+  // picked file leaks a blob URL until the tab is closed.
+  const previewRef = useRef(null)
+
+  useEffect(() => () => {
+    if (previewRef.current) {
+      URL.revokeObjectURL(previewRef.current)
+      previewRef.current = null
+    }
+  }, [])
 
   if (!target) return null
+
+  const setPreviewUrl = (nextFile) => {
+    if (previewRef.current) {
+      URL.revokeObjectURL(previewRef.current)
+      previewRef.current = null
+    }
+    const nextUrl = nextFile ? URL.createObjectURL(nextFile) : null
+    previewRef.current = nextUrl
+    setPreview(nextUrl)
+  }
 
   const handleFileChange = (e) => {
     const selected = e.target.files?.[0]
     if (selected) {
       setFile(selected)
-      setPreview(URL.createObjectURL(selected))
+      setPreviewUrl(selected)
       setError(null)
     }
   }
@@ -26,7 +46,7 @@ export function CoverPicker({ target, onClose, onUpdated }) {
     const dropped = e.dataTransfer.files?.[0]
     if (dropped) {
       setFile(dropped)
-      setPreview(URL.createObjectURL(dropped))
+      setPreviewUrl(dropped)
       setActiveTab('file')
       setError(null)
     }

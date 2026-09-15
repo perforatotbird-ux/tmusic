@@ -27,6 +27,26 @@ from cryptography.exceptions import InvalidTag
 
 logger = logging.getLogger(__name__)
 
+
+def _spawn_progress(coro):
+    """Fire-and-forget with errors logged instead of 'never retrieved'.
+
+    Bare asyncio.create_task() drops tracebacks when the callback itself
+    fails; the done-callback surfaces them in the log.
+    """
+    task = asyncio.create_task(coro)
+
+    def _log_failure(t: asyncio.Task):
+        try:
+            t.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning("Progress callback failed: %s", e)
+
+    task.add_done_callback(_log_failure)
+    return task
+
 HEADER_SIZE = 32          # 16 salt + 12 nonce + 4 block_size
 TAG_SIZE = 16             # GCM auth tag
 DEFAULT_BLOCK_SIZE = 1024 * 1024  # 1 MB
@@ -220,13 +240,13 @@ def encrypt_file(input_path: str, output_path: str, key: bytes,
             processed += len(plaintext)
             if progress_cb and block_index % 10 == 0:
                 if asyncio.iscoroutinefunction(progress_cb):
-                    asyncio.create_task(progress_cb(processed, fs))
+                    _spawn_progress(progress_cb(processed, fs))
                 else:
                     progress_cb(processed, fs)
 
         if progress_cb:
             if asyncio.iscoroutinefunction(progress_cb):
-                asyncio.create_task(progress_cb(fs, fs))
+                _spawn_progress(progress_cb(fs, fs))
             else:
                 progress_cb(fs, fs)
 
@@ -284,7 +304,7 @@ def encrypt_and_split_file(input_path: str, output_prefix: str, chunk_limit: int
                     
                     if progress_cb and block_index % 10 == 0:
                         if asyncio.iscoroutinefunction(progress_cb):
-                            asyncio.create_task(progress_cb(processed, fs))
+                            _spawn_progress(progress_cb(processed, fs))
                         else:
                             progress_cb(processed, fs)
             part_index += 1
@@ -293,7 +313,7 @@ def encrypt_and_split_file(input_path: str, output_prefix: str, chunk_limit: int
 
     if progress_cb:
         if asyncio.iscoroutinefunction(progress_cb):
-            asyncio.create_task(progress_cb(fs, fs))
+            _spawn_progress(progress_cb(fs, fs))
         else:
             progress_cb(fs, fs)
 
