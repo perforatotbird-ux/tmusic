@@ -175,7 +175,7 @@ default_pin_hash = hashlib.sha256(b"1234").hexdigest()      # 4 цифры!
 1. **LIKE-wildcard** (`artist_repository.py:65`, `album_repository.py:69`): `%`/`_` в поисковом запросе не экранируются — не SQLi (bound-параметр), но пользователь может отправить паттерн `%%%`. Impact: только шум в поиске.
 2. **Username enumeration по времени** (`auth_service.py:37–40`): при несуществующем пользователе bcrypt не вызывается → ответ быстрее. Сравните время → валидные логины. Лечится фиктивным bcrypt-вызовом.
 3. **`?token=` в query** (`dependencies.py:83–98`): стрим-токен через URL попадает в логи прокси/историю. Frontend этим не пользуется (cookie) — можно ограничить или выпустить отдельные short-lived tickets.
-4. **Дефолтный `DATABASE_URL` с паролем** `secret_password` в `config.py:34` и `migrate_data.py:52`.
+4. **Дефолтный `DATABASE_URL` с захардкоженным паролем** в `config.py:34` и `migrate_data.py:52`.
 5. **TRUST_PROXY_HEADERS=false по умолчанию**: за reverse-proxy без этого флага limiter видит IP прокси → 5 неудачных попыток любых пользователей заблокируют всех сразу (self-DoS).
 6. **`start_tmusic.bat:35`**: uvicorn на `0.0.0.0` — сервис по умолчанию доступен из LAN; README транслирует это как фичу.
 7. **JWT 12 часов** (`ACCESS_TOKEN_EXPIRE_MINUTES=720`) — длинновато для internet-facing; компенсируется ревокацией при logout, но не при смене PIN (старые токены живут до exp).

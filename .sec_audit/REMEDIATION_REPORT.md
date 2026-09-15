@@ -56,7 +56,7 @@
 | Docker от root | USER tmusic, HEALTHCHECK; compose: `no-new-privileges`, `cap_drop: ALL` | — |
 | LIKE-инъекция в поиске | `escape_like` (`\`, `%`, `_`) в artist/album репозиториях | — |
 | RAM-кэш без байтового лимита | LRU с `RAM_CACHE_MAX_BYTES` (512 МБ) | — |
-| Неявный DATABASE_URL | Fail-fast `RuntimeError` при пустом; удалён fallback `secret_password` из миграции | — |
+| Неявный DATABASE_URL | Fail-fast `RuntimeError` при пустом; удалён fallback-пароль по умолчанию из миграции | — |
 
 ---
 
