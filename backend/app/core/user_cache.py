@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.auth import AppUser
+from app.utils.time import utcnow
 
 _TTL = timedelta(seconds=30)
 _cache: Dict[str, Tuple[AppUser, datetime]] = {}
@@ -17,7 +18,7 @@ _cache: Dict[str, Tuple[AppUser, datetime]] = {}
 
 def get_user_by_username(db: Session, username: str) -> Optional[AppUser]:
     """Return AppUser snapshot for auth checks. May be detached from db."""
-    now = datetime.utcnow()
+    now = utcnow()
     hit = _cache.get(username)
     if hit is not None:
         user, expires = hit

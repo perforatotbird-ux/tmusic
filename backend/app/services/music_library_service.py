@@ -16,6 +16,7 @@ from app.repositories.album_repository import AlbumRepository
 from app.schemas.library import (
     MusicArtistCard, MusicAlbumCard, MusicArtistDetail, LibraryStats
 )
+from app.utils.time import utcnow
 
 
 class MusicLibraryService:
@@ -177,7 +178,7 @@ class MusicLibraryService:
             raise HTTPException(status_code=404, detail=f"{target_type.capitalize()} not found.")
 
         entity.custom_image_key = key
-        entity.updated_at = datetime.utcnow()
+        entity.updated_at = utcnow()
         db.commit()
 
 

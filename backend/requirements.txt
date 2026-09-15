@@ -6,9 +6,10 @@ pydantic-settings==2.12.0
 sqlalchemy==2.0.38
 psycopg2-binary==2.9.11
 pyrogram==2.3.69
-tgcrypto>=1.2.5
+# Pinned exact: upstream is archived (no future releases); C speedup only,
+# Pyrogram falls back to pure-Python without it.
+tgcrypto==1.2.5
 PyJWT==2.10.1
-passlib[bcrypt]==1.7.4
 bcrypt==4.2.1
 cryptography==44.0.0
 aiohttp==3.14.1

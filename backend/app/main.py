@@ -41,8 +41,9 @@ logging.basicConfig(
 logger = logging.getLogger("tmusic.main")
 
 # ─── Rate-limit policy (requests per minute per client IP) ────────────────────
-API_RATE_LIMIT_PER_MIN = 120
-AUTH_RATE_LIMIT_PER_MIN = 10
+# Budgets live in music.env (API_RATE_LIMIT_PER_MIN / AUTH_RATE_LIMIT_PER_MIN).
+API_RATE_LIMIT_PER_MIN = settings.API_RATE_LIMIT_PER_MIN
+AUTH_RATE_LIMIT_PER_MIN = settings.AUTH_RATE_LIMIT_PER_MIN
 AUTH_SENSITIVE_PATHS = frozenset({"/api/auth/login", "/api/auth/pin"})
 
 

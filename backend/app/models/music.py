@@ -11,6 +11,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
+from app.utils.time import utcnow
 
 
 class MusicArtist(Base):
@@ -30,8 +31,8 @@ class MusicArtist(Base):
     locked: Mapped[bool] = mapped_column(Boolean, default=False)
     custom_image_key: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     enriched_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
     albums: Mapped[List["MusicAlbum"]] = relationship(
         "MusicAlbum", back_populates="artist", cascade="all, delete-orphan"
@@ -58,8 +59,8 @@ class MusicAlbum(Base):
     confidence: Mapped[int] = mapped_column(Integer, default=0)
     custom_image_key: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     enriched_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
     artist: Mapped["MusicArtist"] = relationship("MusicArtist", back_populates="albums")
 

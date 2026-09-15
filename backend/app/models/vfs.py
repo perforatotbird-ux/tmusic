@@ -11,6 +11,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
+from app.utils.time import utcnow
 
 
 class TGAccount(Base):
@@ -25,8 +26,8 @@ class TGAccount(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String, default="active")
-    last_used: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_used: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
 class Folder(Base):
@@ -43,8 +44,8 @@ class Folder(Base):
     custom_icon: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     cached_total_size: Mapped[int] = mapped_column(BigInteger, default=0)
     cached_file_count: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
     files: Mapped[List["VFile"]] = relationship("VFile", back_populates="folder")
 
@@ -88,8 +89,8 @@ class VFile(Base):
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     custom_icon: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     account_map: Mapped[Optional[Dict]] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
     folder: Mapped[Optional["Folder"]] = relationship("Folder", back_populates="files")
 

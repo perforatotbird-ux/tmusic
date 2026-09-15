@@ -4,6 +4,8 @@ Implements industry-standard authentication, password/PIN hashing, and JWT token
 
 Notes on hardening (2026-09 security audit):
 - JWT via PyJWT (python-jose is unmaintained; CVE-2024-33663/33664).
+- passlib is unmaintained as well (last release 2020, breaks against
+  bcrypt>=4.1): bcrypt is used directly instead.
 - Unsalted SHA-256 password/PIN hashes are NOT accepted anymore.
   Only the SECRET_KEY-salted legacy variant is tolerated for migration,
   and successful logins are auto-upgraded to bcrypt by the auth service.
@@ -16,21 +18,33 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Optional, Dict, Any
 
+import bcrypt
 import jwt
 from jwt.exceptions import InvalidTokenError
-from passlib.context import CryptContext
 
 from app.core.config import settings
+from app.utils.time import utcnow, utcfromtimestamp
 
 logger = logging.getLogger(__name__)
 
-# Password & PIN hashing context (bcrypt with automatic upgrade)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Password & PIN hashing: bcrypt directly (cost 12, same as before).
+# passlib was dropped: unmaintained since 2020 and incompatible with bcrypt>=4.1.
+
+
+def _bcrypt_hash(secret_value: str) -> str:
+    return bcrypt.hashpw(secret_value.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
+
+
+def _bcrypt_verify(plain_value: str, hashed_value: str) -> bool:
+    try:
+        return bcrypt.checkpw(plain_value.encode("utf-8"), hashed_value.encode("ascii"))
+    except Exception:
+        return False
 
 
 def hash_password(password: str) -> str:
     """Hash a password using strong salted bcrypt."""
-    return pwd_context.hash(password)
+    return _bcrypt_hash(password)
 
 
 @lru_cache(maxsize=1)
@@ -40,7 +54,7 @@ def timing_equalizer_hash() -> str:
     Equalizes response time between 'no such user' and 'wrong password'
     to prevent username enumeration via timing analysis.
     """
-    return pwd_context.hash("timing-equalizer-dummy-password")
+    return _bcrypt_hash("timing-equalizer-dummy-password")
 
 
 def _legacy_salted_sha256(secret_value: str) -> str:
@@ -63,10 +77,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     if not plain_password or not hashed_password:
         return False
     if hashed_password.startswith("$"):
-        try:
-            return pwd_context.verify(plain_password, hashed_password)
-        except Exception:
-            return False
+        return _bcrypt_verify(plain_password, hashed_password)
     # Legacy migration path — salted only. Unsalted SHA-256 is rejected.
     if is_legacy_hash(hashed_password):
         return hmac.compare_digest(_legacy_salted_sha256(plain_password), hashed_password)
@@ -75,7 +86,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def hash_pin(pin: str) -> str:
     """Hash a numeric PIN with bcrypt (slow, salted)."""
-    return pwd_context.hash(pin)
+    return _bcrypt_hash(pin)
 
 
 def verify_pin(plain_pin: str, stored_hash: str) -> bool:
@@ -83,10 +94,7 @@ def verify_pin(plain_pin: str, stored_hash: str) -> bool:
     if not plain_pin or not stored_hash:
         return False
     if stored_hash.startswith("$"):
-        try:
-            return pwd_context.verify(plain_pin, stored_hash)
-        except Exception:
-            return False
+        return _bcrypt_verify(plain_pin, stored_hash)
     # Legacy migration path — salted only. Unsalted SHA-256 is rejected.
     if is_legacy_hash(stored_hash):
         return hmac.compare_digest(_legacy_salted_sha256(plain_pin), stored_hash)
@@ -102,7 +110,7 @@ def create_access_token(
     Generate a signed JWT access token.
     Returns: (token_str, jti, expire_datetime)
     """
-    now = datetime.utcnow()
+    now = utcnow()
     expire = now + (expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES))
     jti = str(uuid.uuid4())
 
@@ -131,5 +139,5 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
 def token_expiry_from_payload(payload: Dict[str, Any]) -> datetime:
     exp = payload.get("exp")
     if isinstance(exp, (int, float)):
-        return datetime.utcfromtimestamp(exp)
-    return datetime.utcnow() + timedelta(days=1)
+        return utcfromtimestamp(exp)
+    return utcnow() + timedelta(days=1)

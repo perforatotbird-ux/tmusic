@@ -192,7 +192,7 @@ class TelegramManager:
                 api_hash=api_hash,
                 in_memory=True,
                 sleep_threshold=settings.SLEEP_THRESHOLD,
-                max_concurrent_transmissions=3,
+                max_concurrent_transmissions=settings.TG_MAX_CONCURRENT_TRANSMISSIONS,
             )
 
             await client.start()

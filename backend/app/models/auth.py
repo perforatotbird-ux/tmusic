@@ -10,6 +10,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
+from app.utils.time import utcnow
 
 
 class AppUser(Base):
@@ -26,8 +27,8 @@ class AppUser(Base):
     # Session generation counter: bumped on password/PIN change so every JWT
     # issued before the change is rejected (see dependencies._authenticate_request).
     token_version: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
 class RevokedToken(Base):
@@ -38,4 +39,4 @@ class RevokedToken(Base):
     # unique=True already creates an index on jti; expires_at keeps a plain index for cleanup sweeps.
     jti: Mapped[str] = mapped_column(String(128), unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

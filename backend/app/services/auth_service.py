@@ -23,6 +23,7 @@ from app.core.security import (
 )
 from app.core.rate_limiter import limiter
 from app.core.user_cache import get_attached_user, invalidate_user
+from app.utils.time import utcnow
 from app.models.auth import AppUser
 from app.schemas.auth import TokenResponse
 
@@ -56,7 +57,7 @@ class AuthService:
             return None, "Invalid credentials."
 
         # 3. Check account lockout (generic message — countdown stays server-side)
-        if user.locked_until and user.locked_until > datetime.utcnow():
+        if user.locked_until and user.locked_until > utcnow():
             logger.warning("Login blocked (account lockout): ip=%s user=%r", client_ip, username)
             return None, "Account temporarily locked. Try again later."
 
@@ -65,7 +66,7 @@ class AuthService:
             is_locked, left = limiter.record_failure(client_ip, settings.MAX_FAILED_LOGIN_ATTEMPTS, settings.LOCKOUT_MINUTES * 60)
             user.failed_login_attempts += 1
             if user.failed_login_attempts >= settings.MAX_FAILED_LOGIN_ATTEMPTS:
-                user.locked_until = datetime.utcnow() + timedelta(minutes=settings.LOCKOUT_MINUTES)
+                user.locked_until = utcnow() + timedelta(minutes=settings.LOCKOUT_MINUTES)
                 logger.warning(
                     "Account locked after %d failed attempts: ip=%s user=%r",
                     user.failed_login_attempts, client_ip, username,
@@ -97,7 +98,7 @@ class AuthService:
         return TokenResponse(
             access_token=token_str,
             token_type="bearer",
-            expires_in=int((expire_dt - datetime.utcnow()).total_seconds())
+            expires_in=int((expire_dt - utcnow()).total_seconds())
         ), None
 
     @staticmethod
@@ -122,7 +123,7 @@ class AuthService:
             return None, "PIN authentication not configured."
 
         # Per-account lockout, same policy as the password flow
-        if user.locked_until and user.locked_until > datetime.utcnow():
+        if user.locked_until and user.locked_until > utcnow():
             logger.warning("PIN login blocked (account lockout): ip=%s user=%r", client_ip, user.username)
             return None, "Account temporarily locked. Try again later."
 
@@ -130,7 +131,7 @@ class AuthService:
             limiter.record_failure(client_ip, settings.MAX_FAILED_LOGIN_ATTEMPTS, settings.LOCKOUT_MINUTES * 60)
             user.failed_login_attempts += 1
             if user.failed_login_attempts >= settings.MAX_FAILED_LOGIN_ATTEMPTS:
-                user.locked_until = datetime.utcnow() + timedelta(minutes=settings.LOCKOUT_MINUTES)
+                user.locked_until = utcnow() + timedelta(minutes=settings.LOCKOUT_MINUTES)
                 logger.warning(
                     "Account locked after %d failed PIN attempts: ip=%s user=%r",
                     user.failed_login_attempts, client_ip, user.username,
@@ -162,7 +163,7 @@ class AuthService:
         return TokenResponse(
             access_token=token_str,
             token_type="bearer",
-            expires_in=int((expire_dt - datetime.utcnow()).total_seconds())
+            expires_in=int((expire_dt - utcnow()).total_seconds())
         ), None
 
     @staticmethod
@@ -175,7 +176,7 @@ class AuthService:
         target.failed_login_attempts = 0
         target.locked_until = None
         target.token_version = (target.token_version or 0) + 1
-        target.updated_at = datetime.utcnow()
+        target.updated_at = utcnow()
         db.commit()
         invalidate_user(target.username)
         logger.info("Password changed, sessions revoked: user=%r", target.username)
@@ -188,7 +189,7 @@ class AuthService:
             raise ValueError("User not found.")
         target.pin_hash = hash_pin(new_pin)
         target.token_version = (target.token_version or 0) + 1
-        target.updated_at = datetime.utcnow()
+        target.updated_at = utcnow()
         db.commit()
         invalidate_user(target.username)
         logger.info("PIN changed, sessions revoked: user=%r", target.username)

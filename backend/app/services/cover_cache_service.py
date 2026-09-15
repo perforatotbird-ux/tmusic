@@ -21,8 +21,13 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MB limit
-HTTP_TIMEOUT = aiohttp.ClientTimeout(total=20, connect=8)
+# Back-compat alias: router imports this name. Source of truth is music.env
+# (COVER_MAX_IMAGE_BYTES); do not hardcode a second value here.
+MAX_IMAGE_BYTES = settings.COVER_MAX_IMAGE_BYTES
+HTTP_TIMEOUT = aiohttp.ClientTimeout(
+    total=settings.COVER_HTTP_TIMEOUT_SEC,
+    connect=settings.COVER_HTTP_CONNECT_TIMEOUT_SEC,
+)
 USER_AGENT = "CloudByte-MusicLibrary/1.0 (self-hosted personal music library)"
 
 _MAGICS = (

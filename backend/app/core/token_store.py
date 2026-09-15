@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import decode_access_token, token_expiry_from_payload
 from app.models.auth import RevokedToken
+from app.utils.time import utcnow
 
 # Negative cache: jti -> timestamp until which "not revoked" is trusted.
 # Every authenticated request hits is_token_revoked, so caching the common
@@ -69,7 +70,7 @@ def is_token_revoked(db: Session, jti: str) -> bool:
 def purge_expired_revocations(db: Session) -> int:
     """Delete revocations whose tokens already expired. Returns rows removed."""
     n = db.execute(
-        delete(RevokedToken).where(RevokedToken.expires_at < datetime.utcnow())
+        delete(RevokedToken).where(RevokedToken.expires_at < utcnow())
     ).rowcount or 0
     db.commit()
     return n

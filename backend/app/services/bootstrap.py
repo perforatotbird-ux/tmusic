@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.auth import AppUser
+from app.utils.time import utcnow
 
 logger = logging.getLogger("tmusic.bootstrap")
 
@@ -64,8 +65,8 @@ def ensure_admin_bootstrap(db: Session) -> None:
             is_active=True,
             failed_login_attempts=0,
             locked_until=None,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=utcnow(),
+            updated_at=utcnow(),
         )
         db.add(user)
         db.commit()
@@ -98,5 +99,5 @@ def ensure_admin_bootstrap(db: Session) -> None:
         )
 
     if changed:
-        user.updated_at = datetime.utcnow()
+        user.updated_at = utcnow()
         db.commit()

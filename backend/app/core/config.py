@@ -73,6 +73,19 @@ class Settings(BaseSettings):
     RAM_CACHE_MAX_BYTES: int = 512 * 1024 * 1024  # 512 MB total RAM buffer cap
     PRECACHE_CHUNK_BYTES: int = 2 * 1024 * 1024  # 2MB initial chunk for pre-caching
 
+    # API rate limits (requests per minute per client IP). Auth endpoints get a
+    # stricter budget. Previously hardcoded in main.py.
+    API_RATE_LIMIT_PER_MIN: int = 120
+    AUTH_RATE_LIMIT_PER_MIN: int = 10
+
+    # Telegram transport
+    TG_MAX_CONCURRENT_TRANSMISSIONS: int = 3
+
+    # Cover proxy: fetch timeouts and max accepted image size.
+    COVER_HTTP_TIMEOUT_SEC: int = 20
+    COVER_HTTP_CONNECT_TIMEOUT_SEC: int = 8
+    COVER_MAX_IMAGE_BYTES: int = 10 * 1024 * 1024
+
     # External APIs
     LASTFM_API_KEY: Optional[str] = None
     DISCOGS_CONSUMER_KEY: Optional[str] = None
