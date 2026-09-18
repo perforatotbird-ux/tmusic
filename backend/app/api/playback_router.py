@@ -21,6 +21,7 @@ from app.schemas.playback import (
     TrackSearchItem,
 )
 from app.services.playback_service import playback_service
+from app.services import lastfm_service
 from app.utils.like import escape_like
 
 router = APIRouter(prefix="/api/playback", tags=["playback"])
@@ -108,6 +109,21 @@ async def create_history(
         body.track_duration_sec,
         body.completed,
     )
+    try:
+        artist, track, album = lastfm_service.parse_track_meta(
+            vf.name, body.artist, body.track, body.album
+        )
+        played = body.duration_played_sec or 0
+        total = body.track_duration_sec or 0
+        should_scrobble = body.completed or (
+            total > 0 and (played >= total * 0.5 or played >= 240)
+        )
+        if should_scrobble:
+            lastfm_service.scrobble(artist, track, album)
+        else:
+            lastfm_service.update_now_playing(artist, track, album)
+    except Exception:
+        pass
     return HistoryItem(
         id=row.id,
         file_id=row.file_id,

@@ -25,6 +25,9 @@ class HistoryCreate(BaseModel):
     duration_played_sec: float = Field(default=0.0, ge=0)
     track_duration_sec: Optional[float] = Field(default=None, ge=0)
     completed: bool = False
+    artist: Optional[str] = Field(default=None, max_length=200)
+    track: Optional[str] = Field(default=None, max_length=300)
+    album: Optional[str] = Field(default=None, max_length=200)
 
 
 class HistoryItem(BaseModel):

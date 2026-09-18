@@ -1,14 +1,9 @@
-/**
- * Album detail sheet: tracklist + playback entry point.
- *
- * Opens when the user taps an album cover.
- * Desktop: centered modal. Phone: bottom sheet (both driven by CSS classes).
- */
-
 import React, { useEffect, useRef, useState } from 'react'
 import { streamApi } from '../api/stream'
+import { playlistsApi } from '../api/playlists'
 import { resolveCoverUrl } from '../utils/cover'
 import { usePlayerStore } from '../store/playerStore'
+import { useAuthStore } from '../store/authStore'
 import {
   X,
   Play,
@@ -17,6 +12,8 @@ import {
   Music,
   ListMusic,
   Image as ImageIcon,
+  ListPlus,
+  Check,
 } from 'lucide-react'
 
 function formatSizeHint(track) {
@@ -35,15 +32,20 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
   const [tracks, setTracks] = useState([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [playlistTarget, setPlaylistTarget] = useState(null) // track being added
+  const [playlists, setPlaylists] = useState([])
+  const [playlistsLoading, setPlaylistsLoading] = useState(false)
+  const [newPlName, setNewPlName] = useState('')
+  const [addedFlash, setAddedFlash] = useState(null)
   const loadSeq = useRef(0)
 
   const { playQueue, queue, queueIndex, isPlaying, togglePlay } = usePlayerStore()
+  const { isAuthenticated } = useAuthStore()
 
   const cover = resolveCoverUrl(album, artist, null)
   const albumTitle = album?.title || album?.display_name || 'Альбом'
   const artistName = (artist && artist.display_name) || albumTitle
 
-  // Lock body scroll while the sheet is open.
   useEffect(() => {
     const prev = document.body.style.overflow
     document.body.style.overflow = 'hidden'
@@ -52,16 +54,17 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
     }
   }, [])
 
-  // Escape closes the sheet on desktop keyboards.
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === 'Escape') onClose?.()
+      if (e.key === 'Escape') {
+        if (playlistTarget) setPlaylistTarget(null)
+        else onClose?.()
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onClose, playlistTarget])
 
-  // Load tracklist; ignore late responses from a superseded album.
   useEffect(() => {
     let cancelled = false
     const mySeq = ++loadSeq.current
@@ -89,6 +92,51 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
     }
   }, [album?.folder_id, album?.is_tracks])
 
+  const openPlaylistPicker = async (track) => {
+    setPlaylistTarget(track)
+    if (!isAuthenticated) return
+    setPlaylistsLoading(true)
+    try {
+      const list = await playlistsApi.list()
+      setPlaylists(list || [])
+    } catch {
+      setPlaylists([])
+    } finally {
+      setPlaylistsLoading(false)
+    }
+  }
+
+  const addToPlaylist = async (playlist) => {
+    if (!playlistTarget || !playlist) return
+    try {
+      await playlistsApi.addTrack(playlist.id, playlistTarget.id)
+      setAddedFlash(playlist.id)
+      setTimeout(() => {
+        setAddedFlash(null)
+        setPlaylistTarget(null)
+      }, 550)
+    } catch (e) {
+      console.error(e)
+    }
+  }
+
+  const createAndAdd = async () => {
+    const name = newPlName.trim()
+    if (!name || !playlistTarget) return
+    try {
+      const pl = await playlistsApi.create(name)
+      setNewPlName('')
+      await playlistsApi.addTrack(pl.id, playlistTarget.id)
+      setAddedFlash(pl.id)
+      setTimeout(() => {
+        setAddedFlash(null)
+        setPlaylistTarget(null)
+      }, 550)
+    } catch (e) {
+      console.error(e)
+    }
+  }
+
   const releaseInfo = {
     title: albumTitle,
     artistName,
@@ -108,7 +156,7 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
   return (
     <div
       className="tmusic-album-overlay"
-      onClick={onClose}
+      onClick={() => (playlistTarget ? setPlaylistTarget(null) : onClose?.())}
       role="dialog"
       aria-modal="true"
       aria-label={albumTitle}
@@ -330,6 +378,29 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
                       {formatSizeHint(t)}
                     </span>
                   )}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      openPlaylistPicker(t)
+                    }}
+                    title="В плейлист"
+                    aria-label={`Добавить ${stripExt(t.name)} в плейлист`}
+                    style={{
+                      flexShrink: 0,
+                      width: '32px',
+                      height: '32px',
+                      borderRadius: '8px',
+                      border: '1px solid var(--line, #333)',
+                      background: 'transparent',
+                      color: 'var(--dim)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <ListPlus size={15} />
+                  </button>
                 </div>
               )
             })}
@@ -338,7 +409,124 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
         {!isLoading && tracks.length > 0 && (
           <div className="tmusic-album-foot">
             <ListMusic size={14} />
-            {tracks.length} {tracks.length === 1 ? 'трек' : 'треков'} • тап по строке — играть / пауза
+            {tracks.length} {tracks.length === 1 ? 'трек' : 'треков'} • тап — играть • + — в плейлист
+          </div>
+        )}
+
+        {playlistTarget && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              background: 'rgba(0,0,0,0.55)',
+              borderRadius: 'inherit',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '16px',
+              zIndex: 20,
+            }}
+          >
+            <div
+              style={{
+                width: 'min(360px, 100%)',
+                background: 'var(--bg-card, #1c1917)',
+                border: '1px solid var(--line-bright, #444)',
+                borderRadius: '14px',
+                padding: '16px',
+                maxHeight: '70%',
+                overflow: 'auto',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px', gap: '8px' }}>
+                <div style={{ fontWeight: 800, fontSize: '14px', color: 'var(--ink)' }}>
+                  В плейлист
+                </div>
+                <button
+                  onClick={() => setPlaylistTarget(null)}
+                  style={{ background: 'none', border: 'none', color: 'var(--dim)', cursor: 'pointer' }}
+                  aria-label="Закрыть"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+              <div style={{ fontSize: '12px', color: 'var(--dim)', marginBottom: '12px' }}>
+                {stripExt(playlistTarget.name)}
+              </div>
+
+              {!isAuthenticated ? (
+                <div style={{ fontSize: '13px', color: 'var(--dim)' }}>Войдите, чтобы сохранять плейлисты.</div>
+              ) : playlistsLoading ? (
+                <div style={{ fontSize: '13px', color: 'var(--dim)' }}>Загрузка…</div>
+              ) : (
+                <>
+                  {(playlists || []).map((pl) => (
+                    <button
+                      key={pl.id}
+                      onClick={() => addToPlaylist(pl)}
+                      style={{
+                        width: '100%',
+                        textAlign: 'left',
+                        marginBottom: '6px',
+                        padding: '10px 12px',
+                        borderRadius: '8px',
+                        border: '1px solid var(--line, #333)',
+                        background: addedFlash === pl.id ? 'var(--accent)' : 'transparent',
+                        color: addedFlash === pl.id ? '#141210' : 'var(--ink)',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: '8px',
+                        fontSize: '13px',
+                        fontWeight: 600,
+                      }}
+                    >
+                      <span>{pl.name}</span>
+                      {addedFlash === pl.id ? <Check size={14} /> : (
+                        <span style={{ fontSize: '11px', opacity: 0.7 }}>{pl.track_count || 0}</span>
+                      )}
+                    </button>
+                  ))}
+                  <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
+                    <input
+                      value={newPlName}
+                      onChange={(e) => setNewPlName(e.target.value)}
+                      placeholder="Новый плейлист"
+                      style={{
+                        flex: 1,
+                        background: 'var(--bg)',
+                        border: '1px solid var(--line, #333)',
+                        color: 'var(--ink)',
+                        borderRadius: '8px',
+                        padding: '8px 10px',
+                        fontSize: '13px',
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') createAndAdd()
+                      }}
+                    />
+                    <button
+                      onClick={createAndAdd}
+                      disabled={!newPlName.trim()}
+                      style={{
+                        background: newPlName.trim() ? 'var(--accent)' : 'var(--line-bright)',
+                        color: '#141210',
+                        border: 'none',
+                        borderRadius: '8px',
+                        padding: '8px 12px',
+                        fontWeight: 800,
+                        fontSize: '12px',
+                        cursor: newPlName.trim() ? 'pointer' : 'default',
+                      }}
+                    >
+                      Создать
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         )}
       </div>

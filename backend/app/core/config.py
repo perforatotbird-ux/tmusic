@@ -88,6 +88,10 @@ class Settings(BaseSettings):
 
     # External APIs
     LASTFM_API_KEY: Optional[str] = None
+    LASTFM_API_SECRET: Optional[str] = None
+    LASTFM_SESSION_KEY: Optional[str] = None
+    LASTFM_USERNAME: Optional[str] = None
+    LASTFM_ENABLED: bool = True
     DISCOGS_CONSUMER_KEY: Optional[str] = None
     DISCOGS_CONSUMER_SECRET: Optional[str] = None
     MUSICBRAINZ_RATE_LIMIT_SEC: float = 1.05
