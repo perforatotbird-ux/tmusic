@@ -28,7 +28,22 @@ class AppUser(Base):
     token_version: Mapped[int] = mapped_column(Integer, default=0)
     # Fernet-encrypted Subsonic client token (used as password / md5 token auth)
     subsonic_token_enc: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    # Future-ready RBAC: 'admin' | 'editor' | 'user'. Username 'admin' is treated as admin.
+    role: Mapped[str] = mapped_column(String(32), default="user")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == "admin" or self.username == "admin"
+
+
+class AppSetting(Base):
+    """Key/value operational settings (admin panel, backup schedule, etc.)."""
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 

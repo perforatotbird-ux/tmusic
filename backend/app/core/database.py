@@ -108,13 +108,17 @@ def ensure_auth_schema() -> None:
         "ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE app_users "
         "ADD COLUMN IF NOT EXISTS subsonic_token_enc VARCHAR(512)",
+        "ALTER TABLE app_users "
+        "ADD COLUMN IF NOT EXISTS role VARCHAR(32) NOT NULL DEFAULT 'user'",
+        "UPDATE app_users SET role = 'admin' WHERE username = 'admin' AND (role IS NULL OR role = '' OR role = 'user')",
     )
 
 
 def ensure_feature_tables() -> None:
-    """Create additive feature tables (playback + playlists) on startup."""
+    """Create additive feature tables (playback + playlists + settings) on startup."""
     try:
         from app.models.base import Base
+        from app.models.auth import AppSetting
         from app.models.playback import ListeningHistory, PlaybackPosition
         from app.models.playlist import Playlist, PlaylistItem
 
@@ -125,8 +129,9 @@ def ensure_feature_tables() -> None:
                 ListeningHistory.__table__,
                 Playlist.__table__,
                 PlaylistItem.__table__,
+                AppSetting.__table__,
             ],
         )
-        logger.info("Playback/playlist tables ensured.")
+        logger.info("Playback/playlist/settings tables ensured.")
     except Exception as e:
         logger.warning("Failed to ensure feature tables: %s", e)

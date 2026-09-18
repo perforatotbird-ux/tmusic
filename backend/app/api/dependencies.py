@@ -116,3 +116,20 @@ async def get_stream_user(
         invalid_token_detail="Invalid or expired stream token.",
         inactive_detail="User account inactive.",
     )
+
+
+def user_is_admin(user: AppUser) -> bool:
+    """RBAC gate: role=admin OR legacy username 'admin' (same password until roles are split)."""
+    if not user:
+        return False
+    role = getattr(user, "role", None) or "user"
+    return role == "admin" or user.username == "admin"
+
+
+async def get_admin_user(
+    user: AppUser = Depends(get_current_user),
+) -> AppUser:
+    """Admin panel / maintenance endpoints."""
+    if not user_is_admin(user):
+        raise HTTPException(status_code=403, detail="Administrator role required.")
+    return user

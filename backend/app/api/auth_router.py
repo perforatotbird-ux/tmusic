@@ -56,7 +56,12 @@ async def login(body: LoginRequest, request: Request, response: Response, db: Se
 @router.get("/me", response_model=UserResponse)
 async def get_me(user: AppUser = Depends(get_current_user)):
     """Get currently authenticated user status."""
-    return UserResponse(id=user.id, username=user.username, is_active=user.is_active)
+    return UserResponse(
+        id=user.id,
+        username=user.username,
+        is_active=user.is_active,
+        role=getattr(user, "role", "user") or "user",
+    )
 
 
 @router.post("/change-password")

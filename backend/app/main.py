@@ -47,6 +47,8 @@ from app.api.metadata_router import router as metadata_router
 from app.api.subsonic_router import router as subsonic_router
 from app.api.subsonic_admin_router import router as subsonic_admin_router
 from app.api.vfs_router import router as vfs_router
+from app.api.admin_router import router as admin_router
+from app.services.backup_scheduler import start_backup_scheduler, stop_backup_scheduler
 
 logging.basicConfig(
     level=logging.INFO if not settings.DEBUG else logging.DEBUG,
@@ -99,10 +101,20 @@ async def lifespan(app: FastAPI):
     # 2. Telegram MTProto multi-account cluster initialization
     await tg_manager.start()
 
+    # 3. Scheduled DB backups (admin panel config)
+    try:
+        start_backup_scheduler()
+    except Exception as e:
+        logger.warning("Backup scheduler failed to start: %s", e)
+
     yield
 
-    # 3. Graceful shutdown
+    # 4. Graceful shutdown
     logger.info("Shutting down T-Music Server...")
+    try:
+        await stop_backup_scheduler()
+    except Exception:
+        pass
     await tg_manager.stop()
     await cover_cache.close()
     logger.info("T-Music Server stopped cleanly.")
@@ -198,7 +210,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["Content-Range", "Accept-Ranges", "Content-Length", "Content-Disposition"]
 )
@@ -214,6 +226,7 @@ app.include_router(metadata_router)
 app.include_router(subsonic_router)
 app.include_router(subsonic_admin_router)
 app.include_router(vfs_router)
+app.include_router(admin_router)
 
 
 @app.get("/health", tags=["system"])

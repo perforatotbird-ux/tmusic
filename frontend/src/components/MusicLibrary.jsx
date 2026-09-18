@@ -6,6 +6,7 @@ import { resolveCoverUrl } from '../utils/cover'
 import { AlbumDetail } from './AlbumDetail'
 import { LibraryPanel } from './HomeExtraPanels'
 import { FolderBrowser } from './FolderBrowser'
+import { AdminPanel } from './AdminPanel'
 import { usePlayerStore } from '../store/playerStore'
 import { useAuthStore } from '../store/authStore'
 import {
@@ -153,6 +154,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   })
   // Top bar section: catalog is default; recent/playlists open panels
   const [libSection, setLibSection] = useState(null) // null | 'recent' | 'playlists'
+  const [showAdmin, setShowAdmin] = useState(false)
   // Bumped when the cover manifest arrives so the grid re-renders with fresh
   // missing-cover knowledge (the registry itself is not React state).
   const [, setManifestTick] = useState(0)
@@ -669,6 +671,9 @@ export function MusicLibrary({ onOpenCoverPicker }) {
           </div>
         ) : mobileTab === 'profile' ? (
           /* ─── Mobile Profile Screen ───────────────────────────────────────── */
+          showAdmin ? (
+            <AdminPanel onBack={() => setShowAdmin(false)} />
+          ) : (
           <div className="tmusic-profile-screen">
             <div className="tmusic-profile-header">
               <div className="tmusic-profile-avatar">
@@ -676,7 +681,10 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               </div>
               <div className="tmusic-profile-username">{user?.username || 'admin'}</div>
               <div className="tmusic-profile-badge">
-                <ShieldCheck size={14} /> {user?.role === 'admin' || user?.username === 'admin' ? 'Администратор • SSL Защищено' : 'Слушатель • SSL Защищено'}
+                <ShieldCheck size={14} />{' '}
+                {user?.role === 'admin' || user?.username === 'admin'
+                  ? 'Администратор • SSL Защищено'
+                  : 'Слушатель • SSL Защищено'}
               </div>
             </div>
 
@@ -698,6 +706,14 @@ export function MusicLibrary({ onOpenCoverPicker }) {
             )}
 
             <div className="tmusic-profile-actions">
+              {(user?.role === 'admin' || user?.username === 'admin') && (
+                <button
+                  onClick={() => setShowAdmin(true)}
+                  className="tmusic-profile-btn tmusic-profile-btn-primary"
+                >
+                  <ShieldCheck size={18} /> Админка
+                </button>
+              )}
               {user ? (
                 <button
                   onClick={logout}
@@ -715,6 +731,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               )}
             </div>
           </div>
+          )
         ) : mobileTab === 'search' ? (
           /* ─── Mobile Search Screen ─────────────────────────────────────────── */
           <div className="tmusic-search-screen">
