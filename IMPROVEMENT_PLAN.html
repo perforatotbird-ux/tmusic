@@ -114,10 +114,11 @@
       <h3>Волна 2 — дальше</h3>
       <p class="file">Продуктовая глубина</p>
       <ol class="steps">
-        <li>Плейлисты поверх VFS</li>
-        <li>Недавние / continue listening UI</li>
+        <li>Плейлисты поверх VFS — <em>done</em></li>
+        <li>Недавние / continue listening UI — <em>done</em></li>
+        <li>Добавление трека в плейлист из альбома</li>
         <li>Last.fm scrobble</li>
-        <li>Compose + PostgreSQL</li>
+        <li>Compose + PostgreSQL — <em>done</em></li>
       </ol>
     </div>
     <div class="card">
@@ -179,19 +180,19 @@
       </tr>
       <tr>
         <td>5</td>
-        <td><strong>UI: continue / recent</strong></td>
-        <td><span class="st st-todo">backlog</span></td>
+        <td><strong>UI: continue / recent + playlists UI</strong></td>
+        <td><span class="st st-done">done</span></td>
         <td>M</td>
-        <td class="file">MusicLibrary.jsx</td>
-        <td>Секция «Продолжить слушать» из history/positions</td>
+        <td class="file">HomeExtraPanels.jsx, MusicLibrary.jsx</td>
+        <td>Блок «Продолжить/Недавнее» + CRUD плейлистов на home</td>
       </tr>
       <tr>
         <td>6</td>
-        <td><strong>Плейлисты</strong></td>
-        <td><span class="st st-todo">backlog</span></td>
+        <td><strong>Плейлисты (API)</strong></td>
+        <td><span class="st st-done">done</span></td>
         <td>L</td>
-        <td class="file">models + api + UI</td>
-        <td>CRUD, порядок треков, play queue</td>
+        <td class="file">models/playlist.py, api/playlist_router.py</td>
+        <td>CRUD + items + play queue из UI</td>
       </tr>
       <tr>
         <td>7</td>

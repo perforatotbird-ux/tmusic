@@ -4,6 +4,7 @@ import { streamApi } from '../api/stream'
 import { missingCoverKeys, parseCoverKey } from '../services/coverMissing'
 import { resolveCoverUrl } from '../utils/cover'
 import { AlbumDetail } from './AlbumDetail'
+import { HomeExtraPanels } from './HomeExtraPanels'
 import { usePlayerStore } from '../store/playerStore'
 import { useAuthStore } from '../store/authStore'
 import {
@@ -800,25 +801,28 @@ export function MusicLibrary({ onOpenCoverPicker }) {
           /* ─── Catalog: Медиатека (category strip) / Артисты / Альбомы ──────── */
           <div>
             {showCatalogStrip ? (
-              /* Category Navigation Tabs */
-              <div className="tmusic-tabs-nav">
-                {SECTIONS.map((tab) => {
-                  const Icon = tab.icon
-                  const isActive = activeKind === tab.id
-                  return (
-                    <button
-                      key={tab.id}
-                      onClick={() => {
-                        setActiveKind(tab.id)
-                        setSearch('')
-                      }}
-                      className={`tmusic-tab-btn ${isActive ? 'active' : ''}`}
-                    >
-                      <Icon size={15} /> {tab.label}
-                    </button>
-                  )
-                })}
-              </div>
+              <>
+                <HomeExtraPanels />
+                {/* Category Navigation Tabs */}
+                <div className="tmusic-tabs-nav">
+                  {SECTIONS.map((tab) => {
+                    const Icon = tab.icon
+                    const isActive = activeKind === tab.id
+                    return (
+                      <button
+                        key={tab.id}
+                        onClick={() => {
+                          setActiveKind(tab.id)
+                          setSearch('')
+                        }}
+                        className={`tmusic-tab-btn ${isActive ? 'active' : ''}`}
+                      >
+                        <Icon size={15} /> {tab.label}
+                      </button>
+                    )
+                  })}
+                </div>
+              </>
             ) : (
               <h2 className="title-zine" style={{ fontSize: '19px', marginBottom: '16px' }}>
                 {currentSection.label}

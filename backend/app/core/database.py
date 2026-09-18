@@ -110,15 +110,21 @@ def ensure_auth_schema() -> None:
 
 
 def ensure_feature_tables() -> None:
-    """Create additive feature tables (playback resume/history) on startup."""
+    """Create additive feature tables (playback + playlists) on startup."""
     try:
         from app.models.base import Base
         from app.models.playback import ListeningHistory, PlaybackPosition
+        from app.models.playlist import Playlist, PlaylistItem
 
         Base.metadata.create_all(
             bind=engine,
-            tables=[PlaybackPosition.__table__, ListeningHistory.__table__],
+            tables=[
+                PlaybackPosition.__table__,
+                ListeningHistory.__table__,
+                Playlist.__table__,
+                PlaylistItem.__table__,
+            ],
         )
-        logger.info("Playback tables ensured.")
+        logger.info("Playback/playlist tables ensured.")
     except Exception as e:
-        logger.warning("Failed to ensure playback tables: %s", e)
+        logger.warning("Failed to ensure feature tables: %s", e)

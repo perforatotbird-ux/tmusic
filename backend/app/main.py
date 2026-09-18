@@ -42,6 +42,7 @@ from app.api.library_router import router as library_router
 from app.api.stream_router import router as stream_router
 from app.api.system_router import router as system_router
 from app.api.playback_router import router as playback_router
+from app.api.playlist_router import router as playlist_router
 
 logging.basicConfig(
     level=logging.INFO if not settings.DEBUG else logging.DEBUG,
@@ -187,6 +188,7 @@ app.include_router(library_router)
 app.include_router(stream_router)
 app.include_router(system_router)
 app.include_router(playback_router)
+app.include_router(playlist_router)
 
 
 @app.get("/health", tags=["system"])
