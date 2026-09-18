@@ -244,16 +244,18 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     const mySeq = ++loadSeq.current
     setIsLoading(true)
     try {
+      // Never send search=null — backend treats it as a literal filter.
+      const searchVal = (debouncedSearch || search || '').trim()
       if (viewKind === 'albums') {
         const data = await libraryApi.getAlbums({
-          search: search || null,
+          ...(searchVal ? { search: searchVal } : {}),
           limit: 100,
         })
         if (mySeq === loadSeq.current) setItems(data || [])
       } else {
         const data = await libraryApi.getArtists({
-          kind: viewKind === 'all' ? null : viewKind,
-          search: search || null,
+          ...(viewKind === 'all' ? {} : { kind: viewKind }),
+          ...(searchVal ? { search: searchVal } : {}),
           limit: 100,
         })
         if (mySeq === loadSeq.current) setItems(data || [])

@@ -66,7 +66,7 @@ class AlbumRepository:
             select(MusicAlbum)
             .options(load_only(*_ALBUM_CARD_COLUMNS))
         )
-        if search:
+        if search and search not in ("null", "undefined") and search.strip():
             pattern = like_pattern(search)
             stmt = stmt.where(func.lower(MusicAlbum.title).like(pattern, escape="\\"))
         stmt = stmt.order_by(MusicAlbum.title.asc()).offset(offset).limit(limit)

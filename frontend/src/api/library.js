@@ -14,19 +14,35 @@ function memoize(key, fetcher) {
   })
 }
 
-function buildKey(path, params) {
-  return `${path}?${new URLSearchParams(params).toString()}`
+/** Drop null/undefined/'' so URLSearchParams never emits the string "null". */
+function toQuery(params = {}) {
+  const q = new URLSearchParams()
+  for (const [k, v] of Object.entries(params || {})) {
+    if (v === null || v === undefined || v === '') continue
+    q.set(k, String(v))
+  }
+  return q.toString()
+}
+
+function invalidateCatalogCache() {
+  for (const key of [...cache.keys()]) {
+    if (key.startsWith('/api/library/artists') || key.startsWith('/api/library/albums')) {
+      cache.delete(key)
+    }
+  }
 }
 
 export const libraryApi = {
   getArtists: (params = {}) => {
-    const key = buildKey('/api/library/artists', params)
-    return memoize(key, () => request(`/api/library/artists?${new URLSearchParams(params).toString()}`))
+    const qs = toQuery(params)
+    const key = `/api/library/artists?${qs}`
+    return memoize(key, () => request(qs ? `/api/library/artists?${qs}` : '/api/library/artists'))
   },
 
   getAlbums: (params = {}) => {
-    const key = buildKey('/api/library/albums', params)
-    return memoize(key, () => request(`/api/library/albums?${new URLSearchParams(params).toString()}`))
+    const qs = toQuery(params)
+    const key = `/api/library/albums?${qs}`
+    return memoize(key, () => request(qs ? `/api/library/albums?${qs}` : '/api/library/albums'))
   },
 
   getArtistDetail: (artistId) => {
@@ -40,8 +56,7 @@ export const libraryApi = {
   },
 
   setCoverUrl: (targetType, targetId, imageUrl) => {
-    cache.delete('/api/library/artists')
-    cache.delete('/api/library/albums')
+    invalidateCatalogCache()
     const formData = new FormData()
     formData.append('target_type', targetType)
     formData.append('target_id', targetId)
@@ -53,8 +68,7 @@ export const libraryApi = {
   },
 
   uploadCoverFile: (targetType, targetId, file) => {
-    cache.delete('/api/library/artists')
-    cache.delete('/api/library/albums')
+    invalidateCatalogCache()
     const formData = new FormData()
     formData.append('target_type', targetType)
     formData.append('target_id', targetId)
@@ -65,10 +79,12 @@ export const libraryApi = {
     })
   },
 
-  resetCover: (targetType, targetId) =>
-    request(`/api/library/cover?target_type=${targetType}&target_id=${targetId}`, {
+  resetCover: (targetType, targetId) => {
+    invalidateCatalogCache()
+    return request(`/api/library/cover?target_type=${targetType}&target_id=${targetId}`, {
       method: 'DELETE',
-    }),
+    })
+  },
 
   coversManifest: (keys, custom = 0) => {
     if (!keys || keys.length === 0) return Promise.resolve({ found: {}, missing: [] })

@@ -60,9 +60,9 @@ class ArtistRepository:
             select(MusicArtist, album_count)
             .options(load_only(*_ARTIST_CARD_COLUMNS))
         )
-        if kind:
+        if kind and kind not in ("null", "undefined"):
             stmt = stmt.where(MusicArtist.kind == kind)
-        if search:
+        if search and search not in ("null", "undefined") and search.strip():
             pattern = like_pattern(search)
             stmt = stmt.where(
                 func.lower(MusicArtist.display_name).like(pattern, escape="\\") |

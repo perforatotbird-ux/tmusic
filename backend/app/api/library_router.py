@@ -36,6 +36,11 @@ async def get_artists(
     user: AppUser = Depends(get_current_user)
 ):
     """Retrieve catalog artists with pagination and search."""
+    # Guard against clients that serialize JS null/undefined into the query string.
+    if kind in ("null", "undefined", ""):
+        kind = None
+    if search in ("null", "undefined") or not (search or "").strip():
+        search = None
     return library_service.list_artists(db, kind=kind, search=search, limit=limit, offset=offset)
 
 
@@ -48,6 +53,8 @@ async def get_albums(
     user: AppUser = Depends(get_current_user)
 ):
     """Retrieve all catalog albums with pagination and search."""
+    if search in ("null", "undefined") or not (search or "").strip():
+        search = None
     return library_service.list_albums(db, search=search, limit=limit, offset=offset)
 
 
