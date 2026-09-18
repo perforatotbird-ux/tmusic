@@ -44,6 +44,8 @@ from app.api.system_router import router as system_router
 from app.api.playback_router import router as playback_router
 from app.api.playlist_router import router as playlist_router
 from app.api.metadata_router import router as metadata_router
+from app.api.subsonic_router import router as subsonic_router
+from app.api.subsonic_admin_router import router as subsonic_admin_router
 
 logging.basicConfig(
     level=logging.INFO if not settings.DEBUG else logging.DEBUG,
@@ -147,6 +149,23 @@ async def api_rate_limit_middleware(request: Request, call_next):
                 content={"detail": "Too many requests. Slow down."},
                 headers={"Retry-After": "60"},
             )
+    elif path.startswith("/rest/"):
+        # Subsonic clients poll/scrape libraries; allow a much higher budget
+        # than the web SPA API while still capping runaway loops.
+        client_ip = get_client_ip(request)
+        limited = limiter.is_rate_limited(f"subsonic:{client_ip}", 600, 60)
+        if limited:
+            return JSONResponse(
+                content={
+                    "subsonic-response": {
+                        "status": "failed",
+                        "version": "1.16.1",
+                        "error": {"code": 0, "message": "Too many requests."},
+                    }
+                },
+                status_code=429,
+                headers={"Retry-After": "60"},
+            )
     return await call_next(request)
 
 # ─── High-Security Headers Middleware ──────────────────────────────────────────
@@ -191,6 +210,8 @@ app.include_router(system_router)
 app.include_router(playback_router)
 app.include_router(playlist_router)
 app.include_router(metadata_router)
+app.include_router(subsonic_router)
+app.include_router(subsonic_admin_router)
 
 
 @app.get("/health", tags=["system"])

@@ -26,6 +26,8 @@ class AppUser(Base):
     # Session generation counter: bumped on password change so every JWT
     # issued before the change is rejected (see dependencies._authenticate_request).
     token_version: Mapped[int] = mapped_column(Integer, default=0)
+    # Fernet-encrypted Subsonic client token (used as password / md5 token auth)
+    subsonic_token_enc: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 

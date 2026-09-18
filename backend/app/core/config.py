@@ -86,6 +86,16 @@ class Settings(BaseSettings):
     COVER_HTTP_CONNECT_TIMEOUT_SEC: int = 8
     COVER_MAX_IMAGE_BYTES: int = 10 * 1024 * 1024
 
+    # Subsonic / OpenSubsonic compatibility layer (/rest/*)
+    SUBSONIC_ENABLED: bool = True
+    SUBSONIC_SERVER_NAME: str = "T-Music"
+    SUBSONIC_API_VERSION: str = "1.16.1"
+    # Optional dedicated Subsonic password (recommended for clients).
+    # If unset, panel user bcrypt password is accepted via p= parameter.
+    SUBSONIC_API_PASSWORD: Optional[str] = None
+    # Optional token-auth secret: clients send t=md5(SUBSONIC_TOKEN+salt)
+    SUBSONIC_TOKEN: Optional[str] = None
+
     # External APIs
     LASTFM_API_KEY: Optional[str] = None
     LASTFM_API_SECRET: Optional[str] = None

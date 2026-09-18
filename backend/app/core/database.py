@@ -106,6 +106,8 @@ def ensure_auth_schema() -> None:
         "Auth schema",
         "ALTER TABLE app_users "
         "ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE app_users "
+        "ADD COLUMN IF NOT EXISTS subsonic_token_enc VARCHAR(512)",
     )
 
 
