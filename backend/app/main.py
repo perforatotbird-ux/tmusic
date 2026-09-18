@@ -46,6 +46,7 @@ from app.api.playlist_router import router as playlist_router
 from app.api.metadata_router import router as metadata_router
 from app.api.subsonic_router import router as subsonic_router
 from app.api.subsonic_admin_router import router as subsonic_admin_router
+from app.api.vfs_router import router as vfs_router
 
 logging.basicConfig(
     level=logging.INFO if not settings.DEBUG else logging.DEBUG,
@@ -212,6 +213,7 @@ app.include_router(playlist_router)
 app.include_router(metadata_router)
 app.include_router(subsonic_router)
 app.include_router(subsonic_admin_router)
+app.include_router(vfs_router)
 
 
 @app.get("/health", tags=["system"])

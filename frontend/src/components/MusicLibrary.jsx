@@ -5,6 +5,7 @@ import { missingCoverKeys, parseCoverKey } from '../services/coverMissing'
 import { resolveCoverUrl } from '../utils/cover'
 import { AlbumDetail } from './AlbumDetail'
 import { HomeExtraPanels } from './HomeExtraPanels'
+import { FolderBrowser } from './FolderBrowser'
 import { usePlayerStore } from '../store/playerStore'
 import { useAuthStore } from '../store/authStore'
 import {
@@ -23,6 +24,8 @@ import {
   X,
   Home,
   User,
+  FolderTree,
+  LayoutGrid,
 } from 'lucide-react'
 
 // Deterministic hue generator based on string hash for generative badges
@@ -138,6 +141,14 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   const [search, setSearch] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [stats, setStats] = useState(null)
+  // 'covers' | 'folders' — Windows-style VFS hierarchy vs cover catalog
+  const [viewMode, setViewMode] = useState(() => {
+    try {
+      return localStorage.getItem('tmusic_view_mode') === 'folders' ? 'folders' : 'covers'
+    } catch {
+      return 'covers'
+    }
+  })
   // Bumped when the cover manifest arrives so the grid re-renders with fresh
   // missing-cover knowledge (the registry itself is not React state).
   const [, setManifestTick] = useState(0)
@@ -153,6 +164,16 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   const viewKind = MOBILE_TAB_KIND[mobileTab] || activeKind
   const currentSection = SECTIONS_BY_ID[viewKind] || SECTIONS[0]
   const isAlbumSection = currentSection.isAlbum
+  const folderMode = viewMode === 'folders'
+
+  const setLibraryViewMode = (mode) => {
+    setViewMode(mode)
+    try {
+      localStorage.setItem('tmusic_view_mode', mode)
+    } catch {
+      /* ignore */
+    }
+  }
 
   // Debounce search - only trigger after 300ms of no typing
   const [debouncedSearch, setDebouncedSearch] = useState(search)
@@ -800,7 +821,76 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         ) : (
           /* ─── Catalog: Медиатека (category strip) / Артисты / Альбомы ──────── */
           <div>
-            {showCatalogStrip ? (
+            {/* Covers ↔ Folders view switch */}
+            <div
+              className="tmusic-view-toggle"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '12px',
+                marginBottom: '14px',
+                flexWrap: 'wrap',
+              }}
+            >
+              <div
+                style={{
+                  display: 'inline-flex',
+                  borderRadius: '10px',
+                  border: '1px solid var(--line)',
+                  overflow: 'hidden',
+                  background: 'var(--bg-card)',
+                }}
+              >
+                <button
+                  onClick={() => setLibraryViewMode('covers')}
+                  className={`tmusic-view-toggle-btn ${!folderMode ? 'active' : ''}`}
+                  title="Каталог с обложками"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '8px 12px',
+                    border: 'none',
+                    background: !folderMode ? 'var(--accent)' : 'transparent',
+                    color: !folderMode ? '#141210' : 'var(--dim)',
+                    fontWeight: 800,
+                    fontSize: '12px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <LayoutGrid size={15} /> Обложки
+                </button>
+                <button
+                  onClick={() => setLibraryViewMode('folders')}
+                  className={`tmusic-view-toggle-btn ${folderMode ? 'active' : ''}`}
+                  title="Проводник Windows"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '8px 12px',
+                    border: 'none',
+                    background: folderMode ? 'var(--accent)' : 'transparent',
+                    color: folderMode ? '#141210' : 'var(--dim)',
+                    fontWeight: 800,
+                    fontSize: '12px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <FolderTree size={15} /> Папки
+                </button>
+              </div>
+              {folderMode && (
+                <span style={{ fontSize: '11px', color: 'var(--dim)' }}>
+                  Клик по папке → плейлист + воспроизведение
+                </span>
+              )}
+            </div>
+
+            {folderMode ? (
+              <FolderBrowser />
+            ) : showCatalogStrip ? (
               <>
                 <HomeExtraPanels />
                 {/* Category Navigation Tabs */}
@@ -829,8 +919,8 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               </h2>
             )}
 
-            {/* Loading Indicator */}
-            {isLoading ? (
+            {/* Loading Indicator — catalog only (folder mode has its own) */}
+            {!folderMode && (isLoading ? (
               <div
                 style={{
                   display: 'flex',
@@ -933,7 +1023,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                   )
                 })}
               </div>
-            )}
+            ))}
           </div>
         )}
       </main>
