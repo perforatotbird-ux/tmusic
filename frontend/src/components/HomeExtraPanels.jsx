@@ -11,9 +11,26 @@ function formatTime(sec) {
   return `${m}:${String(s % 60).padStart(2, '0')}`
 }
 
-export function HomeExtraPanels() {
+const chipBtn = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '6px',
+  background: 'var(--accent)',
+  color: '#141210',
+  border: 'none',
+  borderRadius: '999px',
+  padding: '6px 12px',
+  fontWeight: 800,
+  fontSize: '12px',
+  cursor: 'pointer',
+}
+
+/**
+ * Compact panels for the library top bar: 'recent' | 'playlists'.
+ */
+export function LibraryPanel({ section, onRefreshKey }) {
   const { isAuthenticated } = useAuthStore()
-  const { playTrack, playQueue } = usePlayerStore()
+  const { playQueue } = usePlayerStore()
   const [continueItems, setContinueItems] = useState([])
   const [recentItems, setRecentItems] = useState([])
   const [playlists, setPlaylists] = useState([])
@@ -21,18 +38,15 @@ export function HomeExtraPanels() {
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    if (!isAuthenticated) {
-      setContinueItems([])
-      setRecentItems([])
-      setPlaylists([])
+    if (!isAuthenticated || !section) {
       return
     }
     let cancelled = false
     ;(async () => {
       try {
         const [pos, hist, pls] = await Promise.all([
-          playbackApi.listPositions(12),
-          playbackApi.listHistory(12),
+          playbackApi.listPositions(16),
+          playbackApi.listHistory(16),
           playlistsApi.list(),
         ])
         if (cancelled) return
@@ -51,9 +65,9 @@ export function HomeExtraPanels() {
     return () => {
       cancelled = true
     }
-  }, [isAuthenticated])
+  }, [isAuthenticated, section, onRefreshKey])
 
-  if (!isAuthenticated) return null
+  if (!isAuthenticated || !section) return null
 
   const asTrack = (row) => ({
     id: row.file_id,
@@ -64,11 +78,11 @@ export function HomeExtraPanels() {
     size: null,
   })
 
-  const handlePlayContinue = (row) => {
+  const playRow = (row) => {
     const track = asTrack(row)
     playQueue([track], 0, {
       title: track.name,
-      artistName: 'Продолжить',
+      artistName: 'Недавнее',
       coverUrl: null,
     })
   }
@@ -80,8 +94,7 @@ export function HomeExtraPanels() {
     try {
       await playlistsApi.create(name)
       setNewName('')
-      const pls = await playlistsApi.list()
-      setPlaylists(pls || [])
+      setPlaylists(await playlistsApi.list())
     } catch (e) {
       console.error(e)
     } finally {
@@ -117,181 +130,103 @@ export function HomeExtraPanels() {
     }
   }
 
-  const stripStyle = {
-    display: 'flex',
-    gap: '12px',
-    overflowX: 'auto',
-    paddingBottom: '8px',
-    marginBottom: '20px',
-  }
-
-  const chipStyle = {
-    minWidth: '180px',
-    maxWidth: '220px',
-    background: 'var(--bg-card, #1c1917)',
-    border: '1px solid var(--line, #333)',
-    borderRadius: '12px',
-    padding: '12px',
-    color: 'var(--ink)',
-  }
+  const rows = continueItems.length ? continueItems : recentItems
 
   return (
-    <div style={{ marginBottom: '28px' }}>
-      {(continueItems.length > 0 || recentItems.length > 0) && (
+    <div className="tmusic-library-panel">
+      {section === 'recent' && (
         <section>
-          <h3
-            className="title-zine"
-            style={{ fontSize: '15px', margin: '0 0 10px', display: 'flex', alignItems: 'center', gap: '8px' }}
-          >
-            <History size={16} style={{ color: 'var(--accent)' }} />
-            {continueItems.length ? 'Продолжить слушать' : 'Недавнее'}
-          </h3>
-          <div style={stripStyle}>
-            {(continueItems.length ? continueItems : recentItems).slice(0, 12).map((row) => {
-              const track = asTrack(row)
-              return (
-                <div key={`${row.file_id}-${row.updated_at || row.started_at || row.id || Math.random()}`} style={chipStyle}>
-                  <div
-                    style={{
-                      fontSize: '13px',
-                      fontWeight: 700,
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      marginBottom: '6px',
-                    }}
-                  >
-                    {track.name}
-                  </div>
-                  <div style={{ fontSize: '11px', color: 'var(--dim)', marginBottom: '10px' }}>
-                    {typeof row.position_sec === 'number'
-                      ? `${formatTime(row.position_sec)} / ${formatTime(row.duration_sec || 0)}`
-                      : 'недавно'}
-                  </div>
-                  <button
-                    onClick={() => handlePlayContinue(row)}
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      background: 'var(--accent)',
-                      color: '#141210',
-                      border: 'none',
-                      borderRadius: '999px',
-                      padding: '6px 12px',
-                      fontWeight: 800,
-                      fontSize: '12px',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <Play size={13} fill="#141210" /> Играть
-                  </button>
-                </div>
-              )
-            })}
+          <div className="tmusic-panel-head">
+            <History size={15} />
+            <span>Недавнее</span>
+            <span className="tmusic-panel-count">{rows.length}</span>
           </div>
+          {rows.length === 0 ? (
+            <div className="tmusic-panel-empty">Пока ничего не воспроизводилось</div>
+          ) : (
+            <div className="tmusic-panel-list">
+              {rows.slice(0, 20).map((row, idx) => {
+                const track = asTrack(row)
+                return (
+                  <div
+                    key={`${row.file_id}-${row.updated_at || row.started_at || idx}`}
+                    className="tmusic-panel-row"
+                    onClick={() => playRow(row)}
+                  >
+                    <Play size={13} fill="var(--accent)" />
+                    <div className="tmusic-panel-row-main">
+                      <div className="tmusic-panel-row-title">{track.name}</div>
+                      <div className="tmusic-panel-row-sub">
+                        {typeof row.position_sec === 'number'
+                          ? `${formatTime(row.position_sec)}${
+                              row.duration_sec ? ' / ' + formatTime(row.duration_sec) : ''
+                            }`
+                          : 'недавно'}
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </section>
       )}
 
-      <section>
-        <h3
-          className="title-zine"
-          style={{ fontSize: '15px', margin: '0 0 10px', display: 'flex', alignItems: 'center', gap: '8px' }}
-        >
-          <ListMusic size={16} style={{ color: 'var(--accent)' }} />
-          Плейлисты
-        </h3>
-        <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
-          <input
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            placeholder="Название плейлиста"
-            style={{
-              flex: '1 1 180px',
-              maxWidth: '280px',
-              background: 'var(--bg-card, #1c1917)',
-              border: '1px solid var(--line, #333)',
-              color: 'var(--ink)',
-              borderRadius: '8px',
-              padding: '8px 12px',
-              fontSize: '13px',
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleCreatePlaylist()
-            }}
-          />
-          <button
-            onClick={handleCreatePlaylist}
-            disabled={busy || !newName.trim()}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px',
-              background: 'var(--accent)',
-              color: '#141210',
-              border: 'none',
-              borderRadius: '8px',
-              padding: '8px 14px',
-              fontWeight: 800,
-              fontSize: '12px',
-              cursor: 'pointer',
-              opacity: busy || !newName.trim() ? 0.5 : 1,
-            }}
-          >
-            <Plus size={14} /> Создать
-          </button>
-        </div>
-        {playlists.length === 0 ? (
-          <div style={{ color: 'var(--dim)', fontSize: '13px' }}>Плейлистов пока нет — создайте первый.</div>
-        ) : (
-          <div style={stripStyle}>
-            {playlists.map((pl) => (
-              <div key={pl.id} style={chipStyle}>
-                <div style={{ fontSize: '13px', fontWeight: 700, marginBottom: '4px' }}>{pl.name}</div>
-                <div style={{ fontSize: '11px', color: 'var(--dim)', marginBottom: '10px' }}>
-                  {pl.track_count || 0} трек(ов)
-                </div>
-                <div style={{ display: 'flex', gap: '6px' }}>
+      {section === 'playlists' && (
+        <section>
+          <div className="tmusic-panel-head">
+            <ListMusic size={15} />
+            <span>Плейлисты</span>
+            <span className="tmusic-panel-count">{playlists.length}</span>
+          </div>
+          <div className="tmusic-panel-create">
+            <input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="Новый плейлист"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleCreatePlaylist()
+              }}
+            />
+            <button onClick={handleCreatePlaylist} disabled={busy || !newName.trim()} style={chipBtn}>
+              <Plus size={13} /> Создать
+            </button>
+          </div>
+          {playlists.length === 0 ? (
+            <div className="tmusic-panel-empty">Плейлистов нет — создайте первый</div>
+          ) : (
+            <div className="tmusic-panel-list">
+              {playlists.map((pl) => (
+                <div key={pl.id} className="tmusic-panel-row">
                   <button
+                    className="tmusic-panel-row-main"
+                    style={{ background: 'none', border: 'none', color: 'inherit', textAlign: 'left', cursor: 'pointer', flex: 1 }}
                     onClick={() => handlePlayPlaylist(pl)}
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '4px',
-                      background: 'var(--accent)',
-                      color: '#141210',
-                      border: 'none',
-                      borderRadius: '999px',
-                      padding: '6px 10px',
-                      fontWeight: 800,
-                      fontSize: '12px',
-                      cursor: 'pointer',
-                    }}
                   >
+                    <div className="tmusic-panel-row-title">{pl.name}</div>
+                    <div className="tmusic-panel-row-sub">{pl.track_count || 0} трек(ов)</div>
+                  </button>
+                  <button style={chipBtn} onClick={() => handlePlayPlaylist(pl)}>
                     <Play size={12} fill="#141210" /> Слушать
                   </button>
                   <button
+                    className="tmusic-panel-icon-btn"
                     onClick={() => handleDeletePlaylist(pl)}
                     title="Удалить"
-                    style={{
-                      background: 'transparent',
-                      border: '1px solid var(--line, #333)',
-                      color: 'var(--dim)',
-                      borderRadius: '999px',
-                      padding: '6px 8px',
-                      cursor: 'pointer',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                    }}
                   >
-                    <Trash2 size={12} />
+                    <Trash2 size={13} />
                   </button>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
     </div>
   )
+}
+
+/** @deprecated use LibraryPanel */
+export function HomeExtraPanels() {
+  return null
 }

@@ -4,7 +4,7 @@ import { streamApi } from '../api/stream'
 import { missingCoverKeys, parseCoverKey } from '../services/coverMissing'
 import { resolveCoverUrl } from '../utils/cover'
 import { AlbumDetail } from './AlbumDetail'
-import { HomeExtraPanels } from './HomeExtraPanels'
+import { LibraryPanel } from './HomeExtraPanels'
 import { FolderBrowser } from './FolderBrowser'
 import { usePlayerStore } from '../store/playerStore'
 import { useAuthStore } from '../store/authStore'
@@ -26,6 +26,8 @@ import {
   User,
   FolderTree,
   LayoutGrid,
+  History,
+  ListMusic,
 } from 'lucide-react'
 
 // Deterministic hue generator based on string hash for generative badges
@@ -149,6 +151,8 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       return 'covers'
     }
   })
+  // Top bar section: catalog is default; recent/playlists open panels
+  const [libSection, setLibSection] = useState(null) // null | 'recent' | 'playlists'
   // Bumped when the cover manifest arrives so the grid re-renders with fresh
   // missing-cover knowledge (the registry itself is not React state).
   const [, setManifestTick] = useState(0)
@@ -430,56 +434,81 @@ export function MusicLibrary({ onOpenCoverPicker }) {
           )}
         </div>
 
-        {/* Security / Account Status */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          {/* Quick Search Button on Mobile */}
-          <button
-            onClick={() => setMobileTab('search')}
-            className="tmusic-mobile-search-trigger"
-            aria-label="Поиск"
-            title="Поиск"
-          >
-            <Search size={19} />
-          </button>
+        {/* Security / Account + view mode toggle (top-right, under SSL) */}
+        <div className="tmusic-topbar-account">
+          <div className="tmusic-topbar-account-row">
+            {/* Quick Search Button on Mobile */}
+            <button
+              onClick={() => setMobileTab('search')}
+              className="tmusic-mobile-search-trigger"
+              aria-label="Поиск"
+              title="Поиск"
+            >
+              <Search size={19} />
+            </button>
 
-          <div className="tmusic-ssl-badge" style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--accent)' }}>
-            <ShieldCheck size={16} />
-            <span style={{ fontWeight: '600' }}>SSL • SECURE</span>
+            <div
+              className="tmusic-ssl-badge"
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--accent)' }}
+            >
+              <ShieldCheck size={16} />
+              <span style={{ fontWeight: '600' }}>SSL • SECURE</span>
+            </div>
+            {user ? (
+              <button
+                onClick={logout}
+                title="Выйти"
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--dim)',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  fontSize: '12px',
+                }}
+              >
+                <LogOut size={16} />
+              </button>
+            ) : (
+              <button
+                onClick={() => setAuthModalOpen(true)}
+                style={{
+                  padding: '4px 12px',
+                  backgroundColor: 'var(--accent)',
+                  color: '#141210',
+                  borderRadius: '6px',
+                  border: 'none',
+                  fontWeight: '700',
+                  fontSize: '12px',
+                  cursor: 'pointer',
+                }}
+              >
+                Войти
+              </button>
+            )}
           </div>
-          {user ? (
+
+          {/* Covers ↔ Folders switch — under SSL / account row */}
+          <div className="tmusic-view-toggle" role="group" aria-label="Вид каталога">
             <button
-              onClick={logout}
-              title="Выйти"
-              style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--dim)',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '4px',
-                fontSize: '12px',
-              }}
+              type="button"
+              onClick={() => setLibraryViewMode('covers')}
+              className={`tmusic-view-toggle-btn ${!folderMode ? 'active' : ''}`}
+              title="Каталог с обложками"
             >
-              <LogOut size={16} />
+              <LayoutGrid size={14} /> Обложки
             </button>
-          ) : (
             <button
-              onClick={() => setAuthModalOpen(true)}
-              style={{
-                padding: '4px 12px',
-                backgroundColor: 'var(--accent)',
-                color: '#141210',
-                borderRadius: '6px',
-                border: 'none',
-                fontWeight: '700',
-                fontSize: '12px',
-                cursor: 'pointer',
-              }}
+              type="button"
+              onClick={() => setLibraryViewMode('folders')}
+              className={`tmusic-view-toggle-btn ${folderMode ? 'active' : ''}`}
+              title="Проводник Windows"
             >
-              Войти
+              <FolderTree size={14} /> Папки
             </button>
-          )}
+          </div>
         </div>
       </header>
 
@@ -823,105 +852,69 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         ) : (
           /* ─── Catalog: Медиатека (category strip) / Артисты / Альбомы ──────── */
           <div>
-            {/* Covers ↔ Folders view switch */}
-            <div
-              className="tmusic-view-toggle"
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '12px',
-                marginBottom: '14px',
-                flexWrap: 'wrap',
-              }}
-            >
-              <div
-                style={{
-                  display: 'inline-flex',
-                  borderRadius: '10px',
-                  border: '1px solid var(--line)',
-                  overflow: 'hidden',
-                  background: 'var(--bg-card)',
-                }}
+            {/* Top bar: Недавнее | Плейлисты */}
+            <div className="tmusic-library-bar">
+              <button
+                type="button"
+                className={`tmusic-library-bar-btn ${libSection === 'recent' ? 'active' : ''}`}
+                onClick={() => setLibSection(libSection === 'recent' ? null : 'recent')}
               >
-                <button
-                  onClick={() => setLibraryViewMode('covers')}
-                  className={`tmusic-view-toggle-btn ${!folderMode ? 'active' : ''}`}
-                  title="Каталог с обложками"
+                <History size={15} /> Недавнее
+              </button>
+              <button
+                type="button"
+                className={`tmusic-library-bar-btn ${libSection === 'playlists' ? 'active' : ''}`}
+                onClick={() => setLibSection(libSection === 'playlists' ? null : 'playlists')}
+              >
+                <ListMusic size={15} /> Плейлисты
+              </button>
+              {(libSection || folderMode) && (
+                <span
                   style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    padding: '8px 12px',
-                    border: 'none',
-                    background: !folderMode ? 'var(--accent)' : 'transparent',
-                    color: !folderMode ? '#141210' : 'var(--dim)',
-                    fontWeight: 800,
-                    fontSize: '12px',
-                    cursor: 'pointer',
+                    marginLeft: 'auto',
+                    fontSize: '11px',
+                    color: 'var(--dim)',
+                    maxWidth: '42%',
+                    textAlign: 'right',
                   }}
                 >
-                  <LayoutGrid size={15} /> Обложки
-                </button>
-                <button
-                  onClick={() => setLibraryViewMode('folders')}
-                  className={`tmusic-view-toggle-btn ${folderMode ? 'active' : ''}`}
-                  title="Проводник Windows"
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    padding: '8px 12px',
-                    border: 'none',
-                    background: folderMode ? 'var(--accent)' : 'transparent',
-                    color: folderMode ? '#141210' : 'var(--dim)',
-                    fontWeight: 800,
-                    fontSize: '12px',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <FolderTree size={15} /> Папки
-                </button>
-              </div>
-              {folderMode && (
-                <span style={{ fontSize: '11px', color: 'var(--dim)' }}>
-                  Клик по папке → плейлист + воспроизведение
+                  {libSection === 'recent' && 'История и продолжение прослушивания'}
+                  {libSection === 'playlists' && 'Создание и запуск плейлистов'}
+                  {!libSection && folderMode && 'Клик по папке → плейлист + play'}
                 </span>
               )}
             </div>
 
+            <LibraryPanel section={libSection} />
+
             {folderMode ? (
               <FolderBrowser />
             ) : showCatalogStrip ? (
-              <>
-                <HomeExtraPanels />
-                {/* Category Navigation Tabs */}
-                <div className="tmusic-tabs-nav">
-                  {SECTIONS.map((tab) => {
-                    const Icon = tab.icon
-                    const isActive = activeKind === tab.id
-                    return (
-                      <button
-                        key={tab.id}
-                        onClick={() => {
-                          setActiveKind(tab.id)
-                          setSearch('')
-                        }}
-                        className={`tmusic-tab-btn ${isActive ? 'active' : ''}`}
-                      >
-                        <Icon size={15} /> {tab.label}
-                      </button>
-                    )
-                  })}
-                </div>
-              </>
+              <div className="tmusic-tabs-nav">
+                {SECTIONS.map((tab) => {
+                  const Icon = tab.icon
+                  const isActive = activeKind === tab.id
+                  return (
+                    <button
+                      key={tab.id}
+                      onClick={() => {
+                        setActiveKind(tab.id)
+                        setSearch('')
+                      }}
+                      className={`tmusic-tab-btn ${isActive ? 'active' : ''}`}
+                    >
+                      <Icon size={15} /> {tab.label}
+                    </button>
+                  )
+                })}
+              </div>
             ) : (
               <h2 className="title-zine" style={{ fontSize: '19px', marginBottom: '16px' }}>
                 {currentSection.label}
               </h2>
             )}
 
-            {/* Loading Indicator — catalog only (folder mode has its own) */}
+            {/* Catalog grid — always under bar/panel in covers mode */}
             {!folderMode && (isLoading ? (
               <div
                 style={{
