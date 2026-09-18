@@ -296,6 +296,9 @@ input[type="range"]:hover::-webkit-slider-thumb {
   cursor: pointer;
   line-height: 1;
   white-space: nowrap;
+  min-height: 36px;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 .tmusic-view-toggle .tmusic-view-toggle-btn.active {
   background: var(--accent);
@@ -324,12 +327,25 @@ input[type="range"]:hover::-webkit-slider-thumb {
   font-weight: 700;
   font-size: 12px;
   cursor: pointer;
-  min-height: 36px;
+  min-height: 40px;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 .tmusic-library-bar-btn.active {
   background: var(--accent-muted);
   border-color: var(--accent);
   color: var(--accent);
+}
+.tmusic-library-bar-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--dim);
+  max-width: 42%;
+  text-align: right;
+}
+.tmusic-library-bar-hint-wrap {
+  margin-left: auto;
+  min-width: 0;
 }
 
 /* Side/top panels for recent & playlists */
@@ -440,6 +456,10 @@ input[type="range"]:hover::-webkit-slider-thumb {
 }
 
 /* Folder tree: «+» expander on the left */
+.tmusic-folder-browser {
+  --tree-indent: 18px;
+  padding-bottom: 8px;
+}
 .tmusic-tree {
   display: flex;
   flex-direction: column;
@@ -447,9 +467,19 @@ input[type="range"]:hover::-webkit-slider-thumb {
   max-height: min(70dvh, 720px);
   overflow: auto;
   padding-right: 4px;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+.tmusic-tree-row {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 .tmusic-tree-row:hover {
   background: rgba(255, 255, 255, 0.03);
+}
+.tmusic-tree-expander {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
 .tmusic-tree-expander:hover {
   border-color: var(--accent);
@@ -950,12 +980,43 @@ input[type="range"]:hover::-webkit-slider-thumb {
   }
   .tmusic-topbar {
     flex-wrap: wrap;
-    gap: 12px;
+    gap: 10px 12px;
   }
   .tmusic-search-wrap {
-    order: 3;
-    flex-basis: 100%;
+    order: 2;
+    flex: 1 1 220px;
     max-width: none;
+  }
+  .tmusic-topbar-account {
+    order: 3;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-end;
+    width: 100%;
+    gap: 10px;
+  }
+  .tmusic-topbar-account-row {
+    margin-left: auto;
+  }
+  .tmusic-library-bar {
+    gap: 8px;
+  }
+  .tmusic-library-bar-btn {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+  .tmusic-library-bar-hint {
+    width: 100%;
+    max-width: none;
+    margin-left: 0;
+    text-align: left;
+    order: 3;
+  }
+  .tmusic-library-bar-hint-wrap {
+    width: 100%;
+    margin-left: 0;
+    order: 3;
+    text-align: left;
   }
   .tmusic-nowplaying-body {
     flex-direction: column;
@@ -993,8 +1054,8 @@ input[type="range"]:hover::-webkit-slider-thumb {
 
   /* Main Container responsive padding to account for floating player + bottom nav */
   .tmusic-main {
-    padding: 12px 14px;
-    padding-bottom: calc(var(--bottom-nav-h) + 64px + var(--safe-bottom) + 16px) !important;
+    padding: 10px 12px;
+    padding-bottom: calc(var(--bottom-nav-h) + 72px + var(--safe-bottom) + 12px) !important;
   }
 
   /* 2-column cards grid */
@@ -1007,13 +1068,21 @@ input[type="range"]:hover::-webkit-slider-thumb {
     gap: 12px;
   }
 
-  /* Topbar on mobile */
+  /* Topbar: brand + search/logout, then full-width view toggle */
   .tmusic-topbar {
-    flex-wrap: nowrap;
-    gap: 10px;
+    flex-wrap: wrap;
+    gap: 8px 10px;
     height: auto;
-    min-height: calc(52px + var(--safe-top));
-    padding: var(--safe-top) max(14px, var(--safe-right)) 8px max(14px, var(--safe-left));
+    min-height: calc(48px + var(--safe-top));
+    padding: max(8px, var(--safe-top)) max(12px, var(--safe-right)) 10px max(12px, var(--safe-left));
+    align-items: center;
+  }
+  .tmusic-topbar > div:first-child {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .tmusic-topbar .title-zine {
+    font-size: 17px !important;
   }
   .tmusic-stats-badge {
     display: none !important;
@@ -1024,20 +1093,126 @@ input[type="range"]:hover::-webkit-slider-thumb {
   .tmusic-topbar .tmusic-search-wrap {
     display: none !important;
   }
-  .tmusic-view-toggle .tmusic-view-toggle-btn span {
-    /* keep short labels on mobile */
+
+  /* Account cluster → second row: search + logout left/right, toggle full width */
+  .tmusic-topbar-account {
+    order: 3;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    width: 100%;
+    gap: 8px;
   }
+  .tmusic-topbar-account-row {
+    gap: 4px;
+  }
+  .tmusic-view-toggle {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+  .tmusic-view-toggle .tmusic-view-toggle-btn {
+    flex: 1 1 50%;
+    justify-content: center;
+    min-height: 44px;
+    font-size: 13px;
+    gap: 8px;
+  }
+  .tmusic-view-toggle .tmusic-view-toggle-btn svg {
+    width: 16px;
+    height: 16px;
+  }
+
   .tmusic-mobile-search-trigger {
     display: flex !important;
     align-items: center;
     justify-content: center;
-    width: 36px;
-    height: 36px;
+    width: 44px;
+    height: 44px;
     border-radius: 50%;
     background: none;
     border: none;
     color: var(--dim);
     cursor: pointer;
+  }
+  .tmusic-topbar-account-row button[title="Выйти"],
+  .tmusic-topbar-account-row button[title="Войти"] {
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
+  }
+
+  /* Library bar: equal full-width chips */
+  .tmusic-library-bar {
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    gap: 8px;
+  }
+  .tmusic-library-bar-btn {
+    flex: 1 1 calc(50% - 4px);
+    justify-content: center;
+    min-height: 44px;
+    padding: 10px 12px;
+    font-size: 13px;
+  }
+  .tmusic-library-bar-hint {
+    width: 100%;
+    max-width: none;
+    margin-left: 0;
+    text-align: center;
+    font-size: 11px;
+  }
+  .tmusic-library-bar-hint-wrap {
+    width: 100%;
+    margin-left: 0;
+    text-align: center;
+    order: 3;
+  }
+
+  /* Compact panels under bottom nav */
+  .tmusic-library-panel {
+    margin-bottom: 12px;
+    padding: 10px 12px;
+  }
+  .tmusic-panel-list {
+    max-height: 240px;
+  }
+  .tmusic-panel-row {
+    min-height: 48px;
+    padding: 10px 4px;
+  }
+  .tmusic-panel-create {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .tmusic-panel-create input {
+    max-width: none;
+    width: 100%;
+    min-height: 44px;
+  }
+  .tmusic-panel-create button {
+    width: 100%;
+    justify-content: center;
+    min-height: 44px;
+  }
+
+  /* Folder tree on phones */
+  .tmusic-folder-browser {
+    --tree-indent: 12px;
+  }
+  .tmusic-tree {
+    max-height: min(55dvh, 480px);
+  }
+  .tmusic-tree-row {
+    min-height: 48px !important;
+  }
+  .tmusic-tree-expander {
+    width: 32px !important;
+    height: 32px !important;
+    min-width: 32px !important;
+  }
+  .tmusic-folder-browser > div:first-child {
+    flex-wrap: wrap;
   }
 
   /* Bottom Navigation Bar visible on mobile */
@@ -1225,7 +1400,21 @@ input[type="range"]:hover::-webkit-slider-thumb {
 /* ─── Small phones (≤380px) ─────────────────────────────────────────────── */
 @media (max-width: 380px) {
   .tmusic-main {
-    padding: 10px 8px;
+    padding: 8px 8px;
+  }
+  .tmusic-topbar .title-zine {
+    font-size: 15px !important;
+  }
+  .tmusic-view-toggle .tmusic-view-toggle-btn {
+    font-size: 12px;
+    padding: 5px 6px;
+  }
+  .tmusic-library-bar-btn {
+    font-size: 12px;
+    padding: 8px 8px;
+  }
+  .tmusic-panel-row-title {
+    font-size: 12px;
   }
   .tmusic-grid-albums,
   .tmusic-grid-artists {

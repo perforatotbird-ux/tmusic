@@ -21,7 +21,7 @@ import { playlistsApi } from '../api/playlists'
 import { usePlayerStore } from '../store/playerStore'
 import { useAuthStore } from '../store/authStore'
 
-function Expander({ expanded, loading, hasChildren, onClick, size = 22 }) {
+function Expander({ expanded, loading, hasChildren, onClick, size = 26 }) {
   return (
     <button
       type="button"
@@ -80,8 +80,9 @@ function TreeRow({ node, depth, expandedIds, childrenMap, loadingIds, onToggle, 
           padding: '6px 8px',
           borderRadius: '8px',
           cursor: isFolder ? 'pointer' : 'default',
-          marginLeft: depth * 20,
+          paddingLeft: `calc(6px + ${depth} * var(--tree-indent, 18px))`,
           background: playingId && isFolder && playingId === f.id ? 'var(--accent-muted)' : 'transparent',
+          minHeight: 44,
         }}
         onClick={isFolder ? () => onPlayFolder(f) : undefined}
         title={isFolder ? 'Клик — в плейлист и воспроизведение' : undefined}
@@ -143,8 +144,8 @@ function TreeRow({ node, depth, expandedIds, childrenMap, loadingIds, onToggle, 
           }}
           title={isFolder ? 'В плейлист + играть' : 'Играть трек'}
           style={{
-            width: 30,
-            height: 30,
+            width: 36,
+            height: 36,
             borderRadius: '50%',
             border: 'none',
             background: 'var(--accent)',
@@ -184,11 +185,12 @@ function TreeRow({ node, depth, expandedIds, childrenMap, loadingIds, onToggle, 
       )}
       {isFolder && expanded && kids && kids.length === 0 && !loading && (
         <div
+          className="tmusic-tree-empty"
           style={{
-            marginLeft: (depth + 1) * 20 + 30,
+            paddingLeft: `calc(34px + ${(depth + 1)} * var(--tree-indent, 18px))`,
             fontSize: '12px',
             color: 'var(--dim)',
-            padding: '4px 0 8px',
+            padding: '4px 8px 8px',
           }}
         >
           Папка пуста

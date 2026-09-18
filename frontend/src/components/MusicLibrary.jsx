@@ -868,21 +868,24 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               >
                 <ListMusic size={15} /> Плейлисты
               </button>
-              {(libSection || folderMode) && (
-                <span
-                  style={{
-                    marginLeft: 'auto',
-                    fontSize: '11px',
-                    color: 'var(--dim)',
-                    maxWidth: '42%',
-                    textAlign: 'right',
-                  }}
-                >
-                  {libSection === 'recent' && 'История и продолжение прослушивания'}
-                  {libSection === 'playlists' && 'Создание и запуск плейлистов'}
-                  {!libSection && folderMode && 'Клик по папке → плейлист + play'}
-                </span>
-              )}
+              <div className="tmusic-library-bar-hint-wrap" style={{ marginLeft: 'auto' }}>
+                {(libSection || folderMode) && (
+                  <span
+                    className="tmusic-library-bar-hint"
+                    style={{
+                      fontSize: '11px',
+                      color: 'var(--dim)',
+                      maxWidth: '42%',
+                      textAlign: 'right',
+                      display: 'inline-block',
+                    }}
+                  >
+                    {libSection === 'recent' && 'История и продолжение прослушивания'}
+                    {libSection === 'playlists' && 'Создание и запуск плейлистов'}
+                    {!libSection && folderMode && 'Клик по папке → плейлист + play'}
+                  </span>
+                )}
+              </div>
             </div>
 
             <LibraryPanel section={libSection} />
