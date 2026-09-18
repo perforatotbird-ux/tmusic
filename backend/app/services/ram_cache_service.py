@@ -24,6 +24,15 @@ class RamCacheService:
         self._locks: Dict[int, asyncio.Lock] = {}
         self._global_lock = asyncio.Lock()
 
+    def stats(self) -> dict:
+        """Non-sensitive cache snapshot for system status API."""
+        return {
+            "items": len(self._cache),
+            "max_items": self.max_items,
+            "bytes": self._current_bytes,
+            "max_bytes": self.max_bytes,
+        }
+
     def get_lock(self, file_id: int) -> asyncio.Lock:
         if file_id not in self._locks:
             self._locks[file_id] = asyncio.Lock()

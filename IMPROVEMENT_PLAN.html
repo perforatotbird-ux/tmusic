@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>T-Music — план реализации улучшений</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #171d24;
+    --ink: #e7eef5;
+    --muted: #8b9aab;
+    --accent: #3dd6c6;
+    --ok: #3ecf8e;
+    --wip: #f0b429;
+    --todo: #6b7c8f;
+    --line: #2a3440;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.55;
+    padding: 32px 20px 64px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 1.75rem; margin: 0 0 8px; font-weight: 650; }
+  h2 { font-size: 1.2rem; margin: 36px 0 12px; color: var(--accent); font-weight: 600; }
+  h3 { font-size: 1rem; margin: 20px 0 8px; font-weight: 600; }
+  p.lead { color: var(--muted); margin: 0 0 24px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 28px; }
+  .chip {
+    font-size: 0.75rem;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    background: var(--panel);
+  }
+  .chip strong { color: var(--ink); font-weight: 600; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+    margin: 8px 0 16px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  th { color: var(--muted); font-weight: 550; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  .st { font-size: 0.72rem; font-weight: 650; letter-spacing: 0.03em; text-transform: uppercase; white-space: nowrap; }
+  .st-done { color: var(--ok); }
+  .st-wip { color: var(--wip); }
+  .st-todo { color: var(--todo); }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px 18px;
+    margin: 12px 0;
+  }
+  .card h3 { margin-top: 0; }
+  ol.steps { padding-left: 1.25rem; margin: 8px 0; }
+  ol.steps li { margin: 6px 0; }
+  code, .mono {
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: 0.85em;
+    color: var(--accent);
+    background: rgba(61,214,198,0.08);
+    padding: 1px 6px;
+    border-radius: 4px;
+  }
+  .file { color: var(--muted); font-size: 0.85rem; }
+  .wave { display: grid; gap: 12px; }
+  @media (min-width: 720px) { .wave { grid-template-columns: 1fr 1fr 1fr; } }
+  footer { margin-top: 48px; color: var(--muted); font-size: 0.85rem; border-top: 1px solid var(--line); padding-top: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>T-Music — пошаговый план улучшений</h1>
+  <p class="lead">
+    Приоритет: ежедневный UX личного стрим-сервера на Telegram.
+    Реализация идёт от самых простых задач к комплексным. Секреты и
+    <code>music.env</code> в план/код не переносятся.
+  </p>
+  <div class="meta">
+    <span class="chip">Repo <strong>K:\Test\tmusic</strong></span>
+    <span class="chip">Порт <strong>8005</strong></span>
+    <span class="chip">Дата плана <strong>2026-09</strong></span>
+    <span class="chip">Ветка <strong>master</strong></span>
+  </div>
+
+  <h2>Волны поставки</h2>
+  <div class="wave">
+    <div class="card">
+      <h3>Волна 1 — сейчас</h3>
+      <p class="file">Самое простое с высоким ROI</p>
+      <ol class="steps">
+        <li>Health-эндпоинт — <em>done</em></li>
+        <li>System / TG cluster status API — <em>done</em></li>
+        <li>Resume позиции + история прослушивания — <em>done</em></li>
+        <li>Поиск по трекам — <em>done</em></li>
+        <li>System/TG status + /health + compose PG — <em>done</em></li>
+      </ol>
+    </div>
+    <div class="card">
+      <h3>Волна 2 — дальше</h3>
+      <p class="file">Продуктовая глубина</p>
+      <ol class="steps">
+        <li>Плейлисты поверх VFS</li>
+        <li>Недавние / continue listening UI</li>
+        <li>Last.fm scrobble</li>
+        <li>Compose + PostgreSQL</li>
+      </ol>
+    </div>
+    <div class="card">
+      <h3>Волна 3 — стратегия</h3>
+      <p class="file">Экосистема и аудио</p>
+      <ol class="steps">
+        <li>Subsonic / OpenSubsonic API</li>
+        <li>Telegram folder sync/watchdog</li>
+        <li>Gapless / crossfade / lyrics</li>
+        <li>Share links, multi-user</li>
+      </ol>
+    </div>
+  </div>
+
+  <h2>Детальный backlog</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Фича</th>
+        <th>Статус</th>
+        <th>Сложность</th>
+        <th>Ключевые файлы</th>
+        <th>Критерий готовности</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td><strong>GET /health</strong> — liveness без auth</td>
+        <td><span class="st st-done">done</span></td>
+        <td>S</td>
+        <td class="file">backend/app/main.py</td>
+        <td>200 JSON status/ok; Docker HEALTHCHECK → /health</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td><strong>System status + TG cluster</strong></td>
+        <td><span class="st st-done">done</span></td>
+        <td>S</td>
+        <td class="file">api/system_router.py, tg/manager.py</td>
+        <td>Auth: online/primary/flood; без session_string</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td><strong>Resume position + listening history</strong></td>
+        <td><span class="st st-done">done</span></td>
+        <td>M</td>
+        <td class="file">models/playback.py, api/playback_router.py, frontend</td>
+        <td>PUT position; restore &gt;5s; history API + debounce save</td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td><strong>Поиск по трекам</strong></td>
+        <td><span class="st st-done">done</span></td>
+        <td>S</td>
+        <td class="file">api/playback_router.py tracks/search</td>
+        <td>GET /api/playback/tracks/search — audio VFiles, LIKE-escape</td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td><strong>UI: continue / recent</strong></td>
+        <td><span class="st st-todo">backlog</span></td>
+        <td>M</td>
+        <td class="file">MusicLibrary.jsx</td>
+        <td>Секция «Продолжить слушать» из history/positions</td>
+      </tr>
+      <tr>
+        <td>6</td>
+        <td><strong>Плейлисты</strong></td>
+        <td><span class="st st-todo">backlog</span></td>
+        <td>L</td>
+        <td class="file">models + api + UI</td>
+        <td>CRUD, порядок треков, play queue</td>
+      </tr>
+      <tr>
+        <td>7</td>
+        <td><strong>Compose + PostgreSQL</strong></td>
+        <td><span class="st st-done">done</span></td>
+        <td>S</td>
+        <td class="file">docker-compose.yml (profile db)</td>
+        <td>Опциональный postgres:16 + healthcheck + volume</td>
+      </tr>
+      <tr>
+        <td>8</td>
+        <td><strong>Last.fm scrobble</strong></td>
+        <td><span class="st st-todo">backlog</span></td>
+        <td>M</td>
+        <td class="file">services/scrobble.py</td>
+        <td>Флаг в env, now-playing + scrobble на 50%</td>
+      </tr>
+      <tr>
+        <td>9</td>
+        <td><strong>Subsonic API</strong></td>
+        <td><span class="st st-todo">backlog</span></td>
+        <td>XL</td>
+        <td class="file">api/subsonic/*</td>
+        <td>Совместимость с 1–2 популярными клиентами</td>
+      </tr>
+      <tr>
+        <td>10</td>
+        <td><strong>Telegram folder sync</strong></td>
+        <td><span class="st st-todo">backlog</span></td>
+        <td>XL</td>
+        <td class="file">tg/manager + jobs</td>
+        <td>Incremental scan, без FloodWait-шторма</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Волна 1 — шаги реализации</h2>
+
+  <div class="card">
+    <h3>Шаг A. Health + System status</h3>
+    <ol class="steps">
+      <li>Добавить <code>TelegramManager.cluster_status()</code> (без секретов).</li>
+      <li>Роутер <code>/api/system/*</code> + публичный <code>GET /health</code>.</li>
+      <li>Подключить роутер в <code>main.py</code> до SPA catch-all.</li>
+      <li>Smoke: curl <code>/health</code>, auth <code>/api/system/status</code>.</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h3>Шаг B. Playback resume + history</h3>
+    <ol class="steps">
+      <li>Модели <code>playback_positions</code>, <code>listening_history</code> + additive create при старте.</li>
+      <li>API: GET/PUT position, POST/GET history (auth).</li>
+      <li>Frontend: <code>api/playback.js</code>; debounce save ~5s; restore после loadedmetadata.</li>
+      <li>History: запись при старте и при <code>ended</code> (completed).</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h3>Шаг C. Поиск по трекам</h3>
+    <ol class="steps">
+      <li><code>GET /api/library/tracks?search=&amp;limit=&amp;offset=</code>.</li>
+      <li>Filter: audio mime, not trash; escape LIKE.</li>
+      <li>Опционально UI-поиск в MusicLibrary (wave 1.5).</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h3>Шаг D. Проверка</h3>
+    <ol class="steps">
+      <li><code>python -m pytest backend/tests/test_playback.py -q</code></li>
+      <li>Ручной smoke play → reload → позиция сохранена.</li>
+      <li>Не коммитить секреты; <code>music.env</code> в gitignore.</li>
+    </ol>
+  </div>
+
+  <h2>Не делаем в первой волне</h2>
+  <p>
+    Social-лента, ML-рекомендации, полный offline-mirror каталога, тяжёлый EQ-UI —
+    отложено: слабый ROI при текущем ядре или конфликт с RAM/Telegram limits.
+  </p>
+
+  <footer>
+    T-Music improvement plan · связано с <span class="mono">obsidian/</span> базой знаний ·
+    статусы обновляются по мере коммитов
+  </footer>
+</div>
+</body>
+</html>

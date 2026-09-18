@@ -22,7 +22,14 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from app.core.config import settings
 from app.core.csrf import csrf_check_failed
-from app.core.database import wait_for_database, ensure_performance_indexes, ensure_auth_schema, ensure_trigram_indexes, SessionLocal
+from app.core.database import (
+    wait_for_database,
+    ensure_performance_indexes,
+    ensure_auth_schema,
+    ensure_trigram_indexes,
+    ensure_feature_tables,
+    SessionLocal,
+)
 from app.core.token_store import purge_expired_revocations
 from app.core.rate_limiter import limiter
 from app.tg.manager import tg_manager
@@ -33,6 +40,8 @@ from app.utils.client_ip import get_client_ip
 from app.api.auth_router import router as auth_router
 from app.api.library_router import router as library_router
 from app.api.stream_router import router as stream_router
+from app.api.system_router import router as system_router
+from app.api.playback_router import router as playback_router
 
 logging.basicConfig(
     level=logging.INFO if not settings.DEBUG else logging.DEBUG,
@@ -67,6 +76,7 @@ async def lifespan(app: FastAPI):
         ensure_performance_indexes()
         ensure_auth_schema()
         ensure_trigram_indexes()
+        ensure_feature_tables()
         try:
             with SessionLocal() as db:
                 removed = purge_expired_revocations(db)
@@ -175,6 +185,18 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(library_router)
 app.include_router(stream_router)
+app.include_router(system_router)
+app.include_router(playback_router)
+
+
+@app.get("/health", tags=["system"])
+async def health():
+    """Liveness probe: no auth, no secrets."""
+    return {
+        "status": "ok",
+        "project": settings.PROJECT_NAME,
+        "environment": settings.ENVIRONMENT,
+    }
 
 # ─── Frontend Static Files & SPA Routing ──────────────────────────────────────
 FRONTEND_DIST = (settings.BASE_DIR / "frontend" / "dist").resolve()

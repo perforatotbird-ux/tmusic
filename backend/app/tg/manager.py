@@ -273,6 +273,30 @@ class TelegramManager:
         cooldown = self._flood_cooldowns.get(account_id, 0.0)
         return cooldown <= now
 
+    def cluster_status(self) -> dict:
+        """Public-safe cluster snapshot for the admin/system API. No credentials."""
+        now = time.time()
+        accounts = []
+        for aid, client in self.clients.items():
+            cooldown_until = self._flood_cooldowns.get(aid, 0.0)
+            in_flood = cooldown_until > now
+            connected = bool(getattr(client, "is_connected", False))
+            accounts.append({
+                "account_id": aid,
+                "connected": connected,
+                "healthy": connected and not in_flood,
+                "is_primary": aid == self.primary_id,
+                "flood_wait": in_flood,
+                "flood_remaining_sec": max(0, int(cooldown_until - now)) if in_flood else 0,
+            })
+        return {
+            "started": self._is_started,
+            "clients_total": len(self.clients),
+            "clients_healthy": sum(1 for a in accounts if a["healthy"]),
+            "primary_id": self.primary_id,
+            "accounts": accounts,
+        }
+
     def mark_flood(self, account_id: int, seconds: int):
         """Records FloodWait cooldown for a specific account."""
         self._flood_cooldowns[account_id] = time.time() + seconds

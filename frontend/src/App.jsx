@@ -3,6 +3,12 @@ import { useAuthStore } from './store/authStore'
 import { usePlayerStore } from './store/playerStore'
 import { streamApi } from './api/stream'
 import { setupMediaSession, updateMediaSessionMetadata, updateMediaSessionPosition } from './services/mediaSession'
+import {
+  onTrackChanged,
+  tryRestorePosition,
+  onTimeUpdate as playbackOnTimeUpdate,
+  onEnded as playbackOnEnded,
+} from './services/playbackProgress'
 import { AuthModal } from './components/AuthModal'
 import { MusicLibrary } from './components/MusicLibrary'
 import { MusicLibraryPlayer } from './components/MusicLibraryPlayer'
@@ -41,6 +47,7 @@ export function App() {
   useEffect(() => {
     if (!audioRef.current || !currentTrack) return
 
+    onTrackChanged(currentTrack.id)
     const streamUrl = streamApi.getStreamUrl(currentTrack.id)
     audioRef.current.src = streamUrl
     audioRef.current.load()
@@ -48,7 +55,14 @@ export function App() {
       audioRef.current.play().catch(() => {})
     }
 
+    const audio = audioRef.current
+    const restoreHandler = () => {
+      tryRestorePosition(audio, currentTrack.id)
+    }
+    audio.addEventListener('loadedmetadata', restoreHandler)
     updateMediaSessionMetadata(currentTrack, currentRelease)
+
+    return () => audio.removeEventListener('loadedmetadata', restoreHandler)
   }, [currentTrack?.id])
 
   // Play/Pause sync
@@ -68,6 +82,7 @@ export function App() {
 
     usePlayerStore.setState({ currentTime: cur })
     updateMediaSessionPosition(dur, cur)
+    playbackOnTimeUpdate(audioRef.current, currentTrack?.id, cur, dur)
 
     // Trigger background pre-cache when reached 75% of track
     if (dur && cur / dur > 0.75) {
@@ -80,6 +95,18 @@ export function App() {
     usePlayerStore.setState({ duration: audioRef.current.duration })
   }
 
+  const handleEnded = () => {
+    const audio = audioRef.current
+    if (audio && currentTrack?.id) {
+      playbackOnEnded(
+        currentTrack.id,
+        audio.currentTime,
+        Number.isFinite(audio.duration) ? audio.duration : null
+      )
+    }
+    nextTrack()
+  }
+
   return (
     <div style={{ minHeight: '100dvh', backgroundColor: 'var(--bg)', color: 'var(--ink)' }}>
       {/* Hidden Native Audio Element */}
@@ -87,7 +114,7 @@ export function App() {
         ref={audioRef}
         onTimeUpdate={handleTimeUpdate}
         onDurationChange={handleDurationChange}
-        onEnded={nextTrack}
+        onEnded={handleEnded}
         preload="auto"
       />
 

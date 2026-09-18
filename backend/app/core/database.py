@@ -107,3 +107,18 @@ def ensure_auth_schema() -> None:
         "ALTER TABLE app_users "
         "ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0",
     )
+
+
+def ensure_feature_tables() -> None:
+    """Create additive feature tables (playback resume/history) on startup."""
+    try:
+        from app.models.base import Base
+        from app.models.playback import ListeningHistory, PlaybackPosition
+
+        Base.metadata.create_all(
+            bind=engine,
+            tables=[PlaybackPosition.__table__, ListeningHistory.__table__],
+        )
+        logger.info("Playback tables ensured.")
+    except Exception as e:
+        logger.warning("Failed to ensure playback tables: %s", e)
