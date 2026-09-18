@@ -170,27 +170,27 @@ async def _fetch_safe(session: aiohttp.ClientSession, url: str) -> Optional[byte
             return None
         connector = aiohttp.TCPConnector(resolver=_PinnedResolver(entries), limit=1)
         try:
-            async with session.get(
-                current,
-                headers={
-                    "User-Agent": USER_AGENT,
-                    "Accept": "image/webp,image/jpeg,image/png,*/*;q=0.8",
-                },
-                allow_redirects=False,
-                connector=connector,
-            ) as resp:
-                if resp.status in (301, 302, 303, 307, 308):
-                    location = resp.headers.get("Location")
-                    if not location:
+            async with aiohttp.ClientSession(connector=connector) as direct_session:
+                async with direct_session.get(
+                    current,
+                    headers={
+                        "User-Agent": USER_AGENT,
+                        "Accept": "image/webp,image/jpeg,image/png,*/*;q=0.8",
+                    },
+                    allow_redirects=False,
+                ) as resp:
+                    if resp.status in (301, 302, 303, 307, 308):
+                        location = resp.headers.get("Location")
+                        if not location:
+                            return None
+                        current = urllib.parse.urljoin(current, location)
+                        continue
+                    if resp.status != 200:
                         return None
-                    current = urllib.parse.urljoin(current, location)
-                    continue
-                if resp.status != 200:
-                    return None
-                data = await resp.read()
-                if len(data) > MAX_IMAGE_BYTES:
-                    return None
-                return data
+                    data = await resp.read()
+                    if len(data) > MAX_IMAGE_BYTES:
+                        return None
+                    return data
         except Exception as e:
             logger.warning("Failed to fetch image from %s: %s", current, e)
             return None
@@ -207,6 +207,29 @@ class CoverCacheService:
         self._session: Optional[aiohttp.ClientSession] = None
         self._in_flight: Dict[str, asyncio.Future] = {}
         self._lock = asyncio.Lock()
+
+    @staticmethod
+    def _safe_resolve_in(root: Path, name: str) -> Optional[Path]:
+        """Resolve ``name`` inside ``root`` or return None on escape/missing.
+
+        Single choke point for the basename + resolve + is_relative_to +
+        exists + is_file chain used by both lookup methods. Security-sensitive:
+        keep the containment check here so the two lookups cannot drift apart.
+        """
+        candidate = (root / os.path.basename(name)).resolve()
+        if (
+            candidate.is_relative_to(root.resolve())
+            and candidate.exists()
+            and candidate.is_file()
+        ):
+            return candidate
+        return None
+
+    def _cache_dirs(self, is_custom: bool = False) -> list:
+        """Cache roots in lookup order (custom covers first when is_custom)."""
+        if is_custom:
+            return [settings.COVER_CACHE_DIR, settings.IMG_CACHE_DIR]
+        return [settings.IMG_CACHE_DIR, settings.COVER_CACHE_DIR]
 
     async def get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -234,19 +257,19 @@ class CoverCacheService:
         Searches both COVER_CACHE_DIR and IMG_CACHE_DIR, supporting both {key}.bin and {key}.
         """
         safe_name = os.path.basename(key)
-        dirs = [settings.COVER_CACHE_DIR, settings.IMG_CACHE_DIR] if is_custom else [settings.IMG_CACHE_DIR, settings.COVER_CACHE_DIR]
+        dirs = self._cache_dirs(is_custom)
 
         for d in dirs:
             # 1. Try direct file (e.g. custom upload "hash.jpg")
-            candidate = (d / safe_name).resolve()
-            if candidate.is_relative_to(d.resolve()) and candidate.exists() and candidate.is_file():
+            candidate = self._safe_resolve_in(d, safe_name)
+            if candidate is not None:
                 data = candidate.read_bytes()
                 mime = _detect_mime_and_validate(data) or "image/jpeg"
                 return data, mime
 
             # 2. Try .bin file (e.g. CloudByte cache "hash.bin")
-            candidate_bin = (d / f"{safe_name}.bin").resolve()
-            if candidate_bin.is_relative_to(d.resolve()) and candidate_bin.exists() and candidate_bin.is_file():
+            candidate_bin = self._safe_resolve_in(d, f"{safe_name}.bin")
+            if candidate_bin is not None:
                 data = candidate_bin.read_bytes()
                 meta_path = (d / f"{safe_name}.meta").resolve()
                 ct = "image/jpeg"
@@ -263,12 +286,11 @@ class CoverCacheService:
     def get_cached_path(self, key: str, is_custom: bool = False) -> Optional[Path]:
         """Safely locate a cached image file on disk."""
         safe_name = os.path.basename(key)
-        dirs = [settings.COVER_CACHE_DIR, settings.IMG_CACHE_DIR] if is_custom else [settings.IMG_CACHE_DIR, settings.COVER_CACHE_DIR]
 
-        for d in dirs:
+        for d in self._cache_dirs(is_custom):
             for fname in (safe_name, f"{safe_name}.bin"):
-                target = (d / fname).resolve()
-                if target.is_relative_to(d.resolve()) and target.exists() and target.is_file():
+                target = self._safe_resolve_in(d, fname)
+                if target is not None:
                     return target
         return None
 

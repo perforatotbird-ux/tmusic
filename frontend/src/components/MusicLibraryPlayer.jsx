@@ -1,5 +1,6 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { usePlayerStore } from '../store/playerStore'
+import { resolveReleaseCoverUrl } from '../utils/cover'
 import {
   Play,
   Pause,
@@ -13,6 +14,7 @@ import {
   Maximize2,
   Minimize2,
   ListMusic,
+  ChevronDown,
   Trash2,
 } from 'lucide-react'
 
@@ -24,6 +26,7 @@ function formatTime(seconds) {
 }
 
 export function MusicLibraryPlayer() {
+  const [showQueue, setShowQueue] = useState(false)
   const {
     currentTrack,
     currentRelease,
@@ -54,34 +57,34 @@ export function MusicLibraryPlayer() {
   const trackTitle = (currentTrack.name || 'Без названия').replace(/\.[^/.]+$/, '')
   const artistName = currentRelease?.artistName || 'T-Music'
   const albumTitle = currentRelease?.title || ''
-  const coverUrl = currentRelease?.coverUrl || '/icon.svg'
+  const coverUrl = resolveReleaseCoverUrl(currentRelease)
 
   return (
     <>
       {/* ─── Compact Bottom Player Bar ────────────────────────────────────────── */}
       <div
-        style={{
-          position: 'fixed',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          height: '74px',
-          backgroundColor: 'var(--bg-card)',
-          borderTop: '1px solid var(--line-bright)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '0 20px',
-          zIndex: 8000,
-          boxShadow: '0 -10px 30px rgba(0,0,0,0.5)',
+        className="tmusic-playerbar"
+        onClick={(e) => {
+          if (!e.target.closest('button') && !e.target.closest('input')) {
+            setPlayerExpanded(true)
+          }
         }}
       >
+        {/* Top-edge mini progress bar (streaming style indicator on mobile) */}
+        <div className="tmusic-player-minibar">
+          <div
+            className="tmusic-player-minibar-fill"
+            style={{
+              width: `${Math.min(100, Math.max(0, ((currentTime || 0) / (duration || 1)) * 100))}%`,
+            }}
+          />
+        </div>
+
         {/* Track Info */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', width: '28%', minWidth: '180px' }}>
+        <div className="tmusic-player-info" onClick={() => setPlayerExpanded(true)} style={{ cursor: 'pointer' }}>
           <img
             src={coverUrl}
             alt="Cover"
-            onClick={() => setPlayerExpanded(true)}
             style={{
               width: '46px',
               height: '46px',
@@ -89,11 +92,11 @@ export function MusicLibraryPlayer() {
               objectFit: 'cover',
               cursor: 'pointer',
               border: '1px solid var(--line)',
+              flexShrink: 0,
             }}
           />
-          <div style={{ overflow: 'hidden' }}>
+          <div style={{ overflow: 'hidden', minWidth: 0 }}>
             <div
-              onClick={() => setPlayerExpanded(true)}
               style={{
                 color: 'var(--ink)',
                 fontWeight: '600',
@@ -101,7 +104,6 @@ export function MusicLibraryPlayer() {
                 whiteSpace: 'nowrap',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
-                cursor: 'pointer',
               }}
             >
               {trackTitle}
@@ -120,19 +122,72 @@ export function MusicLibraryPlayer() {
           </div>
         </div>
 
-        {/* Center Controls & Scrubber */}
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: '6px',
-            flex: 1,
-            maxWidth: '560px',
-          }}
-        >
+        {/* Mobile Mini-Player Action Buttons */}
+        <div className="tmusic-player-mobile-actions" onClick={(e) => e.stopPropagation()}>
+          <button
+            onClick={togglePlay}
+            aria-label={isPlaying ? 'Пауза' : 'Воспроизведение'}
+            style={{
+              width: '42px',
+              height: '42px',
+              borderRadius: '50%',
+              backgroundColor: 'var(--accent)',
+              color: '#141210',
+              border: 'none',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            {isPlaying ? <Pause size={20} fill="#141210" /> : <Play size={20} fill="#141210" style={{ marginLeft: '2px' }} />}
+          </button>
+          <button
+            onClick={nextTrack}
+            aria-label="Следующий трек"
+            style={{
+              width: '40px',
+              height: '40px',
+              borderRadius: '50%',
+              background: 'none',
+              border: 'none',
+              color: 'var(--ink)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            <SkipForward size={20} />
+          </button>
+          <button
+            onClick={() => setPlayerExpanded(true)}
+            aria-label="Развернуть плеер"
+            style={{
+              width: '40px',
+              height: '40px',
+              borderRadius: '50%',
+              background: 'none',
+              border: 'none',
+              color: 'var(--dim)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            <Maximize2 size={18} />
+          </button>
+        </div>
+
+        {/* Center Controls & Scrubber (Desktop) */}
+        <div className="tmusic-player-center">
           <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
             <button
+              className="tmusic-hide-mobile"
               onClick={toggleShuffle}
               style={{
                 background: 'none',
@@ -186,6 +241,7 @@ export function MusicLibraryPlayer() {
               <SkipForward size={18} />
             </button>
             <button
+              className="tmusic-hide-mobile"
               onClick={cycleRepeat}
               style={{
                 background: 'none',
@@ -217,18 +273,9 @@ export function MusicLibraryPlayer() {
           </div>
         </div>
 
-        {/* Right Tools (Volume & Expand) */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'flex-end',
-            gap: '14px',
-            width: '28%',
-            minWidth: '160px',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        {/* Right Tools (Volume & Expand - Desktop) */}
+        <div className="tmusic-player-tools">
+          <div className="tmusic-player-volume">
             <button
               onClick={toggleMute}
               style={{ background: 'none', border: 'none', color: 'var(--dim)', cursor: 'pointer' }}
@@ -262,100 +309,87 @@ export function MusicLibraryPlayer() {
       {/* ─── Fullscreen Now Playing Overlay ──────────────────────────────────── */}
       {isPlayerExpanded && (
         <div
+          className="tmusic-nowplaying"
           style={{
-            position: 'fixed',
-            inset: 0,
-            backgroundColor: 'var(--bg)',
             zIndex: 9500,
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden',
           }}
         >
           {/* Top Bar */}
           <div
+            className="tmusic-nowplaying-topbar"
             style={{
-              height: '60px',
-              padding: '0 24px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
               borderBottom: '1px solid var(--line)',
             }}
           >
-            <div className="title-zine" style={{ fontSize: '15px', color: 'var(--accent)', letterSpacing: '0.05em' }}>
-              NOW PLAYING
-            </div>
             <button
               onClick={() => setPlayerExpanded(false)}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--dim)',
-                cursor: 'pointer',
-              }}
+              className="tmusic-np-btn"
+              aria-label="Свернуть"
+              title="Свернуть"
             >
-              <Minimize2 size={20} />
+              <ChevronDown size={28} />
+            </button>
+            <div style={{ textAlign: 'center', overflow: 'hidden', padding: '0 8px', flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: '10px', color: 'var(--accent)', fontWeight: '700', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                СЕЙЧАС ИГРАЕТ
+              </div>
+              <div style={{ fontSize: '13px', color: 'var(--ink)', fontWeight: '600', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {trackTitle}
+              </div>
+            </div>
+            <button
+              onClick={() => setShowQueue((prev) => !prev)}
+              className={`tmusic-np-btn ${showQueue ? 'active' : ''}`}
+              aria-label="Очередь воспроизведения"
+              title={showQueue ? 'Показать обложку' : 'Показать очередь'}
+            >
+              <ListMusic size={22} />
             </button>
           </div>
 
           {/* Main Content Grid */}
-          <div
-            style={{
-              flex: 1,
-              display: 'flex',
-              flexDirection: 'row',
-              overflow: 'hidden',
-              padding: '30px',
-              gap: '40px',
-            }}
-          >
+          <div className="tmusic-nowplaying-body">
             {/* Left Column: Artwork & Track Meta */}
-            <div
-              style={{
-                flex: 1,
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                maxWidth: '520px',
-                margin: '0 auto',
-              }}
-            >
+            <div className={`tmusic-nowplaying-art ${showQueue ? 'mobile-hidden' : ''}`}>
               <img
                 src={coverUrl}
                 alt="Cover Full"
                 style={{
                   width: '100%',
-                  maxWidth: '380px',
+                  maxWidth: '360px',
                   aspectRatio: '1/1',
                   borderRadius: '16px',
                   objectFit: 'cover',
                   boxShadow: '0 25px 50px rgba(0,0,0,0.7)',
                   border: '1px solid var(--line-bright)',
-                  marginBottom: '28px',
+                  marginBottom: '20px',
                 }}
               />
               <h2
                 style={{
-                  fontSize: '22px',
+                  fontSize: '20px',
                   fontWeight: '700',
                   color: 'var(--ink)',
                   textAlign: 'center',
-                  marginBottom: '6px',
+                  marginBottom: '4px',
+                  maxWidth: '100%',
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  padding: '0 8px',
                 }}
               >
                 {trackTitle}
               </h2>
-              <div style={{ fontSize: '15px', color: 'var(--accent)', marginBottom: '4px' }}>
+              <div style={{ fontSize: '14.5px', color: 'var(--accent)', marginBottom: '2px', fontWeight: '600' }}>
                 {artistName}
               </div>
-              <div style={{ fontSize: '13px', color: 'var(--dim)', marginBottom: '24px' }}>
+              <div style={{ fontSize: '12.5px', color: 'var(--dim)', marginBottom: '18px' }}>
                 {albumTitle}
               </div>
 
               {/* Progress Slider */}
-              <div style={{ width: '100%', marginBottom: '20px' }}>
+              <div style={{ width: '100%', maxWidth: '380px', marginBottom: '16px' }}>
                 <input
                   type="range"
                   min="0"
@@ -371,24 +405,28 @@ export function MusicLibraryPlayer() {
               </div>
 
               {/* Big Controls */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '28px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '22px' }}>
                 <button
                   onClick={toggleShuffle}
-                  style={{ background: 'none', border: 'none', color: shuffle ? 'var(--accent)' : 'var(--dim)', cursor: 'pointer' }}
+                  className="tmusic-np-btn"
+                  style={{ color: shuffle ? 'var(--accent)' : 'var(--dim)' }}
+                  title="Перемешать"
                 >
                   <Shuffle size={20} />
                 </button>
                 <button
                   onClick={prevTrack}
-                  style={{ background: 'none', border: 'none', color: 'var(--ink)', cursor: 'pointer' }}
+                  className="tmusic-np-btn"
+                  style={{ color: 'var(--ink)' }}
+                  title="Предыдущий"
                 >
                   <SkipBack size={26} />
                 </button>
                 <button
                   onClick={togglePlay}
                   style={{
-                    width: '60px',
-                    height: '60px',
+                    width: '62px',
+                    height: '62px',
                     borderRadius: '50%',
                     backgroundColor: 'var(--accent)',
                     color: '#141210',
@@ -397,19 +435,27 @@ export function MusicLibraryPlayer() {
                     alignItems: 'center',
                     justifyContent: 'center',
                     cursor: 'pointer',
+                    boxShadow: '0 8px 24px rgba(212, 255, 63, 0.35)',
+                    transition: 'transform 0.1s ease',
                   }}
+                  onMouseDown={(e) => (e.currentTarget.style.transform = 'scale(0.92)')}
+                  onMouseUp={(e) => (e.currentTarget.style.transform = 'scale(1)')}
                 >
                   {isPlaying ? <Pause size={28} fill="#141210" /> : <Play size={28} fill="#141210" style={{ marginLeft: '4px' }} />}
                 </button>
                 <button
                   onClick={nextTrack}
-                  style={{ background: 'none', border: 'none', color: 'var(--ink)', cursor: 'pointer' }}
+                  className="tmusic-np-btn"
+                  style={{ color: 'var(--ink)' }}
+                  title="Следующий"
                 >
                   <SkipForward size={26} />
                 </button>
                 <button
                   onClick={cycleRepeat}
-                  style={{ background: 'none', border: 'none', color: repeat !== 'off' ? 'var(--accent)' : 'var(--dim)', cursor: 'pointer' }}
+                  className="tmusic-np-btn"
+                  style={{ color: repeat !== 'off' ? 'var(--accent)' : 'var(--dim)' }}
+                  title="Повтор"
                 >
                   {repeat === 'one' ? <Repeat1 size={20} /> : <Repeat size={20} />}
                 </button>
@@ -417,18 +463,7 @@ export function MusicLibraryPlayer() {
             </div>
 
             {/* Right Column: Active Queue */}
-            <div
-              style={{
-                flex: 1,
-                display: 'flex',
-                flexDirection: 'column',
-                backgroundColor: 'var(--bg-card)',
-                borderRadius: 'var(--radius)',
-                border: '1px solid var(--line)',
-                overflow: 'hidden',
-                maxHeight: '100%',
-              }}
-            >
+            <div className={`tmusic-nowplaying-queue ${showQueue ? 'mobile-active' : 'mobile-hidden'}`}>
               <div
                 style={{
                   padding: '16px 20px',
@@ -451,8 +486,8 @@ export function MusicLibraryPlayer() {
                       key={t.id || idx}
                       onClick={() => playQueue(queue, idx, currentRelease)}
                       style={{
-                        padding: '10px 14px',
-                        borderRadius: '6px',
+                        padding: '12px 14px',
+                        borderRadius: '8px',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'space-between',
@@ -463,15 +498,15 @@ export function MusicLibraryPlayer() {
                       }}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', overflow: 'hidden' }}>
-                        <span style={{ fontSize: '11px', color: 'var(--dim)', width: '18px' }}>
+                        <span style={{ fontSize: '11px', color: 'var(--dim)', width: '20px' }}>
                           {idx + 1}
                         </span>
-                        <span style={{ fontSize: '13px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        <span style={{ fontSize: '13.5px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           {t.name.replace(/\.[^/.]+$/, '')}
                         </span>
                       </div>
                       {isCurrent && isPlaying && (
-                        <div style={{ fontSize: '11px', color: 'var(--accent)', fontWeight: '700' }}>
+                        <div style={{ fontSize: '11px', color: 'var(--accent)', fontWeight: '700', flexShrink: 0 }}>
                           ИГРАЕТ
                         </div>
                       )}

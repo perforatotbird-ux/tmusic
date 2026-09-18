@@ -4,13 +4,11 @@ Self-healing admin account provisioning executed on application startup.
 
 Why this exists (2026-09 security audit, finding C-2):
 Historical installs shipped with hardcoded default credentials
-(admin / admin123, PIN 1234) stored as unsalted/salted SHA-256.
+(admin / admin123) stored as unsalted/salted SHA-256.
 This bootstrap guarantees that on every startup:
   1. An active "admin" account exists.
   2. Its password matches the bcrypt hash provided via the
      ADMIN_PASSWORD_HASH environment variable (if configured).
-  3. Legacy (non-bcrypt) PIN hashes are wiped so default-PIN logins
-      stop working; deliberately-set bcrypt PINs are preserved.
 
 The env var is the source of truth while present — remove it from
 music.env after the first successful boot if you prefer managing the
@@ -61,7 +59,6 @@ def ensure_admin_bootstrap(db: Session) -> None:
         user = AppUser(
             username=ADMIN_USERNAME,
             password_hash=env_hash,
-            pin_hash=None,
             is_active=True,
             failed_login_attempts=0,
             locked_until=None,
@@ -88,15 +85,6 @@ def ensure_admin_bootstrap(db: Session) -> None:
         user.token_version = (user.token_version or 0) + 1
         changed = True
         logger.info("Admin password updated from ADMIN_PASSWORD_HASH (sessions revoked).")
-
-    # Wipe legacy (non-bcrypt) PIN hashes — these are the default-PIN 1234 era.
-    if user.pin_hash and not _is_bcrypt(user.pin_hash):
-        user.pin_hash = None
-        changed = True
-        logger.warning(
-            "Removed legacy (non-bcrypt) admin PIN hash. "
-            "Set a new PIN via POST /api/auth/change-pin if needed."
-        )
 
     if changed:
         user.updated_at = utcnow()

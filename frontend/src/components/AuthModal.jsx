@@ -1,30 +1,13 @@
 import React, { useState } from 'react'
 import { useAuthStore } from '../store/authStore'
-import { Lock, ShieldCheck, Key, AlertCircle } from 'lucide-react'
+import { Lock, AlertCircle, X } from 'lucide-react'
 
 export function AuthModal() {
-  const { isAuthModalOpen, loginWithPin, loginWithPassword, isLoading, error } = useAuthStore()
-  const [pin, setPin] = useState('')
-  const [mode, setMode] = useState('pin') // 'pin' | 'password'
+  const { isAuthModalOpen, loginWithPassword, isLoading, error, setAuthModalOpen } = useAuthStore()
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
 
   if (!isAuthModalOpen) return null
-
-  const handlePinDigit = (digit) => {
-    if (pin.length < 8) {
-      const nextPin = pin + digit
-      setPin(nextPin)
-      if (nextPin.length === 4) {
-        // Auto-submit 4-digit PIN for convenience
-        loginWithPin(nextPin)
-      }
-    }
-  }
-
-  const handlePinBackspace = () => {
-    setPin((prev) => prev.slice(0, -1))
-  }
 
   const handlePasswordSubmit = (e) => {
     e.preventDefault()
@@ -54,11 +37,32 @@ export function AuthModal() {
           borderRadius: 'var(--radius)',
           maxWidth: '380px',
           width: '100%',
-          padding: '30px 24px',
+          padding: '28px 22px',
           boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
           textAlign: 'center',
+          position: 'relative'
         }}
       >
+        <button
+          onClick={() => setAuthModalOpen(false)}
+          aria-label="Закрыть"
+          style={{
+            position: 'absolute',
+            top: '12px',
+            right: '12px',
+            background: 'none',
+            border: 'none',
+            color: 'var(--dim)',
+            cursor: 'pointer',
+            minWidth: '40px',
+            minHeight: '40px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <X size={18} />
+        </button>
         <div
           style={{
             width: '54px',
@@ -104,192 +108,59 @@ export function AuthModal() {
           </div>
         )}
 
-        {mode === 'pin' ? (
-          <div>
-            {/* PIN Digits Display */}
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'center',
-                gap: '12px',
-                marginBottom: '24px',
-              }}
-            >
-              {[0, 1, 2, 3].map((idx) => (
-                <div
-                  key={idx}
-                  style={{
-                    width: '18px',
-                    height: '18px',
-                    borderRadius: '50%',
-                    border: '2px solid var(--line-bright)',
-                    backgroundColor: pin.length > idx ? 'var(--accent)' : 'transparent',
-                    boxShadow: pin.length > idx ? '0 0 10px rgba(212, 255, 63, 0.4)' : 'none',
-                    transition: 'all 0.15s ease',
-                  }}
-                />
-              ))}
-            </div>
-
-            {/* Numeric Keypad */}
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(3, 1fr)',
-                gap: '10px',
-                maxWidth: '280px',
-                margin: '0 auto 20px auto',
-              }}
-            >
-              {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
-                <button
-                  key={num}
-                  disabled={isLoading}
-                  onClick={() => handlePinDigit(num.toString())}
-                  style={{
-                    height: '52px',
-                    fontSize: '19px',
-                    fontWeight: '700',
-                    backgroundColor: 'rgba(255, 255, 255, 0.03)',
-                    border: '1px solid var(--line)',
-                    borderRadius: '10px',
-                    color: 'var(--ink)',
-                    cursor: 'pointer',
-                    transition: 'all 0.1s ease',
-                  }}
-                  onMouseDown={(e) => (e.currentTarget.style.backgroundColor = 'var(--accent-muted)')}
-                  onMouseUp={(e) => (e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.03)')}
-                >
-                  {num}
-                </button>
-              ))}
-              <button
-                disabled={isLoading}
-                onClick={() => setPin('')}
-                style={{
-                  height: '52px',
-                  fontSize: '12px',
-                  fontWeight: '700',
-                  textTransform: 'uppercase',
-                  backgroundColor: 'rgba(255, 255, 255, 0.02)',
-                  border: '1px solid var(--line)',
-                  borderRadius: '10px',
-                  color: 'var(--dim)',
-                  cursor: 'pointer',
-                }}
-              >
-                Clear
-              </button>
-              <button
-                disabled={isLoading}
-                onClick={() => handlePinDigit('0')}
-                style={{
-                  height: '52px',
-                  fontSize: '19px',
-                  fontWeight: '700',
-                  backgroundColor: 'rgba(255, 255, 255, 0.03)',
-                  border: '1px solid var(--line)',
-                  borderRadius: '10px',
-                  color: 'var(--ink)',
-                  cursor: 'pointer',
-                }}
-              >
-                0
-              </button>
-              <button
-                disabled={isLoading}
-                onClick={handlePinBackspace}
-                style={{
-                  height: '52px',
-                  fontSize: '14px',
-                  backgroundColor: 'rgba(255, 255, 255, 0.02)',
-                  border: '1px solid var(--line)',
-                  borderRadius: '10px',
-                  color: 'var(--dim)',
-                  cursor: 'pointer',
-                }}
-              >
-                ⌫
-              </button>
-            </div>
-
-            <button
-              onClick={() => setMode('password')}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--dim)',
-                fontSize: '12.5px',
-                cursor: 'pointer',
-                textDecoration: 'underline',
-              }}
-            >
-              Войти по логину и паролю
-            </button>
-          </div>
-        ) : (
-          <form onSubmit={handlePasswordSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            <input
-              type="text"
-              placeholder="Username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '12px 14px',
-                backgroundColor: 'rgba(255, 255, 255, 0.04)',
-                border: '1px solid var(--line)',
-                borderRadius: '8px',
-                color: 'var(--ink)',
-                outline: 'none',
-              }}
-            />
-            <input
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '12px 14px',
-                backgroundColor: 'rgba(255, 255, 255, 0.04)',
-                border: '1px solid var(--line)',
-                borderRadius: '8px',
-                color: 'var(--ink)',
-                outline: 'none',
-              }}
-            />
-            <button
-              type="submit"
-              disabled={isLoading}
-              style={{
-                padding: '12px',
-                backgroundColor: 'var(--accent)',
-                color: '#141210',
-                border: 'none',
-                borderRadius: '8px',
-                fontWeight: '700',
-                cursor: 'pointer',
-              }}
-            >
-              {isLoading ? 'Проверка...' : 'Войти'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode('pin')}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--dim)',
-                fontSize: '12.5px',
-                cursor: 'pointer',
-                textDecoration: 'underline',
-              }}
-            >
-              Вернуться к вводу PIN
-            </button>
-          </form>
-        )}
+        <form onSubmit={handlePasswordSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          <input
+            type="text"
+            placeholder="Username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '12px 14px',
+              minHeight: '44px',
+              fontSize: '16px',
+              backgroundColor: 'rgba(255, 255, 255, 0.04)',
+              border: '1px solid var(--line)',
+              borderRadius: '8px',
+              color: 'var(--ink)',
+              outline: 'none',
+            }}
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            style={{
+              width: '100%',
+              padding: '12px 14px',
+              minHeight: '44px',
+              fontSize: '16px',
+              backgroundColor: 'rgba(255, 255, 255, 0.04)',
+              border: '1px solid var(--line)',
+              borderRadius: '8px',
+              color: 'var(--ink)',
+              outline: 'none',
+            }}
+          />
+          <button
+            type="submit"
+            disabled={isLoading}
+            style={{
+              padding: '12px',
+              minHeight: '44px',
+              fontSize: '14px',
+              backgroundColor: 'var(--accent)',
+              color: '#141210',
+              border: 'none',
+              borderRadius: '8px',
+              fontWeight: '700',
+              cursor: 'pointer',
+            }}
+          >
+            {isLoading ? 'Проверка...' : 'Войти'}
+          </button>
+        </form>
       </div>
     </div>
   )

@@ -113,20 +113,28 @@ export function CoverPicker({ target, onClose, onUpdated }) {
           borderRadius: 'var(--radius)',
           maxWidth: '460px',
           width: '100%',
-          padding: '24px',
+          padding: '24px 20px',
           position: 'relative',
+          maxHeight: '90dvh',
+          overflowY: 'auto',
         }}
       >
         <button
           onClick={onClose}
+          aria-label="Закрыть"
           style={{
             position: 'absolute',
-            top: '16px',
-            right: '16px',
+            top: '12px',
+            right: '12px',
             background: 'none',
             border: 'none',
             color: 'var(--dim)',
             cursor: 'pointer',
+            minWidth: '44px',
+            minHeight: '44px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
           }}
         >
           <X size={20} />
@@ -162,13 +170,14 @@ export function CoverPicker({ target, onClose, onUpdated }) {
             onClick={() => setActiveTab('url')}
             style={{
               flex: 1,
-              padding: '8px',
+              padding: '10px 8px',
+              minHeight: '44px',
               borderRadius: '6px',
               border: '1px solid var(--line)',
               backgroundColor: activeTab === 'url' ? 'var(--accent-muted)' : 'transparent',
               color: activeTab === 'url' ? 'var(--accent)' : 'var(--ink)',
               cursor: 'pointer',
-              fontSize: '13px',
+              fontSize: '13.5px',
               fontWeight: '600',
               display: 'flex',
               alignItems: 'center',
@@ -183,13 +192,14 @@ export function CoverPicker({ target, onClose, onUpdated }) {
             onClick={() => setActiveTab('file')}
             style={{
               flex: 1,
-              padding: '8px',
+              padding: '10px 8px',
+              minHeight: '44px',
               borderRadius: '6px',
               border: '1px solid var(--line)',
               backgroundColor: activeTab === 'file' ? 'var(--accent-muted)' : 'transparent',
               color: activeTab === 'file' ? 'var(--accent)' : 'var(--ink)',
               cursor: 'pointer',
-              fontSize: '13px',
+              fontSize: '13.5px',
               fontWeight: '600',
               display: 'flex',
               alignItems: 'center',
@@ -213,12 +223,13 @@ export function CoverPicker({ target, onClose, onUpdated }) {
               }}
               style={{
                 width: '100%',
-                padding: '10px 12px',
+                padding: '12px 14px',
+                minHeight: '44px',
                 backgroundColor: 'rgba(255,255,255,0.03)',
                 border: '1px solid var(--line)',
                 borderRadius: '8px',
                 color: 'var(--ink)',
-                fontSize: '13px',
+                fontSize: '16px',
                 marginBottom: '16px',
                 outline: 'none',
               }}

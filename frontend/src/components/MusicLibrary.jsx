@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react'
 import { libraryApi } from '../api/library'
 import { streamApi } from '../api/stream'
 import { missingCoverKeys, parseCoverKey } from '../services/coverMissing'
+import { resolveCoverUrl } from '../utils/cover'
+import { AlbumDetail } from './AlbumDetail'
 import { usePlayerStore } from '../store/playerStore'
 import { useAuthStore } from '../store/authStore'
 import {
@@ -18,6 +20,8 @@ import {
   Loader2,
   Music,
   X,
+  Home,
+  User,
 } from 'lucide-react'
 
 // Deterministic hue generator based on string hash for generative badges
@@ -31,17 +35,19 @@ function hashHue(str) {
 }
 
 // Fallback letter badge with deterministic gradient
-function Fallback({ name, kind = 'artist', size = 120 }) {
+function Fallback({ name, kind = 'artist', size = '100%', className = '' }) {
   const hue = hashHue(name || '?')
   const letter = (name || '?').trim()[0] || '?'
   const isCircle = kind === 'artist'
 
   return (
     <div
+      className={className}
       style={{
         width: typeof size === 'number' ? `${size}px` : size,
         height: typeof size === 'number' ? `${size}px` : size,
-        borderRadius: isCircle ? '50%' : '8px',
+        aspectRatio: '1 / 1',
+        borderRadius: isCircle ? '50%' : '10px',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -53,7 +59,7 @@ function Fallback({ name, kind = 'artist', size = 120 }) {
     >
       <span
         style={{
-          fontSize: isCircle ? '38px' : '32px',
+          fontSize: isCircle ? 'clamp(26px, 7vw, 40px)' : 'clamp(22px, 6vw, 36px)',
           fontWeight: '900',
           color: 'var(--accent, #D4FF3F)',
           textTransform: 'uppercase',
@@ -67,15 +73,13 @@ function Fallback({ name, kind = 'artist', size = 120 }) {
   )
 }
 
-// Image with automatic retry and Zine fallback badge on error
-function ImgWithFallback({ name, kind = 'artist', src, alt = '', style = {}, size = 120 }) {
+// Image with automatic fallback on error (server caches covers with ETag)
+function ImgWithFallback({ name, kind = 'artist', src, alt = '', style = {}, size = '100%', className = '' }) {
   const [hasError, setHasError] = useState(false)
-  const [retries, setRetries] = useState(0)
   const timerRef = useRef(null)
 
   useEffect(() => {
     setHasError(false)
-    setRetries(0)
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current)
     }
@@ -87,28 +91,21 @@ function ImgWithFallback({ name, kind = 'artist', src, alt = '', style = {}, siz
     !!coverKey && missingCoverKeys.has(`${coverKey.custom ? 1 : 0}:${coverKey.key}`)
 
   if (!src || hasError || manifestMissing) {
-    return <Fallback name={name} kind={kind} size={size} />
+    return <Fallback name={name} kind={kind} size={size} className={className} />
   }
 
   const handleError = () => {
-    if (retries < 2) {
-      timerRef.current = setTimeout(() => {
-        setRetries((r) => r + 1)
-      }, 1000 * (retries + 1))
-    } else {
-      setHasError(true)
-    }
+    setHasError(true)
   }
-
-  const effectiveSrc = retries > 0 ? `${src}${src.includes('?') ? '&' : '?'}r=${retries}` : src
 
   return (
     <img
-      key={`${src}-${retries}`}
-      src={effectiveSrc}
+      key={src}
+      src={src}
       alt={alt || name}
       onError={handleError}
       loading="lazy"
+      className={className}
       style={{
         objectFit: 'cover',
         ...style,
@@ -126,10 +123,17 @@ const SECTIONS = [
   { id: 'all', label: 'Все категории', icon: Layers, isAlbum: false },
 ]
 
+const SECTIONS_BY_ID = Object.fromEntries(SECTIONS.map((s) => [s.id, s]))
+
+// The "Артисты" / "Альбомы" tabs are fixed views catalogued under these kinds.
+const MOBILE_TAB_KIND = { artists: 'artist', albums: 'albums' }
+
 export function MusicLibrary({ onOpenCoverPicker }) {
   const [items, setItems] = useState([])
   const [selectedArtist, setSelectedArtist] = useState(null)
+  const [selectedAlbum, setSelectedAlbum] = useState(null) // { album, artist } — AlbumDetail sheet
   const [activeKind, setActiveKind] = useState('artist')
+  const [mobileTab, setMobileTab] = useState('library') // 'library' | 'artists' | 'albums' | 'search' | 'profile'
   const [search, setSearch] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [stats, setStats] = useState(null)
@@ -140,17 +144,33 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   // (fast typing fires parallel loadData calls that resolve out of order).
   const loadSeq = useRef(0)
 
-  const { playQueue } = usePlayerStore()
+  const { playQueue, currentTrack } = usePlayerStore()
   const { user, isAuthenticated, logout, setAuthModalOpen } = useAuthStore()
+
+  // Which catalog section is on screen: the Артисты/Альбомы tabs are fixed views,
+  // everything else follows the category strip picked under Медиатека.
+  const viewKind = MOBILE_TAB_KIND[mobileTab] || activeKind
+  const currentSection = SECTIONS_BY_ID[viewKind] || SECTIONS[0]
+  const isAlbumSection = currentSection.isAlbum
+
+  // Debounce search - only trigger after 300ms of no typing
+  const [debouncedSearch, setDebouncedSearch] = useState(search)
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300)
+    return () => clearTimeout(t)
+  }, [search])
 
   useEffect(() => {
     if (isAuthenticated) {
       loadData()
-      loadStats()
     } else {
       setIsLoading(false)
     }
-  }, [activeKind, isAuthenticated])
+  }, [viewKind, debouncedSearch, isAuthenticated])
+
+  useEffect(() => {
+    if (isAuthenticated) loadStats()
+  }, [isAuthenticated])
 
   // Prefetch cover existence for the current grid: images proven missing render
   // the fallback badge without firing a GET (+retries). Fire-and-forget — any
@@ -198,21 +218,21 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     }
   }
 
-  const loadData = async (searchQuery = search) => {
+  const loadData = async () => {
     const mySeq = ++loadSeq.current
     setIsLoading(true)
     try {
-      if (activeKind === 'albums') {
+      if (viewKind === 'albums') {
         const data = await libraryApi.getAlbums({
-          search: searchQuery || null,
-          limit: 500,
+          search: search || null,
+          limit: 100,
         })
         if (mySeq === loadSeq.current) setItems(data || [])
       } else {
         const data = await libraryApi.getArtists({
-          kind: activeKind === 'all' ? null : activeKind,
-          search: searchQuery || null,
-          limit: 500,
+          kind: viewKind === 'all' ? null : viewKind,
+          search: search || null,
+          limit: 100,
         })
         if (mySeq === loadSeq.current) setItems(data || [])
       }
@@ -225,14 +245,21 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   }
 
   const handleSearchChange = (e) => {
-    const val = e.target.value
-    setSearch(val)
-    loadData(val)
+    setSearch(e.target.value)
   }
 
   const clearSearch = () => {
     setSearch('')
-    loadData('')
+  }
+
+  // A bottom-nav tap is always visible: the section tabs drop a stale search
+  // filter (they show the whole kind), and the scroll returns to the grid head
+  // so re-tapping the tab you are already on still gives feedback.
+  const goToTab = (tab) => {
+    setMobileTab(tab)
+    setSelectedArtist(null)
+    if (MOBILE_TAB_KIND[tab]) setSearch('')
+    window.scrollTo(0, 0)
   }
 
   const openArtist = async (artistId) => {
@@ -252,11 +279,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       const tracks = await streamApi.getFolderTracks(album.folder_id, !album.is_tracks)
       if (tracks && tracks.length > 0) {
         const artistName = (artist && artist.display_name) || album.title || 'Альбом'
-        const coverUrl =
-          album.custom_image_url ||
-          album.cover_url ||
-          (artist && (artist.custom_image_url || artist.image_url)) ||
-          '/icon.svg'
+        const coverUrl = resolveCoverUrl(album, artist)
 
         playQueue(tracks, 0, {
           title: album.title,
@@ -269,6 +292,11 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     }
   }
 
+  // Cover tap → open the tracklist sheet (playback starts from there).
+  const openAlbum = (album, artist = null) => {
+    setSelectedAlbum({ album, artist })
+  }
+
   const handlePlayAllArtist = async (artist) => {
     try {
       const tracks = await streamApi.getFolderTracks(artist.folder_id, true)
@@ -276,7 +304,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         playQueue(tracks, 0, {
           title: 'Все треки',
           artistName: artist.display_name,
-          coverUrl: artist.custom_image_url || artist.image_url || '/icon.svg',
+          coverUrl: resolveCoverUrl(artist),
         })
       }
     } catch (e) {
@@ -284,25 +312,20 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     }
   }
 
-  const currentSection = SECTIONS.find((s) => s.id === activeKind) || SECTIONS[0]
-  const isAlbumSection = currentSection.isAlbum
+  const showCatalogStrip = mobileTab === 'library'
 
   return (
-    <div style={{ paddingBottom: '90px', minHeight: '100vh', backgroundColor: 'var(--bg)' }}>
+    <div style={{ paddingBottom: 'calc(var(--player-bar-h) + 24px + var(--safe-bottom))', minHeight: '100dvh', backgroundColor: 'var(--bg)' }}>
       {/* ─── Top Navbar ──────────────────────────────────────────────────────── */}
       <header
+        className="tmusic-topbar"
         style={{
           position: 'sticky',
           top: 0,
           backgroundColor: 'rgba(20, 18, 16, 0.95)',
           backdropFilter: 'blur(10px)',
           borderBottom: '1px solid var(--line)',
-          padding: '12px 24px',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
           zIndex: 7000,
-          gap: '20px',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
@@ -319,6 +342,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
           </div>
           {stats && (
             <span
+              className="tmusic-stats-badge"
               style={{
                 fontSize: '11px',
                 color: 'var(--dim)',
@@ -333,7 +357,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         </div>
 
         {/* Search Input */}
-        <div style={{ flex: 1, maxWidth: '420px', position: 'relative' }}>
+        <div className="tmusic-search-wrap">
           <Search
             size={15}
             style={{
@@ -351,12 +375,13 @@ export function MusicLibrary({ onOpenCoverPicker }) {
             onChange={handleSearchChange}
             style={{
               width: '100%',
-              padding: '8px 34px 8px 34px',
+              padding: '10px 36px 10px 36px',
+              minHeight: '40px',
               borderRadius: '999px',
               backgroundColor: 'rgba(255,255,255,0.04)',
               border: '1px solid var(--line)',
               color: 'var(--ink)',
-              fontSize: '13px',
+              fontSize: '14px',
               outline: 'none',
             }}
           />
@@ -382,8 +407,18 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         </div>
 
         {/* Security / Account Status */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--accent)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          {/* Quick Search Button on Mobile */}
+          <button
+            onClick={() => setMobileTab('search')}
+            className="tmusic-mobile-search-trigger"
+            aria-label="Поиск"
+            title="Поиск"
+          >
+            <Search size={19} />
+          </button>
+
+          <div className="tmusic-ssl-badge" style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--accent)' }}>
             <ShieldCheck size={16} />
             <span style={{ fontWeight: '600' }}>SSL • SECURE</span>
           </div>
@@ -425,7 +460,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       </header>
 
       {/* ─── Main Content Body ────────────────────────────────────────────────── */}
-      <main style={{ maxWidth: '1240px', margin: '0 auto', padding: '24px' }}>
+      <main className="tmusic-main">
         {selectedArtist ? (
           /* ─── Artist Detail View ─────────────────────────────────────────── */
           <div>
@@ -448,28 +483,15 @@ export function MusicLibrary({ onOpenCoverPicker }) {
             </button>
 
             {/* Artist Header Banner */}
-            <div
-              style={{
-                display: 'flex',
-                flexWrap: 'wrap',
-                gap: '30px',
-                padding: '24px',
-                backgroundColor: 'var(--bg-card)',
-                borderRadius: 'var(--radius)',
-                border: '1px solid var(--line)',
-                marginBottom: '32px',
-                alignItems: 'center',
-              }}
-            >
-              <div style={{ position: 'relative' }}>
+            <div className="tmusic-artist-header">
+              <div className="tmusic-artist-avatar-wrap">
                 <ImgWithFallback
                   name={selectedArtist.display_name}
                   kind="artist"
-                  src={selectedArtist.custom_image_url || selectedArtist.image_url}
+                  src={resolveCoverUrl(selectedArtist, null, null)}
                   size={180}
+                  className="tmusic-artist-avatar"
                   style={{
-                    width: '180px',
-                    height: '180px',
                     borderRadius: '50%',
                     border: '3px solid var(--line-bright)',
                     boxShadow: '0 10px 25px rgba(0,0,0,0.5)',
@@ -505,7 +527,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                 </button>
               </div>
 
-              <div style={{ flex: 1, minWidth: '280px' }}>
+              <div className="tmusic-artist-info">
                 <div
                   style={{
                     fontSize: '12px',
@@ -525,7 +547,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                     {selectedArtist.bio}
                   </p>
                 )}
-                <div style={{ display: 'flex', gap: '12px' }}>
+                <div className="tmusic-artist-actions">
                   <button
                     onClick={() => handlePlayAllArtist(selectedArtist)}
                     style={{
@@ -552,140 +574,256 @@ export function MusicLibrary({ onOpenCoverPicker }) {
             <h3 className="title-zine" style={{ fontSize: '18px', marginBottom: '16px' }}>
               РЕЛИЗЫ И АЛЬБОМЫ ({(selectedArtist.albums || []).length})
             </h3>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
-                gap: '18px',
-              }}
-            >
+            <div className="tmusic-grid-albums">
               {(selectedArtist.albums || []).map((album) => {
-                const cover =
-                  album.custom_image_url ||
-                  album.cover_url ||
-                  selectedArtist.custom_image_url ||
-                  selectedArtist.image_url
+                const cover = resolveCoverUrl(album, selectedArtist, null)
                 return (
                   <div
                     key={album.id}
-                    className="transition-card"
-                    style={{
-                      backgroundColor: 'var(--bg-card)',
-                      border: '1px solid var(--line)',
-                      borderRadius: 'var(--radius)',
-                      padding: '12px',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      position: 'relative',
-                    }}
+                    onClick={() => openAlbum(album, selectedArtist)}
+                    className="tmusic-card"
                   >
-                    <div style={{ position: 'relative', marginBottom: '10px' }}>
+                    <div className="tmusic-card-cover-wrap">
                       <ImgWithFallback
                         name={album.title}
                         kind="album"
                         src={cover}
                         size="100%"
-                        style={{
-                          width: '100%',
-                          aspectRatio: '1/1',
-                          borderRadius: '8px',
-                          border: '1px solid var(--line)',
-                        }}
+                        className="tmusic-card-img"
                       />
                       <button
-                        onClick={() => handlePlayAlbum(album, selectedArtist)}
-                        style={{
-                          position: 'absolute',
-                          bottom: '10px',
-                          right: '10px',
-                          width: '40px',
-                          height: '40px',
-                          borderRadius: '50%',
-                          backgroundColor: 'var(--accent)',
-                          color: '#141210',
-                          border: 'none',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          cursor: 'pointer',
-                          boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                        className="tmusic-card-play-btn"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handlePlayAlbum(album, selectedArtist)
                         }}
+                        aria-label={`Воспроизвести ${album.title}`}
                       >
-                        <Play size={18} fill="#141210" style={{ marginLeft: '2px' }} />
+                        <Play size={20} fill="#141210" style={{ marginLeft: '2px' }} />
                       </button>
                     </div>
 
-                    <div
-                      style={{
-                        fontWeight: '700',
-                        fontSize: '13.5px',
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        marginBottom: '4px',
-                      }}
-                    >
+                    <div className="tmusic-card-title">
                       {album.title}
                     </div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11.5px', color: 'var(--dim)' }}>
-                      <span>{album.year || 'Альбом'}</span>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          onOpenCoverPicker({
-                            type: 'album',
-                            id: album.id,
-                            title: album.title,
-                            hasCustom: !!album.custom_image_url,
-                          })
-                        }}
-                        style={{ background: 'none', border: 'none', color: 'var(--dim)', cursor: 'pointer' }}
-                        title="Сменить обложку"
-                      >
-                        <ImageIcon size={13} />
-                      </button>
+                    <div className="tmusic-card-sub">
+                      {album.year || 'Альбом'}
                     </div>
                   </div>
                 )
               })}
             </div>
           </div>
-        ) : (
-          /* ─── Catalog Overview ───────────────────────────────────────────── */
-          <div>
-            {/* Category Navigation Tabs */}
-            <div style={{ display: 'flex', gap: '10px', marginBottom: '24px', overflowX: 'auto', paddingBottom: '4px' }}>
-              {SECTIONS.map((tab) => {
-                const Icon = tab.icon
-                const isActive = activeKind === tab.id
-                return (
-                  <button
-                    key={tab.id}
-                    onClick={() => {
-                      setActiveKind(tab.id)
-                      setSearch('')
-                    }}
-                    style={{
-                      padding: '8px 16px',
-                      borderRadius: '999px',
-                      border: '1px solid',
-                      borderColor: isActive ? 'var(--accent)' : 'var(--line)',
-                      backgroundColor: isActive ? 'var(--accent-muted)' : 'rgba(255,255,255,0.02)',
-                      color: isActive ? 'var(--accent)' : 'var(--ink)',
-                      fontWeight: isActive ? '700' : '500',
-                      fontSize: '13px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      cursor: 'pointer',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    <Icon size={15} /> {tab.label}
-                  </button>
-                )
-              })}
+        ) : mobileTab === 'profile' ? (
+          /* ─── Mobile Profile Screen ───────────────────────────────────────── */
+          <div className="tmusic-profile-screen">
+            <div className="tmusic-profile-header">
+              <div className="tmusic-profile-avatar">
+                <span>{(user?.username || 'A').toUpperCase().charAt(0)}</span>
+              </div>
+              <div className="tmusic-profile-username">{user?.username || 'admin'}</div>
+              <div className="tmusic-profile-badge">
+                <ShieldCheck size={14} /> {user?.role === 'admin' || user?.username === 'admin' ? 'Администратор • SSL Защищено' : 'Слушатель • SSL Защищено'}
+              </div>
             </div>
+
+            {stats && (
+              <div className="tmusic-profile-stats">
+                <div className="tmusic-profile-stat-card">
+                  <div className="stat-val">{stats.artists_count}</div>
+                  <div className="stat-lbl">Артистов</div>
+                </div>
+                <div className="tmusic-profile-stat-card">
+                  <div className="stat-val">{stats.albums_count}</div>
+                  <div className="stat-lbl">Релизов</div>
+                </div>
+                <div className="tmusic-profile-stat-card">
+                  <div className="stat-val">{stats.tracks_count}</div>
+                  <div className="stat-lbl">Треков</div>
+                </div>
+              </div>
+            )}
+
+            <div className="tmusic-profile-actions">
+              {user ? (
+                <button
+                  onClick={logout}
+                  className="tmusic-profile-btn tmusic-profile-btn-danger"
+                >
+                  <LogOut size={18} /> Выйти из аккаунта
+                </button>
+              ) : (
+                <button
+                  onClick={() => setAuthModalOpen(true)}
+                  className="tmusic-profile-btn tmusic-profile-btn-primary"
+                >
+                  Войти в T-Music
+                </button>
+              )}
+            </div>
+          </div>
+        ) : mobileTab === 'search' ? (
+          /* ─── Mobile Search Screen ─────────────────────────────────────────── */
+          <div className="tmusic-search-screen">
+            <div className="tmusic-search-screen-bar">
+              <Search size={18} className="tmusic-search-screen-icon" />
+              <input
+                type="text"
+                placeholder="Поиск по всей медиатеке..."
+                value={search}
+                onChange={handleSearchChange}
+                autoFocus
+                className="tmusic-search-screen-input"
+              />
+              {search && (
+                <button onClick={clearSearch} className="tmusic-search-screen-clear" aria-label="Очистить поиск">
+                  <X size={18} />
+                </button>
+              )}
+            </div>
+
+            {!search ? (
+              <div className="tmusic-search-suggestions">
+                <div className="tmusic-search-subheading">Разделы каталога</div>
+                <div className="tmusic-search-pills">
+                  {SECTIONS.map((sec) => (
+                    <button
+                      key={sec.id}
+                      onClick={() => {
+                        setActiveKind(sec.id)
+                        goToTab('library')
+                      }}
+                      className="tmusic-search-pill"
+                    >
+                      <sec.icon size={15} />
+                      <span>{sec.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : isLoading ? (
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: '60px 20px',
+                  gap: '16px',
+                  color: 'var(--dim)',
+                }}
+              >
+                <Loader2 size={32} className="animate-spin" style={{ color: 'var(--accent)' }} />
+                <div style={{ fontSize: '13px', fontWeight: '600' }}>Поиск...</div>
+              </div>
+            ) : items.length === 0 ? (
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: '60px 20px',
+                  gap: '12px',
+                  color: 'var(--dim)',
+                }}
+              >
+                <Music size={40} style={{ opacity: 0.3 }} />
+                <div style={{ fontSize: '15px', fontWeight: '700', color: 'var(--ink)' }}>Ничего не найдено</div>
+                <div style={{ fontSize: '13px' }}>Попробуйте изменить запрос</div>
+              </div>
+            ) : isAlbumSection ? (
+              <div className="tmusic-grid-albums">
+                {items.map((album) => {
+                  const cover = resolveCoverUrl(album, null, null)
+                  return (
+                    <div
+                      key={album.id}
+                      onClick={() => openAlbum(album)}
+                      className="tmusic-card"
+                    >
+                      <div className="tmusic-card-cover-wrap">
+                        <ImgWithFallback
+                          name={album.title || album.display_name}
+                          kind="album"
+                          src={cover}
+                          size="100%"
+                          className="tmusic-card-img"
+                        />
+                        <button
+                          className="tmusic-card-play-btn"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handlePlayAlbum(album)
+                          }}
+                          aria-label={`Воспроизвести ${album.title || album.display_name}`}
+                        >
+                          <Play size={20} fill="#141210" style={{ marginLeft: '2px' }} />
+                        </button>
+                      </div>
+                      <div className="tmusic-card-title">{album.title || album.display_name}</div>
+                      <div className="tmusic-card-sub">{album.year || 'Релиз'}</div>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="tmusic-grid-artists">
+                {items.map((artist) => {
+                  const cover = resolveCoverUrl(artist, null, null)
+                  return (
+                    <div
+                      key={artist.id}
+                      onClick={() => openArtist(artist.id)}
+                      className="tmusic-artist-card"
+                    >
+                      <div className="tmusic-artist-card-avatar-wrap">
+                        <ImgWithFallback
+                          name={artist.display_name}
+                          kind="artist"
+                          src={cover}
+                          size="100%"
+                          className="tmusic-artist-card-avatar"
+                        />
+                      </div>
+                      <div className="tmusic-artist-card-name">{artist.display_name}</div>
+                      <div className="tmusic-artist-card-sub">
+                        {artist.album_count} {artist.album_count === 1 ? 'релиз' : 'релизов'}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        ) : (
+          /* ─── Catalog: Медиатека (category strip) / Артисты / Альбомы ──────── */
+          <div>
+            {showCatalogStrip ? (
+              /* Category Navigation Tabs */
+              <div className="tmusic-tabs-nav">
+                {SECTIONS.map((tab) => {
+                  const Icon = tab.icon
+                  const isActive = activeKind === tab.id
+                  return (
+                    <button
+                      key={tab.id}
+                      onClick={() => {
+                        setActiveKind(tab.id)
+                        setSearch('')
+                      }}
+                      className={`tmusic-tab-btn ${isActive ? 'active' : ''}`}
+                    >
+                      <Icon size={15} /> {tab.label}
+                    </button>
+                  )
+                })}
+              </div>
+            ) : (
+              <h2 className="title-zine" style={{ fontSize: '19px', marginBottom: '16px' }}>
+                {currentSection.label}
+              </h2>
+            )}
 
             {/* Loading Indicator */}
             {isLoading ? (
@@ -722,94 +860,40 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               </div>
             ) : isAlbumSection ? (
               /* ─── Albums / Compilations Grid (Square Cards) ─────────────── */
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
-                  gap: '18px',
-                }}
-              >
+              <div className="tmusic-grid-albums">
                 {items.map((album) => {
-                  const cover = album.custom_image_url || album.cover_url || album.image_url
+                  const cover = resolveCoverUrl(album, null, null)
                   return (
                     <div
                       key={album.id}
-                      className="transition-card"
-                      style={{
-                        backgroundColor: 'var(--bg-card)',
-                        border: '1px solid var(--line)',
-                        borderRadius: 'var(--radius)',
-                        padding: '12px',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        position: 'relative',
-                      }}
+                      onClick={() => openAlbum(album)}
+                      className="tmusic-card"
                     >
-                      <div style={{ position: 'relative', marginBottom: '10px' }}>
+                      <div className="tmusic-card-cover-wrap">
                         <ImgWithFallback
                           name={album.title || album.display_name}
                           kind="album"
                           src={cover}
                           size="100%"
-                          style={{
-                            width: '100%',
-                            aspectRatio: '1/1',
-                            borderRadius: '8px',
-                            border: '1px solid var(--line)',
-                          }}
+                          className="tmusic-card-img"
                         />
                         <button
-                          onClick={() => handlePlayAlbum(album)}
-                          style={{
-                            position: 'absolute',
-                            bottom: '10px',
-                            right: '10px',
-                            width: '40px',
-                            height: '40px',
-                            borderRadius: '50%',
-                            backgroundColor: 'var(--accent)',
-                            color: '#141210',
-                            border: 'none',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            cursor: 'pointer',
-                            boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                          className="tmusic-card-play-btn"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handlePlayAlbum(album)
                           }}
+                          aria-label={`Воспроизвести ${album.title || album.display_name}`}
                         >
-                          <Play size={18} fill="#141210" style={{ marginLeft: '2px' }} />
+                          <Play size={20} fill="#141210" style={{ marginLeft: '2px' }} />
                         </button>
                       </div>
 
-                      <div
-                        style={{
-                          fontWeight: '700',
-                          fontSize: '13.5px',
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          marginBottom: '4px',
-                        }}
-                      >
+                      <div className="tmusic-card-title">
                         {album.title || album.display_name}
                       </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11.5px', color: 'var(--dim)' }}>
-                        <span>{album.year || (album.album_count ? `${album.album_count} альб.` : 'Релиз')}</span>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            onOpenCoverPicker({
-                              type: album.title ? 'album' : 'artist',
-                              id: album.id,
-                              title: album.title || album.display_name,
-                              hasCustom: !!album.custom_image_url,
-                            })
-                          }}
-                          style={{ background: 'none', border: 'none', color: 'var(--dim)', cursor: 'pointer' }}
-                          title="Сменить обложку"
-                        >
-                          <ImageIcon size={13} />
-                        </button>
+                      <div className="tmusic-card-sub">
+                        {album.year || (album.album_count ? `${album.album_count} альб.` : 'Релиз')}
                       </div>
                     </div>
                   )
@@ -817,61 +901,28 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               </div>
             ) : (
               /* ─── Artists Grid (Circular Avatar Cards) ──────────────────── */
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))',
-                  gap: '18px',
-                }}
-              >
+              <div className="tmusic-grid-artists">
                 {items.map((artist) => {
-                  const cover = artist.custom_image_url || artist.image_url
+                  const cover = resolveCoverUrl(artist, null, null)
                   return (
                     <div
                       key={artist.id}
                       onClick={() => openArtist(artist.id)}
-                      className="transition-card"
-                      style={{
-                        backgroundColor: 'var(--bg-card)',
-                        border: '1px solid var(--line)',
-                        borderRadius: 'var(--radius)',
-                        padding: '14px',
-                        cursor: 'pointer',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
-                        textAlign: 'center',
-                      }}
+                      className="tmusic-artist-card"
                     >
-                      <div style={{ marginBottom: '12px' }}>
+                      <div className="tmusic-artist-card-avatar-wrap">
                         <ImgWithFallback
                           name={artist.display_name}
                           kind="artist"
                           src={cover}
-                          size={120}
-                          style={{
-                            width: '120px',
-                            height: '120px',
-                            borderRadius: '50%',
-                            border: '2px solid var(--line-bright)',
-                          }}
+                          size="100%"
+                          className="tmusic-artist-card-avatar"
                         />
                       </div>
-                      <div
-                        style={{
-                          fontWeight: '700',
-                          fontSize: '13.5px',
-                          color: 'var(--ink)',
-                          width: '100%',
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          marginBottom: '4px',
-                        }}
-                      >
+                      <div className="tmusic-artist-card-name">
                         {artist.display_name}
                       </div>
-                      <div style={{ fontSize: '11px', color: 'var(--dim)' }}>
+                      <div className="tmusic-artist-card-sub">
                         {artist.album_count} {artist.album_count === 1 ? 'релиз' : 'релизов'}
                       </div>
                     </div>
@@ -882,6 +933,60 @@ export function MusicLibrary({ onOpenCoverPicker }) {
           </div>
         )}
       </main>
+
+      {/* Album tracklist sheet (opened by tapping an album cover) */}
+      {selectedAlbum && (
+        <AlbumDetail
+          album={selectedAlbum.album}
+          artist={selectedAlbum.artist}
+          onClose={() => setSelectedAlbum(null)}
+          onOpenCoverPicker={onOpenCoverPicker}
+        />
+      )}
+
+      {/* ─── Mobile Bottom Navigation Bar ──────────────────────────────────── */}
+      <nav className="tmusic-bottom-nav">
+        <button
+          className={`tmusic-nav-item ${mobileTab === 'library' && !selectedArtist ? 'active' : ''}`}
+          onClick={() => goToTab('library')}
+          aria-label="Медиатека"
+        >
+          <Home size={20} />
+          <span>Медиатека</span>
+        </button>
+        <button
+          className={`tmusic-nav-item ${mobileTab === 'artists' && !selectedArtist ? 'active' : ''}`}
+          onClick={() => goToTab('artists')}
+          aria-label="Артисты"
+        >
+          <Users size={20} />
+          <span>Артисты</span>
+        </button>
+        <button
+          className={`tmusic-nav-item ${mobileTab === 'albums' && !selectedArtist ? 'active' : ''}`}
+          onClick={() => goToTab('albums')}
+          aria-label="Альбомы"
+        >
+          <Disc size={20} />
+          <span>Альбомы</span>
+        </button>
+        <button
+          className={`tmusic-nav-item ${mobileTab === 'search' ? 'active' : ''}`}
+          onClick={() => goToTab('search')}
+          aria-label="Поиск"
+        >
+          <Search size={20} />
+          <span>Поиск</span>
+        </button>
+        <button
+          className={`tmusic-nav-item ${mobileTab === 'profile' ? 'active' : ''}`}
+          onClick={() => goToTab('profile')}
+          aria-label="Профиль"
+        >
+          <User size={20} />
+          <span>Профиль</span>
+        </button>
+      </nav>
     </div>
   )
 }

@@ -46,6 +46,13 @@ export async function request(endpoint, options = {}) {
     throw new Error('Authentication required')
   }
 
+  if (response.status === 429) {
+    const retryAfter = response.headers.get('Retry-After') || '60'
+    const errorDetail = `Rate limit exceeded. Retry after ${retryAfter} seconds.`
+    await new Promise(r => setTimeout(r, 1000 * parseInt(retryAfter, 10)))
+    throw new Error(errorDetail)
+  }
+
   if (!response.ok) {
     let errorDetail = 'Request failed'
     try {

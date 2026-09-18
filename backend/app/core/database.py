@@ -59,15 +59,24 @@ _PERFORMANCE_INDEXES = (
 )
 
 
-def ensure_performance_indexes() -> None:
-    """Create query-path indexes on existing databases (create_all does not ALTER)."""
+def _run_schema_step(name: str, *statements: str) -> None:
+    """Execute additive schema statements; log instead of crashing on failure.
+
+    Schema self-healing must never prevent startup (a missing index is a
+    performance issue, not a boot failure).
+    """
     try:
         with engine.begin() as conn:
-            for stmt in _PERFORMANCE_INDEXES:
+            for stmt in statements:
                 conn.execute(text(stmt))
-        logger.info("Performance indexes ensured.")
+        logger.info("%s ensured.", name)
     except Exception as e:
-        logger.warning("Failed to ensure performance indexes: %s", e)
+        logger.warning("Failed to ensure %s: %s", name.lower(), e)
+
+
+def ensure_performance_indexes() -> None:
+    """Create query-path indexes on existing databases (create_all does not ALTER)."""
+    _run_schema_step("Performance indexes", *_PERFORMANCE_INDEXES)
 
 
 def ensure_trigram_indexes() -> None:
@@ -77,18 +86,14 @@ def ensure_trigram_indexes() -> None:
     app role is not one this logs a warning and search keeps working via
     sequential scan (fine for small catalogs, GIN kicks in at scale).
     """
-    try:
-        with engine.begin() as conn:
-            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
-            conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS idx_artists_name_trgm "
-                "ON music_artists USING gin (lower(display_name) gin_trgm_ops)"))
-            conn.execute(text(
-                "CREATE INDEX IF NOT EXISTS idx_albums_title_trgm "
-                "ON music_albums USING gin (lower(title) gin_trgm_ops)"))
-        logger.info("Trigram indexes ensured.")
-    except Exception as e:
-        logger.warning("Trigram indexes unavailable (needs superuser for pg_trgm): %s", e)
+    _run_schema_step(
+        "Trigram indexes",
+        "CREATE EXTENSION IF NOT EXISTS pg_trgm",
+        "CREATE INDEX IF NOT EXISTS idx_artists_name_trgm "
+        "ON music_artists USING gin (lower(display_name) gin_trgm_ops)",
+        "CREATE INDEX IF NOT EXISTS idx_albums_title_trgm "
+        "ON music_albums USING gin (lower(title) gin_trgm_ops)",
+    )
 
 
 def ensure_auth_schema() -> None:
@@ -97,12 +102,8 @@ def ensure_auth_schema() -> None:
     Currently ensures app_users.token_version used for global session revocation.
     Safe to run on every startup: ADD COLUMN IF NOT EXISTS.
     """
-    try:
-        with engine.begin() as conn:
-            conn.execute(text(
-                "ALTER TABLE app_users "
-                "ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0"
-            ))
-        logger.info("Auth schema ensured.")
-    except Exception as e:
-        logger.warning("Failed to ensure auth schema: %s", e)
+    _run_schema_step(
+        "Auth schema",
+        "ALTER TABLE app_users "
+        "ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0",
+    )

@@ -80,6 +80,42 @@ class DecryptionService:
         return bytes(a ^ b for a, b in zip(base_nonce, idx_bytes))
 
     @classmethod
+    def _try_master_keys(
+        cls,
+        enc_block: bytes,
+        base_nonce: bytes,
+        block_index: int,
+        salt: bytes,
+        master_keys: List[bytes],
+    ) -> Tuple[bytes, bytes]:
+        """Decrypt with the first working master key.
+
+        Returns (plain, file_key). Raises InvalidTag when no key fits —
+        single choke point for both the main loop and the trailing block.
+        """
+        for mk in master_keys:
+            cand_fk = cls.derive_file_key(mk, salt)
+            try:
+                return cls.decrypt_block(enc_block, cand_fk, base_nonce, block_index), cand_fk
+            except Exception:
+                continue
+        logger.error(
+            "Failed to decrypt audio block %d with any configured master keys.", block_index)
+        raise InvalidTag(
+            f"Authentication failed: unable to decrypt audio with available keys at block {block_index}.")
+
+    @staticmethod
+    def _apply_limit(plain: bytes, total_yielded: int, plain_limit: Optional[int]) -> Tuple[bytes, int, bool]:
+        """Trim a plaintext chunk to plain_limit. Returns (chunk, new_total, done)."""
+        if plain_limit is not None:
+            remaining = plain_limit - total_yielded
+            if len(plain) > remaining:
+                plain = plain[:remaining]
+        total_yielded += len(plain)
+        done = plain_limit is not None and total_yielded >= plain_limit
+        return plain, total_yielded, done
+
+    @classmethod
     def decrypt_block(
         cls,
         enc_block: bytes,
@@ -156,18 +192,8 @@ class DecryptionService:
                 if active_file_key is None:
                     if not salt:
                         raise ValueError("Salt required for key derivation.")
-                    for mk in master_keys:
-                        cand_fk = cls.derive_file_key(mk, salt)
-                        try:
-                            plain = cls.decrypt_block(enc_block, cand_fk, base_nonce, block_index)
-                            active_file_key = cand_fk
-                            break
-                        except Exception:
-                            continue
-
-                    if active_file_key is None:
-                        logger.error("Failed to decrypt audio block %d with any configured master keys.", block_index)
-                        raise InvalidTag(f"Authentication failed: unable to decrypt audio with available keys at block {block_index}.")
+                    plain, active_file_key = cls._try_master_keys(
+                        enc_block, base_nonce, block_index, salt, master_keys)
                 else:
                     try:
                         plain = cls.decrypt_block(enc_block, active_file_key, base_nonce, block_index)
@@ -179,17 +205,10 @@ class DecryptionService:
                 if block_index == start_block and plain_offset_in_first_block > 0:
                     plain = plain[plain_offset_in_first_block:]
 
-                # Enforce plain_limit
-                if plain_limit is not None:
-                    remaining = plain_limit - total_yielded
-                    if len(plain) > remaining:
-                        plain = plain[:remaining]
-
+                plain, total_yielded, done = cls._apply_limit(plain, total_yielded, plain_limit)
                 if plain:
                     yield plain
-                    total_yielded += len(plain)
-
-                if plain_limit is not None and total_yielded >= plain_limit:
+                if done:
                     return
 
                 block_index += 1
@@ -199,32 +218,15 @@ class DecryptionService:
             if active_file_key is None:
                 if not salt:
                     raise ValueError("Salt required for trailing block.")
-                key_found = False
-                for mk in master_keys:
-                    cand_fk = cls.derive_file_key(mk, salt)
-                    try:
-                        plain = cls.decrypt_block(bytes(buffer), cand_fk, base_nonce, block_index)
-                        active_file_key = cand_fk
-                        key_found = True
-                        break
-                    except Exception:
-                        continue
-                if not key_found:
-                    logger.error(
-                        "Failed to decrypt trailing block %d with any configured master keys.", block_index)
-                    raise InvalidTag(
-                        f"Authentication failed: unable to decrypt trailing block {block_index}.")
+                plain, active_file_key = cls._try_master_keys(
+                    bytes(buffer), base_nonce, block_index, salt, master_keys)
             else:
                 plain = cls.decrypt_block(bytes(buffer), active_file_key, base_nonce, block_index)
 
             if block_index == start_block and plain_offset_in_first_block > 0:
                 plain = plain[plain_offset_in_first_block:]
 
-            if plain_limit is not None:
-                remaining = plain_limit - total_yielded
-                if len(plain) > remaining:
-                    plain = plain[:remaining]
-
+            plain, total_yielded, _done = cls._apply_limit(plain, total_yielded, plain_limit)
             if plain:
                 yield plain
 

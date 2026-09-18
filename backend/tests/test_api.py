@@ -16,16 +16,15 @@ from sqlalchemy import select
 
 from app.main import app
 from app.core.database import SessionLocal
-from app.core.security import hash_password, hash_pin
+from app.core.security import hash_password
 from app.models.auth import AppUser
 
 client = TestClient(app)
 
 TEST_PASSWORD = "TestOnly!Passw0rd"
-TEST_PIN = "9427"
 
 
-def _provision_admin(with_pin: bool = True) -> None:
+def _provision_admin() -> None:
     """Upsert the admin account with known bcrypt credentials for the test run."""
     with SessionLocal() as db:
         user = db.execute(
@@ -36,36 +35,33 @@ def _provision_admin(with_pin: bool = True) -> None:
             db.add(user)
         else:
             user.password_hash = hash_password(TEST_PASSWORD)
-        user.pin_hash = hash_pin(TEST_PIN) if with_pin else None
         user.is_active = True
         user.failed_login_attempts = 0
         user.locked_until = None
         db.commit()
 
 
-def test_auth_pin_flow():
-    _provision_admin(with_pin=True)
-    client.cookies.clear()
-    resp = client.post("/api/auth/pin", json={"pin": TEST_PIN})
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "access_token" in data
-    token = data["access_token"]
-
-    # Verify /api/auth/me with token
-    me_resp = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
-    assert me_resp.status_code == 200
-    assert me_resp.json()["username"] == "admin"
+def test_pin_login_is_disabled():
+    _provision_admin()
+    fresh = TestClient(app)
+    resp = fresh.post("/api/auth/pin", json={"pin": "9427"})
+    # Route is gone: 404, or 405 where the SPA catch-all matches the path.
+    assert resp.status_code in (404, 405)
 
 
 def test_auth_password_flow_and_change():
-    _provision_admin(with_pin=False)
+    _provision_admin()
     fresh = TestClient(app)
 
     resp = fresh.post("/api/auth/login", json={"username": "admin", "password": TEST_PASSWORD})
     assert resp.status_code == 200
     token = resp.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
+
+    # Verify /api/auth/me with token
+    me_resp = fresh.get("/api/auth/me", headers=headers)
+    assert me_resp.status_code == 200
+    assert me_resp.json()["username"] == "admin"
 
     # change-password requires the current password
     bad = fresh.post(
@@ -86,17 +82,13 @@ def test_auth_password_flow_and_change():
     assert relogin.status_code == 200
 
     # Restore the original test password for other tests
-    _provision_admin(with_pin=False)
+    _provision_admin()
 
 
 def test_auth_rejection():
-    _provision_admin(with_pin=True)
+    _provision_admin()
     # Fresh unauthenticated client
     unauthed_client = TestClient(app)
-
-    # Incorrect PIN
-    resp = unauthed_client.post("/api/auth/pin", json={"pin": "0000"})
-    assert resp.status_code == 401
 
     # Incorrect password
     resp = unauthed_client.post("/api/auth/login", json={"username": "admin", "password": "definitely-wrong"})
@@ -112,9 +104,10 @@ def test_auth_rejection():
 
 
 def test_library_endpoints_authenticated():
-    _provision_admin(with_pin=True)
+    _provision_admin()
     client.cookies.clear()
-    token_resp = client.post("/api/auth/pin", json={"pin": TEST_PIN})
+    token_resp = client.post(
+        "/api/auth/login", json={"username": "admin", "password": TEST_PASSWORD})
     token = token_resp.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 

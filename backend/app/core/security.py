@@ -1,12 +1,12 @@
 """
 T-Music Security & Cryptography Module
-Implements industry-standard authentication, password/PIN hashing, and JWT tokens.
+Implements industry-standard authentication, password hashing, and JWT tokens.
 
 Notes on hardening (2026-09 security audit):
 - JWT via PyJWT (python-jose is unmaintained; CVE-2024-33663/33664).
 - passlib is unmaintained as well (last release 2020, breaks against
   bcrypt>=4.1): bcrypt is used directly instead.
-- Unsalted SHA-256 password/PIN hashes are NOT accepted anymore.
+- Unsalted SHA-256 password hashes are NOT accepted anymore.
   Only the SECRET_KEY-salted legacy variant is tolerated for migration,
   and successful logins are auto-upgraded to bcrypt by the auth service.
 """
@@ -27,7 +27,7 @@ from app.utils.time import utcnow, utcfromtimestamp
 
 logger = logging.getLogger(__name__)
 
-# Password & PIN hashing: bcrypt directly (cost 12, same as before).
+# Password hashing: bcrypt directly (cost 12, same as before).
 # passlib was dropped: unmaintained since 2020 and incompatible with bcrypt>=4.1.
 
 
@@ -68,10 +68,6 @@ def is_legacy_hash(stored_hash: str) -> bool:
     return bool(stored_hash) and not stored_hash.startswith("$") and len(stored_hash) == 64
 
 
-def is_legacy_pin_hash(stored_hash: str) -> bool:
-    return is_legacy_hash(stored_hash)
-
-
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password in constant time against bcrypt hash or SECRET_KEY-salted legacy SHA-256."""
     if not plain_password or not hashed_password:
@@ -81,23 +77,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     # Legacy migration path — salted only. Unsalted SHA-256 is rejected.
     if is_legacy_hash(hashed_password):
         return hmac.compare_digest(_legacy_salted_sha256(plain_password), hashed_password)
-    return False
-
-
-def hash_pin(pin: str) -> str:
-    """Hash a numeric PIN with bcrypt (slow, salted)."""
-    return _bcrypt_hash(pin)
-
-
-def verify_pin(plain_pin: str, stored_hash: str) -> bool:
-    """Verify a PIN code in constant time (bcrypt or SECRET_KEY-salted legacy SHA-256)."""
-    if not plain_pin or not stored_hash:
-        return False
-    if stored_hash.startswith("$"):
-        return _bcrypt_verify(plain_pin, stored_hash)
-    # Legacy migration path — salted only. Unsalted SHA-256 is rejected.
-    if is_legacy_hash(stored_hash):
-        return hmac.compare_digest(_legacy_salted_sha256(plain_pin), stored_hash)
     return False
 
 

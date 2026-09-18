@@ -81,7 +81,7 @@ export function App() {
   }
 
   return (
-    <div style={{ minHeight: '100vh', backgroundColor: 'var(--bg)', color: 'var(--ink)' }}>
+    <div style={{ minHeight: '100dvh', backgroundColor: 'var(--bg)', color: 'var(--ink)' }}>
       {/* Hidden Native Audio Element */}
       <audio
         ref={audioRef}

@@ -3,6 +3,8 @@
  * Enables system lockscreen controls and track info on iOS, Android, macOS, and Windows.
  */
 
+import { DEFAULT_COVER } from '../utils/cover'
+
 export function setupMediaSession(playerStore) {
   if (!('mediaSession' in navigator)) return
 
@@ -25,7 +27,7 @@ export function updateMediaSessionMetadata(track, release) {
   const title = (track.name || 'Без названия').replace(/\.[^/.]+$/, '')
   const artist = release?.artistName || 'T-Music'
   const album = release?.title || ''
-  const coverUrl = release?.coverUrl || '/icon.svg'
+  const coverUrl = release?.coverUrl || DEFAULT_COVER
 
   navigator.mediaSession.metadata = new MediaMetadata({
     title,

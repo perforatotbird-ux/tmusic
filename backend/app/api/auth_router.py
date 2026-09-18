@@ -1,6 +1,6 @@
 """
 T-Music Authentication API Router
-Endpoints for username/password login, PIN login, profile status, and PIN updates.
+Endpoints for username/password login, profile status, and password updates.
 """
 from typing import Optional
 
@@ -15,8 +15,8 @@ from app.api.dependencies import get_current_user, security_bearer
 from app.core.token_store import revoke_access_token
 from app.models.auth import AppUser
 from app.schemas.auth import (
-    LoginRequest, PinLoginRequest, TokenResponse, UserResponse,
-    ChangePinRequest, ChangePasswordRequest,
+    LoginRequest, TokenResponse, UserResponse,
+    ChangePasswordRequest,
 )
 from app.services.auth_service import AuthService
 from app.utils.client_ip import get_client_ip
@@ -53,33 +53,10 @@ async def login(body: LoginRequest, request: Request, response: Response, db: Se
     return token_resp
 
 
-@router.post("/pin", response_model=TokenResponse)
-async def pin_login(body: PinLoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
-    """Authenticate with quick PIN code (for mobile, car, smart TV)."""
-    client_ip = get_client_ip(request)
-    token_resp, err = AuthService.authenticate_by_pin(db, body.pin, client_ip)
-    if err or not token_resp:
-        raise HTTPException(status_code=401, detail=err or "Incorrect PIN.")
-
-    _set_session_cookie(response, token_resp)
-    return token_resp
-
-
 @router.get("/me", response_model=UserResponse)
 async def get_me(user: AppUser = Depends(get_current_user)):
     """Get currently authenticated user status."""
     return UserResponse(id=user.id, username=user.username, is_active=user.is_active)
-
-
-@router.post("/change-pin")
-async def change_pin(body: ChangePinRequest, user: AppUser = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Change user PIN code."""
-    from app.core.security import verify_password
-    if not verify_password(body.current_password, user.password_hash):
-        raise HTTPException(status_code=400, detail="Current password incorrect.")
-
-    AuthService.change_pin(db, user, body.new_pin)
-    return {"status": "ok", "message": "PIN updated successfully."}
 
 
 @router.post("/change-password")

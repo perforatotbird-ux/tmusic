@@ -72,7 +72,7 @@ def migrate_tg_accounts(src_db, tgt_db):
     with SESSION_SECRET before being written to the target database.
     """
     logger.info("Migrating TG cluster accounts...")
-    from app.tg.manager import encrypt_session_string, is_encrypted
+    from app.tg.manager import ensure_encrypted
 
     secret = _get_session_secret()
     if not secret:
@@ -82,9 +82,8 @@ def migrate_tg_accounts(src_db, tgt_db):
         )
 
     def _protect(value):
-        if not value or not secret or is_encrypted(value, secret):
-            return value
-        return encrypt_session_string(value, secret)
+        sealed, _ = ensure_encrypted(value, secret)
+        return sealed
 
     accounts = src_db.execute(
         text("SELECT id, name, api_id, api_hash, session_string, is_active, is_primary, status, last_used, created_at FROM tg_accounts")

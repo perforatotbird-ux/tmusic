@@ -7,7 +7,7 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import Session, selectinload, load_only
 
 from app.models.music import MusicArtist, MusicAlbum
-from app.utils.like import escape_like
+from app.utils.like import like_pattern
 
 
 # Columns required by MusicArtistCard (list view) — avoids loading bio/wiki Text blobs.
@@ -63,7 +63,7 @@ class ArtistRepository:
         if kind:
             stmt = stmt.where(MusicArtist.kind == kind)
         if search:
-            pattern = f"%{escape_like(search.strip().lower())}%"
+            pattern = like_pattern(search)
             stmt = stmt.where(
                 func.lower(MusicArtist.display_name).like(pattern, escape="\\") |
                 func.lower(MusicArtist.search_name).like(pattern, escape="\\")

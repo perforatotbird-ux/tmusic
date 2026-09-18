@@ -1,30 +1,47 @@
 import { request } from './client'
 
+const cache = new Map()
+const CACHE_TTL = 5 * 60 * 1000
+
+function memoize(key, fetcher) {
+  const cached = cache.get(key)
+  if (cached && Date.now() - cached.ts < CACHE_TTL) {
+    return Promise.resolve(cached.data)
+  }
+  return fetcher().then(data => {
+    cache.set(key, { data, ts: Date.now() })
+    return data
+  })
+}
+
+function buildKey(path, params) {
+  return `${path}?${new URLSearchParams(params).toString()}`
+}
+
 export const libraryApi = {
   getArtists: (params = {}) => {
-    const query = new URLSearchParams()
-    if (params.kind) query.set('kind', params.kind)
-    if (params.search) query.set('search', params.search)
-    if (params.limit) query.set('limit', params.limit)
-    if (params.offset) query.set('offset', params.offset)
-    const qs = query.toString()
-    return request(`/api/library/artists${qs ? `?${qs}` : ''}`)
+    const key = buildKey('/api/library/artists', params)
+    return memoize(key, () => request(`/api/library/artists?${new URLSearchParams(params).toString()}`))
   },
 
   getAlbums: (params = {}) => {
-    const query = new URLSearchParams()
-    if (params.search) query.set('search', params.search)
-    if (params.limit) query.set('limit', params.limit)
-    if (params.offset) query.set('offset', params.offset)
-    const qs = query.toString()
-    return request(`/api/library/albums${qs ? `?${qs}` : ''}`)
+    const key = buildKey('/api/library/albums', params)
+    return memoize(key, () => request(`/api/library/albums?${new URLSearchParams(params).toString()}`))
   },
 
-  getArtistDetail: (artistId) => request(`/api/library/artists/${artistId}`),
+  getArtistDetail: (artistId) => {
+    const key = `/api/library/artists/${artistId}`
+    return memoize(key, () => request(key))
+  },
 
-  getStats: () => request('/api/library/stats'),
+  getStats: () => {
+    const key = '/api/library/stats'
+    return memoize(key, () => request(key))
+  },
 
   setCoverUrl: (targetType, targetId, imageUrl) => {
+    cache.delete('/api/library/artists')
+    cache.delete('/api/library/albums')
     const formData = new FormData()
     formData.append('target_type', targetType)
     formData.append('target_id', targetId)
@@ -36,6 +53,8 @@ export const libraryApi = {
   },
 
   uploadCoverFile: (targetType, targetId, file) => {
+    cache.delete('/api/library/artists')
+    cache.delete('/api/library/albums')
     const formData = new FormData()
     formData.append('target_type', targetType)
     formData.append('target_id', targetId)

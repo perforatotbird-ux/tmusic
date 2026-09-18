@@ -10,24 +10,6 @@ export const useAuthStore = create((set, get) => ({
 
   setAuthModalOpen: (isOpen) => set({ isAuthModalOpen: isOpen }),
 
-  loginWithPin: async (pin) => {
-    set({ isLoading: true, error: null })
-    try {
-      await authApi.pinLogin(pin)
-      set({
-        isAuthenticated: true,
-        isAuthModalOpen: false,
-        isLoading: false,
-        error: null,
-      })
-      await get().checkAuth()
-      return true
-    } catch (err) {
-      set({ isLoading: false, error: err.message || 'Incorrect PIN code' })
-      return false
-    }
-  },
-
   loginWithPassword: async (username, password) => {
     set({ isLoading: true, error: null })
     try {

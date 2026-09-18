@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core.security import (
-    hash_password, verify_password, hash_pin, verify_pin,
+    hash_password, verify_password,
     create_access_token, decode_access_token
 )
 from app.core.rate_limiter import SlidingWindowRateLimiter
@@ -20,13 +20,6 @@ def test_password_hashing():
     assert hashed != pw
     assert verify_password(pw, hashed) is True
     assert verify_password("WrongPassword", hashed) is False
-
-
-def test_pin_verification():
-    pin = "4892"
-    hashed = hash_pin(pin)
-    assert verify_pin(pin, hashed) is True
-    assert verify_pin("0000", hashed) is False
 
 
 def test_jwt_lifecycle():

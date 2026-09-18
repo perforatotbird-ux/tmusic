@@ -7,7 +7,7 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import Session, load_only
 
 from app.models.music import MusicAlbum
-from app.utils.like import escape_like
+from app.utils.like import like_pattern
 
 
 # Columns required by MusicAlbumCard (list view).
@@ -67,7 +67,7 @@ class AlbumRepository:
             .options(load_only(*_ALBUM_CARD_COLUMNS))
         )
         if search:
-            pattern = f"%{escape_like(search.strip().lower())}%"
+            pattern = like_pattern(search)
             stmt = stmt.where(func.lower(MusicAlbum.title).like(pattern, escape="\\"))
         stmt = stmt.order_by(MusicAlbum.title.asc()).offset(offset).limit(limit)
         return list(db.execute(stmt).scalars().all())

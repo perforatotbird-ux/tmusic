@@ -4,7 +4,6 @@ Endpoints for artist lists, album discographies, direct album catalog, statistic
 """
 import os
 import re
-import hashlib
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile, File, Form
 from fastapi.responses import FileResponse, Response as RawResponse
@@ -18,6 +17,7 @@ from app.schemas.library import (
 )
 from app.services.music_library_service import library_service
 from app.services.cover_cache_service import cover_cache, is_safe_host, MAX_IMAGE_BYTES
+from app.utils.http import cover_cache_headers, cover_etag
 
 router = APIRouter(prefix="/api/library", tags=["library"])
 
@@ -103,7 +103,7 @@ async def get_covers_manifest(
     for k in raw:
         path = cover_cache.get_cached_path(k, is_custom=is_custom)
         if path:
-            found[k] = f'"{hashlib.md5(k.encode("utf-8")).hexdigest()}"'
+            found[k] = cover_etag(k)
         else:
             missing.append(k)
     return {"found": found, "missing": missing}
@@ -114,7 +114,6 @@ async def get_cover(
     key: Optional[str] = Query(None, description="Direct cached key"),
     url: Optional[str] = Query(None, description="Remote URL to fetch and cache"),
     custom: Optional[int] = Query(0, description="1 if custom uploaded cover"),
-    v: Optional[str] = Query(None, description="Cache-busting version/timestamp"),
     user: AppUser = Depends(get_current_user)
 ):
     """
@@ -128,33 +127,28 @@ async def get_cover(
         cached = cover_cache.get_cached_item(key, is_custom=is_custom)
         if cached:
             data, mime = cached
-            etag = f'"{hashlib.md5(key.encode("utf-8")).hexdigest()}"'
-            headers = {
-                "Cache-Control": "public, max-age=604800, immutable",
-                "ETag": etag
-            }
+            headers = cover_cache_headers(key)
             return RawResponse(content=data, media_type=mime, headers=headers)
 
         path = cover_cache.get_cached_path(key, is_custom=is_custom)
         if path:
-            etag = f'"{hashlib.md5(key.encode("utf-8")).hexdigest()}"'
-            headers = {
-                "Cache-Control": "public, max-age=604800, immutable",
-                "ETag": etag
-            }
+            headers = cover_cache_headers(key)
             return FileResponse(path, headers=headers)
         raise HTTPException(status_code=404, detail="Image not found in cache.")
 
     if url:
+        cache_key = cover_cache.url_to_key(url)
+        cached = cover_cache.get_cached_item(cache_key, is_custom=False)
+        if cached:
+            data, mime = cached
+            headers = cover_cache_headers(cache_key)
+            return RawResponse(content=data, media_type=mime, headers=headers)
+
         data, mime = await cover_cache.fetch_and_cache(url)
         if not data or not mime:
             raise HTTPException(status_code=502, detail="Failed to fetch image or unsupported format.")
 
-        etag = f'"{hashlib.md5(url.encode("utf-8")).hexdigest()}"'
-        headers = {
-            "Cache-Control": "public, max-age=604800, immutable",
-            "ETag": etag
-        }
+        headers = cover_cache_headers(cache_key)
         return RawResponse(content=data, media_type=mime, headers=headers)
 
     raise HTTPException(status_code=400, detail="Either 'key' or 'url' must be specified.")

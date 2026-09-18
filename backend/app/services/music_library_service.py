@@ -31,12 +31,19 @@ class MusicLibraryService:
     @staticmethod
     def _build_cover_url(url: Optional[str], custom_key: Optional[str], enriched_at: Optional[datetime]) -> Optional[str]:
         if custom_key:
-            return f"/api/library/cover?key={custom_key}&custom=1"
+            return None
         if not url:
             return None
-        stamp = int(enriched_at.timestamp()) if enriched_at else 1
         quoted_url = urllib.parse.quote(url, safe="")
-        return f"/api/library/cover?url={quoted_url}&v={stamp}"
+        return f"/api/library/cover?url={quoted_url}"
+
+    @classmethod
+    def _cover_pair(cls, url: Optional[str], custom_key: Optional[str],
+                    enriched_at: Optional[datetime]) -> tuple[Optional[str], Optional[str]]:
+        """Returns (display_url, custom_url): custom cover wins over enriched URL."""
+        custom_url = cls._build_custom_cover_url(custom_key)
+        display_url = custom_url if custom_url else cls._build_cover_url(url, None, enriched_at)
+        return display_url, custom_url
 
     @staticmethod
     def _album_sort_key(alb: MusicAlbum):
@@ -55,8 +62,7 @@ class MusicLibraryService:
         artists = ArtistRepository.list_artists(db, kind=kind, search=search, limit=limit, offset=offset)
         result = []
         for a, album_count in artists:
-            custom_url = cls._build_custom_cover_url(a.custom_image_key)
-            img_url = custom_url or cls._build_cover_url(a.image_url, None, a.enriched_at)
+            img_url, custom_url = cls._cover_pair(a.image_url, a.custom_image_key, a.enriched_at)
             result.append(MusicArtistCard(
                 id=a.id,
                 folder_id=a.folder_id,
@@ -81,8 +87,7 @@ class MusicLibraryService:
         albums = AlbumRepository.list_albums(db, search=search, limit=limit, offset=offset)
         result = []
         for alb in albums:
-            c_url = cls._build_custom_cover_url(alb.custom_image_key)
-            cov_url = c_url or cls._build_cover_url(alb.cover_url, None, alb.enriched_at)
+            cov_url, c_url = cls._cover_pair(alb.cover_url, alb.custom_image_key, alb.enriched_at)
             result.append(MusicAlbumCard(
                 id=alb.id,
                 folder_id=alb.folder_id,
@@ -108,8 +113,7 @@ class MusicLibraryService:
         albums = sorted(artist.albums or [], key=cls._album_sort_key)
         album_cards = []
         for alb in albums:
-            c_url = cls._build_custom_cover_url(alb.custom_image_key)
-            cov_url = c_url or cls._build_cover_url(alb.cover_url, None, alb.enriched_at)
+            cov_url, c_url = cls._cover_pair(alb.cover_url, alb.custom_image_key, alb.enriched_at)
             is_tracks = alb.folder_id == artist.folder_id and artist.kind != "standalone_album"
 
             album_cards.append(MusicAlbumCard(
@@ -126,8 +130,7 @@ class MusicLibraryService:
                 enriched_at=alb.enriched_at
             ))
 
-        custom_art_url = cls._build_custom_cover_url(artist.custom_image_key)
-        art_img = custom_art_url or cls._build_cover_url(artist.image_url, None, artist.enriched_at)
+        art_img, custom_art_url = cls._cover_pair(artist.image_url, artist.custom_image_key, artist.enriched_at)
 
         return MusicArtistDetail(
             id=artist.id,

@@ -64,6 +64,39 @@ def decrypt_session_string(encrypted_str: Optional[str], secret: Optional[str]) 
         return encrypted_str
 
 
+def ensure_encrypted(value: Optional[str], secret: Optional[str]) -> Tuple[Optional[str], bool]:
+    """Return ``(stored_value, changed)`` with ``value`` Fernet-sealed at rest.
+
+    Single choke point for the "encrypt if not already encrypted" rule shared
+    by the runtime self-heal (TelegramManager.start), scripts/secure_tg_accounts.py
+    and scripts/migrate_data.py — keeps the plaintext-detection invariant in one place.
+    """
+    if not value or not secret or is_encrypted(value, secret):
+        return value, False
+    return encrypt_session_string(value, secret), True
+
+
+def seal_tg_account(acc: "TGAccount", secret: Optional[str]) -> int:
+    """Encrypt plaintext ``session_string``/``api_hash`` of a TGAccount in place.
+
+    Returns the number of sealed fields (0..2). Never touches the DB session —
+    callers decide when to commit (manager commits once via ``healed`` flag,
+    CLI commits after the loop, migration commits per its own flow).
+    """
+    sealed = 0
+    if acc.session_string:
+        acc.session_string, changed = ensure_encrypted(acc.session_string, secret)
+        if changed:
+            sealed += 1
+            logger.info("Re-encrypted plaintext session_string for TG account %d at rest.", acc.id)
+    if acc.api_hash:
+        acc.api_hash, changed = ensure_encrypted(acc.api_hash, secret)
+        if changed:
+            sealed += 1
+            logger.info("Re-encrypted plaintext api_hash for TG account %d at rest.", acc.id)
+    return sealed
+
+
 class TelegramManager:
     """Manages pool of Pyrogram clients for streaming from Telegram Saved Messages."""
 
@@ -108,14 +141,8 @@ class TelegramManager:
                             # Self-heal: persist Telegram credentials ENCRYPTED at rest.
                             # Plaintext rows (legacy installs) are transparently re-encrypted.
                             if settings.SESSION_SECRET:
-                                if acc.session_string and not is_encrypted(acc.session_string, settings.SESSION_SECRET):
-                                    acc.session_string = encrypt_session_string(decrypted_session, settings.SESSION_SECRET)
+                                if seal_tg_account(acc, settings.SESSION_SECRET):
                                     healed = True
-                                    logger.info("Re-encrypted plaintext session_string for TG account %d at rest.", acc.id)
-                                if acc.api_hash and not is_encrypted(acc.api_hash, settings.SESSION_SECRET):
-                                    acc.api_hash = encrypt_session_string(api_hash, settings.SESSION_SECRET)
-                                    healed = True
-                                    logger.info("Re-encrypted plaintext api_hash for TG account %d at rest.", acc.id)
 
                             if not api_id or not api_hash or not decrypted_session:
                                 logger.warning("Skipping account %d (%s): missing credentials or session.", acc.id, acc.name)

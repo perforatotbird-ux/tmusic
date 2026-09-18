@@ -69,7 +69,7 @@ def _authenticate_request(
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail=inactive_detail)
 
-    # Global session revocation: password/PIN change bumps token_version,
+    # Global session revocation: password change bumps token_version,
     # invalidating every token issued before the change (defaults to 0 for
     # tokens minted before this claim existed).
     if payload.get("tv", 0) != (user.token_version or 0):

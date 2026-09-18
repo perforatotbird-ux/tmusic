@@ -67,7 +67,7 @@ start_tmusic.bat
 **Доступ к панели (после аудита безопасности 2026-09 дефолтные учётные данные удалены):**
 - Пароль администратора задаётся переменной `ADMIN_PASSWORD_HASH` (bcrypt) в `music.env` — применяется автоматически при запуске;
 - либо вручную: `python scripts/init_admin.py` (интерактивно) или `python scripts/init_admin.py --password "..."`;
-- быстрый PIN для ТВ/авто настраивается через `POST /api/auth/change-pin` или `python scripts/init_admin.py --pin 5678`.
+- вход только по логину и паролю: `POST /api/auth/login` (быстрый PIN-вход удалён).
 
 ### 3. Telegram Кластер и Сессии
 При миграции (`python scripts/migrate_data.py`) все активные аккаунты кластера Telegram автоматически переносятся в таблицу `tg_accounts` базы данных `tgmusic`. **Ключи (`session_string`, `api_hash`) хранятся в базе в зашифрованном виде (Fernet, ключ — `SESSION_SECRET`).** При запуске сервер расшифровывает сессии и инициализирует всех клиентов параллельно в оперативной памяти; незашифрованные записи автоматически перешифровываются при старте (или вручную: `python scripts/secure_tg_accounts.py`).

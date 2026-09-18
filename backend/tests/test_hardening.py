@@ -18,7 +18,7 @@ from starlette.requests import Request
 from app.main import app
 from app.core.csrf import csrf_check_failed
 from app.core.database import SessionLocal
-from app.core.security import hash_password, verify_password, hash_pin, verify_pin
+from app.core.security import hash_password, verify_password
 from app.core.token_store import (
     is_token_revoked, revoke_access_token, purge_expired_revocations,
 )
@@ -68,9 +68,9 @@ def test_bcrypt_direct_roundtrip():
     assert verify_password("some-password-123", h) is True
     assert verify_password("nope", h) is False
     assert verify_password("x", "garbage") is False
-    ph = hash_pin("5678")
-    assert verify_pin("5678", ph) is True
-    assert verify_pin("0000", ph) is False
+    ph = hash_password("5678")
+    assert verify_password("5678", ph) is True
+    assert verify_password("0000", ph) is False
 
 
 def test_candidate_sources_skips_garbage_and_sorts_healthy_first():
@@ -108,7 +108,6 @@ def _provision_admin():
             db.add(user)
         else:
             user.password_hash = hash_password(TEST_PASSWORD)
-        user.pin_hash = None
         user.is_active = True
         user.failed_login_attempts = 0
         user.locked_until = None

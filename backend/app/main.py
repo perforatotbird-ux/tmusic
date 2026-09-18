@@ -44,7 +44,7 @@ logger = logging.getLogger("tmusic.main")
 # Budgets live in music.env (API_RATE_LIMIT_PER_MIN / AUTH_RATE_LIMIT_PER_MIN).
 API_RATE_LIMIT_PER_MIN = settings.API_RATE_LIMIT_PER_MIN
 AUTH_RATE_LIMIT_PER_MIN = settings.AUTH_RATE_LIMIT_PER_MIN
-AUTH_SENSITIVE_PATHS = frozenset({"/api/auth/login", "/api/auth/pin"})
+AUTH_SENSITIVE_PATHS = frozenset({"/api/auth/login"})
 
 
 @asynccontextmanager
@@ -74,7 +74,7 @@ async def lifespan(app: FastAPI):
                     logger.info("Purged %d expired token revocations.", removed)
         except Exception as e:
             logger.warning("Revocation purge failed: %s", e)
-        # Self-heal admin credentials (removes default/legacy passwords and PINs)
+        # Self-heal admin credentials (removes default/legacy passwords)
         try:
             with SessionLocal() as db:
                 ensure_admin_bootstrap(db)
@@ -108,7 +108,7 @@ async def csrf_protect_middleware(request: Request, call_next):
     """Reject cookie-authenticated mutations without a matching X-CSRF-Token.
 
     Bearer-authenticated requests, safe methods, and the session-less
-    login/PIN/logout endpoints are exempt (see app.core.csrf).
+    login/logout endpoints are exempt (see app.core.csrf).
     """
     if csrf_check_failed(request):
         return JSONResponse(

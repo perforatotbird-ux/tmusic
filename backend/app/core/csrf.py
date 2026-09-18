@@ -8,7 +8,7 @@ Every mutating /api/* request authenticated via cookie must therefore echo
 the readable `csrf_token` cookie in the `X-CSRF-Token` header.
 
 Requests carrying an `Authorization: Bearer` header are NOT cookie-authenticated
-and skip the check. Login/PIN/logout are exempt (no session yet / self-invalidating).
+and skip the check. Login/logout are exempt (no session yet / self-invalidating).
 """
 import secrets
 
@@ -24,7 +24,6 @@ CSRF_HEADER = "x-csrf-token"
 # logout for pre-CSRF sessions that have no csrf cookie yet.)
 CSRF_EXEMPT_PATHS = frozenset({
     "/api/auth/login",
-    "/api/auth/pin",
     "/api/auth/logout",
 })
 
