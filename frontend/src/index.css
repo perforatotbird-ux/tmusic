@@ -1426,6 +1426,20 @@ input[type="range"]:hover::-webkit-slider-thumb {
   }
 }
 
+/* audio element must stay in DOM for media session; never display:none */
+audio {
+  /* keep in layout but invisible — some Android builds drop media session
+     when the media element is display:none */
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  opacity: 0.01;
+  pointer-events: none;
+  left: 0;
+  top: 0;
+  z-index: -1;
+}
+
 /* Reduced motion: keep it calm */
 @media (prefers-reduced-motion: reduce) {
   .tmusic-album-overlay,

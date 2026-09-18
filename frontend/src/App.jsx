@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useAuthStore } from './store/authStore'
 import { usePlayerStore } from './store/playerStore'
-import { streamApi } from './api/stream'
 import { setupMediaSession, updateMediaSessionMetadata, updateMediaSessionPosition } from './services/mediaSession'
 import {
   onTrackChanged,
@@ -17,14 +16,14 @@ import { CoverPicker } from './components/CoverPicker'
 export function App() {
   const audioRef = useRef(null)
   const [coverTarget, setCoverTarget] = useState(null)
+  // Track id we've already bound restore/metadata for (store owns src/play).
+  const boundTrackIdRef = useRef(null)
 
   const { checkAuth, setAuthModalOpen } = useAuthStore()
   const {
     currentTrack,
     currentRelease,
-    isPlaying,
     setAudioElement,
-    nextTrack,
     precacheNextTracks,
   } = usePlayerStore()
 
@@ -34,7 +33,25 @@ export function App() {
 
     const handleUnauthorized = () => setAuthModalOpen(true)
     window.addEventListener('tmusic:unauthorized', handleUnauthorized)
-    return () => window.removeEventListener('tmusic:unauthorized', handleUnauthorized)
+
+    // Android lockscreen / tab throttle: resume if we believe playback continues.
+    const resumeIfNeeded = () => {
+      if (document.visibilityState && document.visibilityState !== 'visible') return
+      const { isPlaying, currentTrack: track, audioElement } = usePlayerStore.getState()
+      if (isPlaying && track && audioElement && audioElement.paused) {
+        const p = audioElement.play()
+        if (p && p.catch) p.catch(() => {})
+      }
+    }
+    const onVis = () => resumeIfNeeded()
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('focus', resumeIfNeeded)
+
+    return () => {
+      window.removeEventListener('tmusic:unauthorized', handleUnauthorized)
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('focus', resumeIfNeeded)
+    }
   }, [])
 
   useEffect(() => {
@@ -43,48 +60,43 @@ export function App() {
     }
   }, [audioRef.current])
 
-  // Track source update
+  // Metadata + resume-offset when the active track changes.
+  // src/play() are started synchronously in playerStore (Android-safe).
   useEffect(() => {
-    if (!audioRef.current || !currentTrack) return
+    const audio = audioRef.current
+    if (!audio || !currentTrack) return
+    if (boundTrackIdRef.current === currentTrack.id) return
+    boundTrackIdRef.current = currentTrack.id
 
     onTrackChanged(currentTrack.id)
-    const streamUrl = streamApi.getStreamUrl(currentTrack.id)
-    audioRef.current.src = streamUrl
-    audioRef.current.load()
-    if (isPlaying) {
-      audioRef.current.play().catch(() => {})
-    }
+    updateMediaSessionMetadata(currentTrack, currentRelease)
 
-    const audio = audioRef.current
     const restoreHandler = () => {
       tryRestorePosition(audio, currentTrack.id)
     }
     audio.addEventListener('loadedmetadata', restoreHandler)
-    updateMediaSessionMetadata(currentTrack, currentRelease)
+
+    // If store already set src but browser paused — kick play when track appears
+    const state = usePlayerStore.getState()
+    if (state.isPlaying && audio.paused) {
+      const p = audio.play()
+      if (p && p.catch) p.catch(() => {})
+    }
 
     return () => audio.removeEventListener('loadedmetadata', restoreHandler)
-  }, [currentTrack?.id])
-
-  // Play/Pause sync
-  useEffect(() => {
-    if (!audioRef.current) return
-    if (isPlaying && audioRef.current.paused) {
-      audioRef.current.play().catch(() => {})
-    } else if (!isPlaying && !audioRef.current.paused) {
-      audioRef.current.pause()
-    }
-  }, [isPlaying])
+  }, [currentTrack?.id, currentRelease])
 
   const handleTimeUpdate = () => {
-    if (!audioRef.current) return
-    const cur = audioRef.current.currentTime
-    const dur = audioRef.current.duration
+    const audio = audioRef.current
+    if (!audio) return
+    const cur = audio.currentTime
+    const dur = audio.duration
+    const trackId = usePlayerStore.getState().currentTrack?.id
 
     usePlayerStore.setState({ currentTime: cur })
     updateMediaSessionPosition(dur, cur)
-    playbackOnTimeUpdate(audioRef.current, currentTrack?.id, cur, dur)
+    if (trackId) playbackOnTimeUpdate(audio, trackId, cur, dur)
 
-    // Trigger background pre-cache when reached 75% of track
     if (dur && cur / dur > 0.75) {
       precacheNextTracks()
     }
@@ -95,27 +107,46 @@ export function App() {
     usePlayerStore.setState({ duration: audioRef.current.duration })
   }
 
+  const handlePlaying = () => {
+    updateMediaSessionPosition(
+      audioRef.current?.duration || 0,
+      audioRef.current?.currentTime || 0
+    )
+  }
+
+  /**
+   * Playlist auto-advance: must start the next file in this same event
+   * callback — a later React effect is too late on Android 14 lockscreen.
+   */
   const handleEnded = () => {
     const audio = audioRef.current
-    if (audio && currentTrack?.id) {
+    const state = usePlayerStore.getState()
+    const trackId = state.currentTrack?.id
+
+    if (audio && trackId) {
       playbackOnEnded(
-        currentTrack.id,
+        trackId,
         audio.currentTime,
         Number.isFinite(audio.duration) ? audio.duration : null
       )
     }
-    nextTrack()
+
+    // Force re-bind restore hook for the next track id
+    boundTrackIdRef.current = null
+    state.nextTrack()
   }
 
   return (
     <div style={{ minHeight: '100dvh', backgroundColor: 'var(--bg)', color: 'var(--ink)' }}>
-      {/* Hidden Native Audio Element */}
+      {/* Hidden Native Audio Element — single node for the whole session */}
       <audio
         ref={audioRef}
+        preload="auto"
+        playsInline
         onTimeUpdate={handleTimeUpdate}
         onDurationChange={handleDurationChange}
         onEnded={handleEnded}
-        preload="auto"
+        onPlaying={handlePlaying}
       />
 
       {/* Main Music Library View */}

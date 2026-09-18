@@ -41,6 +41,7 @@ export function MusicLibraryPlayer() {
     repeat,
     isPlayerExpanded,
     togglePlay,
+    forceResume,
     nextTrack,
     prevTrack,
     seek,
@@ -58,6 +59,16 @@ export function MusicLibraryPlayer() {
   const artistName = currentRelease?.artistName || 'T-Music'
   const albumTitle = currentRelease?.title || ''
   const coverUrl = resolveReleaseCoverUrl(currentRelease)
+
+  // Android: store may say "playing" while <audio> is paused after lockscreen.
+  const handlePlayPause = () => {
+    const audio = usePlayerStore.getState().audioElement
+    if (isPlaying && audio?.paused) {
+      forceResume()
+      return
+    }
+    togglePlay()
+  }
 
   return (
     <>
@@ -125,7 +136,7 @@ export function MusicLibraryPlayer() {
         {/* Mobile Mini-Player Action Buttons */}
         <div className="tmusic-player-mobile-actions" onClick={(e) => e.stopPropagation()}>
           <button
-            onClick={togglePlay}
+            onClick={handlePlayPause}
             aria-label={isPlaying ? 'Пауза' : 'Воспроизведение'}
             style={{
               width: '42px',
@@ -210,7 +221,7 @@ export function MusicLibraryPlayer() {
               <SkipBack size={18} />
             </button>
             <button
-              onClick={togglePlay}
+              onClick={handlePlayPause}
               style={{
                 width: '38px',
                 height: '38px',
@@ -423,7 +434,7 @@ export function MusicLibraryPlayer() {
                   <SkipBack size={26} />
                 </button>
                 <button
-                  onClick={togglePlay}
+                  onClick={handlePlayPause}
                   style={{
                     width: '62px',
                     height: '62px',
