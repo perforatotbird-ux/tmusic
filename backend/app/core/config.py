@@ -89,12 +89,31 @@ class Settings(BaseSettings):
     # External APIs
     LASTFM_API_KEY: Optional[str] = None
     LASTFM_API_SECRET: Optional[str] = None
+    # Official Last.fm name for the companion of api_key
+    LASTFM_SHARED_SECRET: Optional[str] = None
     LASTFM_SESSION_KEY: Optional[str] = None
     LASTFM_USERNAME: Optional[str] = None
     LASTFM_ENABLED: bool = True
     DISCOGS_CONSUMER_KEY: Optional[str] = None
     DISCOGS_CONSUMER_SECRET: Optional[str] = None
     MUSICBRAINZ_RATE_LIMIT_SEC: float = 1.05
+
+    @property
+    def lastfm_secret(self) -> Optional[str]:
+        """Effective Last.fm secret (shared_secret is the official env name)."""
+        return self.LASTFM_API_SECRET or self.LASTFM_SHARED_SECRET
+
+    @property
+    def lastfm_metadata_ready(self) -> bool:
+        return bool(self.LASTFM_ENABLED and self.LASTFM_API_KEY and self.lastfm_secret)
+
+    @property
+    def lastfm_scrobble_ready(self) -> bool:
+        return bool(self.lastfm_metadata_ready and self.LASTFM_SESSION_KEY)
+
+    @property
+    def discogs_ready(self) -> bool:
+        return bool(self.DISCOGS_CONSUMER_KEY and self.DISCOGS_CONSUMER_SECRET)
 
     # CORS & Security — never use "*" together with credentials
     ALLOWED_ORIGINS: List[str] = [

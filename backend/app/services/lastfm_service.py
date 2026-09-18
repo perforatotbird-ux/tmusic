@@ -1,14 +1,19 @@
 """
-T-Music Last.fm scrobbling (optional enrichment).
+T-Music Last.fm integration (metadata + optional scrobbling).
 
-Requires in music.env:
-  LASTFM_API_KEY, LASTFM_API_SECRET, LASTFM_SESSION_KEY
-Optional: LASTFM_USERNAME
+music.env:
+  LASTFM_API_KEY
+  LASTFM_SHARED_SECRET (or LASTFM_API_SECRET) — metadata + signed write calls
+  LASTFM_SESSION_KEY — required only for scrobble / now-playing
+  LASTFM_USERNAME — optional
 
-Never logs secrets. Network failures are swallowed — playback must not depend
-on Last.fm availability.
+Read methods (artist.getInfo, track.getInfo) need api_key only.
+Write methods need api_key + secret + session key.
+
+Never logs secrets. Network failures are swallowed.
 """
 import hashlib
+import json
 import logging
 import time
 from typing import Any, Dict, Optional
@@ -22,13 +27,21 @@ logger = logging.getLogger("tmusic.scrobble")
 API_URL = "https://ws.audioscrobbler.com/2.0/"
 
 
+def _secret() -> str:
+    return settings.lastfm_secret or ""
+
+
+def metadata_ready() -> bool:
+    return bool(settings.lastfm_metadata_ready)
+
+
+def scrobble_ready() -> bool:
+    return bool(settings.lastfm_scrobble_ready)
+
+
 def is_configured() -> bool:
-    return bool(
-        settings.LASTFM_ENABLED
-        and settings.LASTFM_API_KEY
-        and settings.LASTFM_API_SECRET
-        and settings.LASTFM_SESSION_KEY
-    )
+    """Write-path readiness (scrobble/now-playing)."""
+    return scrobble_ready()
 
 
 def _api_sig(params: Dict[str, str], secret: str) -> str:
@@ -37,30 +50,43 @@ def _api_sig(params: Dict[str, str], secret: str) -> str:
     return hashlib.md5((raw + secret).encode("utf-8")).hexdigest()
 
 
-def _post(params: Dict[str, Any]) -> Optional[dict]:
-    if not is_configured():
+def _request(params: Dict[str, Any], signed: bool = False, method: str = "GET") -> Optional[dict]:
+    if not settings.LASTFM_ENABLED or not settings.LASTFM_API_KEY:
         return None
-    payload = {
+
+    payload: Dict[str, Any] = {
         "api_key": settings.LASTFM_API_KEY,
-        "sk": settings.LASTFM_SESSION_KEY,
         "format": "json",
         **params,
     }
-    payload["api_sig"] = _api_sig({k: str(v) for k, v in payload.items()}, settings.LASTFM_API_SECRET or "")
-    data = urlencode(payload).encode("utf-8")
-    req = Request(API_URL, data=data, method="POST", headers={"User-Agent": "T-Music/1.0"})
+    if signed:
+        if not settings.LASTFM_SESSION_KEY or not _secret():
+            return None
+        payload["sk"] = settings.LASTFM_SESSION_KEY
+        payload["api_sig"] = _api_sig({k: str(v) for k, v in payload.items()}, _secret())
+
+    body = urlencode(payload).encode("utf-8")
+    if method.upper() == "GET":
+        url = f"{API_URL}?{urlencode(payload)}"
+        req = Request(url, method="GET", headers={"User-Agent": "T-Music/1.0"})
+    else:
+        req = Request(
+            API_URL,
+            data=body,
+            method="POST",
+            headers={"User-Agent": "T-Music/1.0"},
+        )
     try:
         with urlopen(req, timeout=8) as resp:
-            body = resp.read().decode("utf-8", errors="replace")
-            try:
-                import json
-
-                return json.loads(body) if body else None
-            except Exception:
-                return None
+            raw = resp.read().decode("utf-8", errors="replace")
+            return json.loads(raw) if raw else None
     except Exception as e:
         logger.warning("Last.fm request failed: %s", e)
         return None
+
+
+def _post(params: Dict[str, Any]) -> Optional[dict]:
+    return _request(params, signed=True, method="POST")
 
 
 def parse_track_meta(
@@ -90,8 +116,83 @@ def parse_track_meta(
     return artist, track, album
 
 
+def get_artist_info(artist: str) -> Optional[dict]:
+    """artist.getInfo — bio, similar, tags. Uses api_key only."""
+    if not artist or not metadata_ready():
+        return None
+    data = _request({"method": "artist.getInfo", "artist": artist}, signed=False, method="GET")
+    if not data:
+        return None
+    node = data.get("artist") or {}
+    bio = node.get("bio") or {}
+    summary = bio.get("summary") or ""
+    # Strip simple HTML from Last.fm summary
+    if "<" in summary:
+        out = []
+        skip = False
+        for ch in summary:
+            if ch == "<":
+                skip = True
+            elif ch == ">":
+                skip = False
+            elif not skip:
+                out.append(ch)
+        summary = "".join(out).strip()
+    similar = []
+    for s in (node.get("similar") or {}).get("artist", []) or []:
+        if isinstance(s, dict) and s.get("name"):
+            similar.append(s["name"])
+    tags = []
+    for t in (node.get("tags") or {}).get("tag", []) or []:
+        if isinstance(t, dict) and t.get("name"):
+            tags.append(t["name"])
+    return {
+        "name": node.get("name") or artist,
+        "mbid": node.get("mbid") or None,
+        "url": node.get("url") or None,
+        "summary": summary,
+        "similar": similar[:8],
+        "tags": tags[:10],
+        "image_url": next(
+            (img.get("#text") for img in (node.get("image") or []) if isinstance(img, dict) and img.get("#text")),
+            None,
+        ),
+    }
+
+
+def get_track_info(artist: str, track: str, album: Optional[str] = None) -> Optional[dict]:
+    """track.getInfo — duration, album, tags."""
+    if not artist or not track or not metadata_ready():
+        return None
+    params: Dict[str, Any] = {"method": "track.getInfo", "artist": artist, "track": track}
+    if album:
+        params["album"] = album
+    data = _request(params, signed=False, method="GET")
+    if not data:
+        return None
+    node = data.get("track") or {}
+    album_node = node.get("album") or {}
+    duration_raw = node.get("duration")
+    try:
+        duration = int(duration_raw) // 1000 if duration_raw not in (None, "", 0, "0") else None
+    except (TypeError, ValueError):
+        duration = None
+    return {
+        "name": node.get("name") or track,
+        "artist": (node.get("artist") or {}).get("name") or artist,
+        "album": album_node.get("title") or album,
+        "duration_sec": duration,
+        "mbid": node.get("mbid") or None,
+        "url": node.get("url") or None,
+        "image_url": next(
+            (img.get("#text") for img in (album_node.get("image") or []) if isinstance(img, dict) and img.get("#text")),
+            None,
+        ),
+    }
+
+
 def update_now_playing(artist: str, track: str, album: Optional[str] = None) -> None:
-    if not artist or not track:
+    if not artist or not track or not scrobble_ready():
         return
     params: Dict[str, Any] = {
         "method": "track.updateNowPlaying",
@@ -109,9 +210,10 @@ def scrobble(
     album: Optional[str] = None,
     timestamp: Optional[int] = None,
 ) -> None:
-    if not artist or not track or artist == "Unknown" and not track:
+    if not artist or not track:
         return
-    if not is_configured():
+    if not scrobble_ready():
+        logger.debug("Scrobble skipped: LASTFM_SESSION_KEY not configured.")
         return
     params: Dict[str, Any] = {
         "method": "track.scrobble",
@@ -123,6 +225,6 @@ def scrobble(
         params["album"] = album
     result = _post(params)
     if result is None:
-        logger.debug("Scrobble skipped/failed for %s — %s", artist, track)
+        logger.debug("Scrobble failed for %s — %s", artist, track)
     else:
         logger.info("Scrobbled: %s — %s", artist, track)

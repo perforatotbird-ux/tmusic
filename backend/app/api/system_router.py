@@ -44,6 +44,11 @@ async def system_status(user: AppUser = Depends(get_current_user)):
         "database": {"ok": _db_ping()},
         "telegram": tg,
         "ram_cache": cache_info,
+        "enrichment": {
+            "lastfm_metadata": settings.lastfm_metadata_ready,
+            "lastfm_scrobble": settings.lastfm_scrobble_ready,
+            "discogs": settings.discogs_ready,
+        },
         "user": {"id": user.id, "username": user.username},
     }
 
