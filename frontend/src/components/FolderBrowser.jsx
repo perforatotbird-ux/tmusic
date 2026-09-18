@@ -1,17 +1,19 @@
 /**
- * Windows-style VFS folder browser.
- * Single click on folder → add tracks to player queue + saved playlist → play.
- * Open button / double-click → browse inside the folder.
+ * Windows-style VFS folder tree.
+ * «+» / «›» слева — expand/collapse вложенных папок.
+ * Клик по строке папки — в плейлист + воспроизведение.
  */
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  ArrowLeft,
+  ChevronDown,
   ChevronRight,
   Folder,
   FolderOpen,
   Loader2,
   Music,
   Play,
+  Plus,
+  Minus,
   HardDrive,
 } from 'lucide-react'
 import { vfsApi } from '../api/vfs'
@@ -19,87 +21,282 @@ import { playlistsApi } from '../api/playlists'
 import { usePlayerStore } from '../store/playerStore'
 import { useAuthStore } from '../store/authStore'
 
-const rowStyle = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: '12px',
-  padding: '11px 12px',
-  borderRadius: '10px',
-  cursor: 'pointer',
-  border: '1px solid transparent',
-  color: 'var(--ink)',
-  background: 'transparent',
-  width: '100%',
-  textAlign: 'left',
-  fontSize: '13.5px',
+function Expander({ expanded, loading, hasChildren, onClick, size = 22 }) {
+  return (
+    <button
+      type="button"
+      className="tmusic-tree-expander"
+      onClick={onClick}
+      title={expanded ? 'Свернуть' : 'Развернуть'}
+      aria-label={expanded ? 'Свернуть папку' : 'Развернуть папку'}
+      style={{
+        width: size,
+        height: size,
+        minWidth: size,
+        borderRadius: 6,
+        border: '1px solid var(--line)',
+        background: expanded ? 'var(--accent-muted)' : 'var(--bg-card)',
+        color: hasChildren || !expanded ? 'var(--accent)' : 'var(--dim)',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        cursor: hasChildren ? 'pointer' : 'default',
+        opacity: hasChildren ? 1 : 0.35,
+        flexShrink: 0,
+        padding: 0,
+      }}
+    >
+      {loading ? (
+        <Loader2 size={12} className="animate-spin" />
+      ) : expanded ? (
+        <Minus size={12} />
+      ) : (
+        <Plus size={12} />
+      )}
+    </button>
+  )
+}
+
+function TreeRow({ node, depth, expandedIds, childrenMap, loadingIds, onToggle, onPlayFolder, onPlayTrack, playingId }) {
+  const isFolder = node.type === 'folder'
+  const f = isFolder ? node.folder : null
+  const t = !isFolder ? node.track : null
+  const id = isFolder ? `f-${f.id}` : `t-${t.id}`
+  const expanded = expandedIds.has(id)
+  const loading = loadingIds.has(id)
+  const kids = childrenMap[id] || null
+  const hasKids = isFolder
+    ? (f.subfolder_count || 0) > 0 || (f.recursive_track_count || 0) > 0 || (kids && kids.length > 0)
+    : false
+
+  return (
+    <>
+      <div
+        className="tmusic-track-row tmusic-tree-row"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          padding: '6px 8px',
+          borderRadius: '8px',
+          cursor: isFolder ? 'pointer' : 'default',
+          marginLeft: depth * 20,
+          background: playingId && isFolder && playingId === f.id ? 'var(--accent-muted)' : 'transparent',
+        }}
+        onClick={isFolder ? () => onPlayFolder(f) : undefined}
+        title={isFolder ? 'Клик — в плейлист и воспроизведение' : undefined}
+      >
+        {isFolder ? (
+          <Expander
+            expanded={expanded}
+            loading={loading}
+            hasChildren={hasKids}
+            onClick={(e) => {
+              e.stopPropagation()
+              onToggle(id, f, true)
+            }}
+          />
+        ) : (
+          <span style={{ width: 22, minWidth: 22, display: 'inline-flex', justifyContent: 'center', color: 'var(--dim)' }}>
+            <Music size={14} />
+          </span>
+        )}
+
+        {isFolder ? (
+          expanded ? (
+            <FolderOpen size={16} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+          ) : (
+            <Folder size={16} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+          )
+        ) : (
+          <span style={{ width: 16 }} />
+        )}
+
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            style={{
+              fontWeight: isFolder ? 650 : 500,
+              fontSize: 13.5,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              color: 'var(--ink)',
+            }}
+          >
+            {isFolder ? f.name : (t.name || '').replace(/\.[^/.]+$/, '')}
+          </div>
+          {isFolder && (
+            <div style={{ fontSize: '11px', color: 'var(--dim)' }}>
+              {f.subfolder_count > 0 && `${f.subfolder_count} папок · `}
+              {f.recursive_track_count || f.track_count || 0} трек(ов)
+            </div>
+          )}
+        </div>
+
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            if (isFolder) onPlayFolder(f)
+            else
+              onPlayTrack(t)
+          }}
+          title={isFolder ? 'В плейлист + играть' : 'Играть трек'}
+          style={{
+            width: 30,
+            height: 30,
+            borderRadius: '50%',
+            border: 'none',
+            background: 'var(--accent)',
+            color: '#141210',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: 'pointer',
+            flexShrink: 0,
+          }}
+        >
+          {isFolder && playingId === f.id ? (
+            <Loader2 size={14} className="animate-spin" />
+          ) : (
+            <Play size={12} fill="#141210" />
+          )}
+        </button>
+      </div>
+
+      {isFolder && expanded && kids && kids.length > 0 && (
+        <div className="tmusic-tree-children">
+          {kids.map((child) => (
+            <TreeRow
+              key={child.type === 'folder' ? `f-${child.folder.id}` : `t-${child.track.id}`}
+              node={child}
+              depth={depth + 1}
+              expandedIds={expandedIds}
+              childrenMap={childrenMap}
+              loadingIds={loadingIds}
+              onToggle={onToggle}
+              onPlayFolder={onPlayFolder}
+              onPlayTrack={onPlayTrack}
+              playingId={playingId}
+            />
+          ))}
+        </div>
+      )}
+      {isFolder && expanded && kids && kids.length === 0 && !loading && (
+        <div
+          style={{
+            marginLeft: (depth + 1) * 20 + 30,
+            fontSize: '12px',
+            color: 'var(--dim)',
+            padding: '4px 0 8px',
+          }}
+        >
+          Папка пуста
+        </div>
+      )}
+    </>
+  )
 }
 
 export function FolderBrowser() {
-  const [stack, setStack] = useState([{ id: null, name: 'Этот компьютер' }])
-  const [items, setItems] = useState([])
-  const [isLoading, setIsLoading] = useState(true)
+  const [roots, setRoots] = useState([])
+  const [rootsLoading, setRootsLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [expandedIds, setExpandedIds] = useState(() => new Set())
+  const [childrenMap, setChildrenMap] = useState({})
+  const [loadingIds, setLoadingIds] = useState(() => new Set())
   const [playingId, setPlayingId] = useState(null)
   const { playQueue } = usePlayerStore()
   const { isAuthenticated } = useAuthStore()
+  const reqSeq = useRef(0)
 
-  const current = stack[stack.length - 1]
-
-  const loadChildren = useCallback(async (folderId) => {
-    setIsLoading(true)
-    setError(null)
-    try {
-      if (folderId == null) {
-        const roots = await vfsApi.roots()
-        setItems((roots || []).map((f) => ({ type: 'folder', folder: f })))
-      } else {
-        const data = await vfsApi.children(folderId)
-        const folders = (data?.subfolders || []).map((f) => ({ type: 'folder', folder: f }))
-        const tracks = (data?.tracks || []).map((t) => ({ type: 'track', track: t }))
-        setItems([...folders, ...tracks])
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      setRootsLoading(true)
+      setError(null)
+      try {
+        const list = await vfsApi.roots()
+        if (!cancelled) setRoots((list || []).map((f) => ({ type: 'folder', folder: f })))
+      } catch (e) {
+        console.error(e)
+        if (!cancelled) {
+          setError('Не удалось загрузить папки')
+          setRoots([])
+        }
+      } finally {
+        if (!cancelled) setRootsLoading(false)
       }
-    } catch (e) {
-      console.error(e)
-      setError('Не удалось открыть папку')
-      setItems([])
-    } finally {
-      setIsLoading(false)
+    })()
+    return () => {
+      cancelled = true
     }
   }, [])
 
-  useEffect(() => {
-    loadChildren(current.id)
-  }, [current.id, loadChildren])
+  const loadChildren = useCallback(async (folderId, nodeId) => {
+    const data = await vfsApi.children(folderId)
+    const folders = (data?.subfolders || []).map((f) => ({ type: 'folder', folder: f }))
+    const tracks = (data?.tracks || []).map((t) => ({ type: 'track', track: t }))
+    return [...folders, ...tracks]
+  }, [])
 
-  const goUp = () => {
-    if (stack.length <= 1) return
-    setStack(stack.slice(0, -1))
+  const onToggle = useCallback(
+    async (nodeId, folder) => {
+      const already = expandedIds.has(nodeId)
+      const next = new Set(expandedIds)
+      if (already) {
+        next.delete(nodeId)
+        setExpandedIds(next)
+        return
+      }
+      next.add(nodeId)
+      setExpandedIds(next)
+
+      if (childrenMap[nodeId]) return
+
+      setLoadingIds((prev) => new Set(prev).add(nodeId))
+      const my = ++reqSeq.current
+      try {
+        const kids = await loadChildren(folder.id, nodeId)
+        if (my === reqSeq.current || true) {
+          setChildrenMap((prev) => ({ ...prev, [nodeId]: kids }))
+        }
+      } catch (e) {
+        console.error(e)
+        setChildrenMap((prev) => ({ ...prev, [nodeId]: [] }))
+        const collapsed = new Set(next)
+        collapsed.delete(nodeId)
+        setExpandedIds(collapsed)
+      } finally {
+        setLoadingIds((prev) => {
+          const s = new Set(prev)
+          s.delete(nodeId)
+          return s
+        })
+      }
+    },
+    [expandedIds, childrenMap, loadChildren]
+  )
+
+  const onPlayTrack = (t) => {
+    playQueue([t], 0, {
+      title: (t.name || '').replace(/\.[^/.]+$/, ''),
+      artistName: 'Файл',
+      coverUrl: null,
+    })
   }
 
-  const openFolder = (folder) => {
-    setStack([...stack, { id: folder.id, name: folder.name }])
-  }
-
-  /** Click folder → playlist + play (as requested). */
-  const playFolder = async (folder) => {
+  const onPlayFolder = async (folder) => {
     if (playingId) return
     setPlayingId(folder.id)
     try {
       const tracks = await vfsApi.tracks(folder.id, true)
-      if (!tracks || tracks.length === 0) {
-        openFolder(folder)
-        return
-      }
-      playQueue(
-        tracks,
-        0,
-        {
-          title: folder.name,
-          artistName: 'Папка',
-          coverUrl: null,
-        }
-      )
-
+      if (!tracks || tracks.length === 0) return
+      playQueue(tracks, 0, {
+        title: folder.name,
+        artistName: 'Папка',
+        coverUrl: null,
+      })
       if (isAuthenticated) {
         try {
           const lists = await playlistsApi.list()
@@ -107,30 +304,20 @@ export function FolderBrowser() {
             (p) => (p.name || '').toLowerCase() === (folder.name || '').toLowerCase()
           )
           const ids = tracks.slice(0, 500).map((t) => t.id)
-          if (existing) {
-            const detail = await playlistsApi.get(existing.id)
-            for (const row of detail?.tracks || []) {
-              try {
-                await playlistsApi.removeItem(existing.id, row.id)
-              } catch {
-                /* ignore */
-              }
+          const target = existing || (await playlistsApi.create(folder.name))
+          const detail = await playlistsApi.get(target.id)
+          for (const row of detail?.tracks || []) {
+            try {
+              await playlistsApi.removeItem(target.id, row.id)
+            } catch {
+              /* ignore */
             }
-            for (const fileId of ids) {
-              try {
-                await playlistsApi.addTrack(existing.id, fileId)
-              } catch {
-                /* ignore */
-              }
-            }
-          } else {
-            const created = await playlistsApi.create(folder.name)
-            for (const fileId of ids) {
-              try {
-                await playlistsApi.addTrack(created.id, fileId)
-              } catch {
-                /* ignore */
-              }
+          }
+          for (const fileId of ids) {
+            try {
+              await playlistsApi.addTrack(target.id, fileId)
+            } catch {
+              /* ignore */
             }
           }
         } catch (e) {
@@ -151,64 +338,17 @@ export function FolderBrowser() {
           display: 'flex',
           alignItems: 'center',
           gap: '8px',
-          marginBottom: '12px',
-          flexWrap: 'wrap',
+          marginBottom: '10px',
+          fontSize: '12px',
+          color: 'var(--dim)',
         }}
       >
-        <button
-          onClick={goUp}
-          disabled={stack.length <= 1}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '6px',
-            background: stack.length <= 1 ? 'var(--line)' : 'var(--bg-card)',
-            color: stack.length <= 1 ? 'var(--dim)' : 'var(--ink)',
-            border: '1px solid var(--line)',
-            borderRadius: '8px',
-            padding: '6px 10px',
-            fontSize: '12px',
-            fontWeight: 700,
-            cursor: stack.length <= 1 ? 'default' : 'pointer',
-          }}
-        >
-          <ArrowLeft size={14} /> Вверх
-        </button>
-        <div
-          style={{
-            fontSize: '12px',
-            color: 'var(--dim)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '4px',
-            flexWrap: 'wrap',
-            minWidth: 0,
-          }}
-        >
-          <HardDrive size={14} style={{ color: 'var(--accent)' }} />
-          {stack.map((s, i) => (
-            <React.Fragment key={`${s.id ?? 'root'}-${i}`}>
-              {i > 0 && <ChevronRight size={12} style={{ opacity: 0.5 }} />}
-              <button
-                onClick={() => setStack(stack.slice(0, i + 1))}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: i === stack.length - 1 ? 'var(--ink)' : 'var(--dim)',
-                  fontWeight: i === stack.length - 1 ? 700 : 500,
-                  cursor: 'pointer',
-                  fontSize: '12px',
-                  padding: 0,
-                }}
-              >
-                {s.name}
-              </button>
-            </React.Fragment>
-          ))}
-        </div>
+        <HardDrive size={14} style={{ color: 'var(--accent)' }} />
+        <span style={{ fontWeight: 700, color: 'var(--ink)' }}>Папки</span>
+        <span>— «+» разворачивает дерево, клик по папке ставит в очередь и плейлист</span>
       </div>
 
-      {isLoading && (
+      {rootsLoading && (
         <div
           style={{
             display: 'flex',
@@ -220,177 +360,39 @@ export function FolderBrowser() {
           }}
         >
           <Loader2 size={28} className="animate-spin" style={{ color: 'var(--accent)' }} />
-          <div style={{ fontSize: '13px' }}>Открытие папки…</div>
+          <div style={{ fontSize: '13px' }}>Загрузка дерева…</div>
         </div>
       )}
 
-      {!isLoading && error && (
+      {!rootsLoading && error && (
         <div style={{ padding: '24px', color: 'var(--danger, #f66)', fontSize: '13px' }}>{error}</div>
       )}
 
-      {!isLoading && !error && items.length === 0 && (
-        <div
-          style={{
-            padding: '40px 16px',
-            textAlign: 'center',
-            color: 'var(--dim)',
-            fontSize: '13px',
-          }}
-        >
+      {!rootsLoading && !error && roots.length === 0 && (
+        <div style={{ padding: '40px 16px', textAlign: 'center', color: 'var(--dim)', fontSize: '13px' }}>
           <Folder size={32} style={{ opacity: 0.35, marginBottom: '8px' }} />
-          <div>Папка пуста</div>
+          <div>Корневых папок нет</div>
         </div>
       )}
 
-      {!isLoading && !error && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-          {items.map((item) => {
-            if (item.type === 'folder') {
-              const f = item.folder
-              const busy = playingId === f.id
-              return (
-                <div
-                  key={`f-${f.id}`}
-                  className="tmusic-track-row"
-                  style={{
-                    ...rowStyle,
-                    background: busy ? 'var(--accent-muted)' : undefined,
-                  }}
-                  onClick={() => playFolder(f)}
-                  title="Клик — в плейлист и воспроизведение"
-                >
-                  <FolderOpen size={18} style={{ color: 'var(--accent)', flexShrink: 0 }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div
-                      style={{
-                        fontWeight: 700,
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
-                    >
-                      {f.name}
-                    </div>
-                    <div style={{ fontSize: '11px', color: 'var(--dim)' }}>
-                      {f.subfolder_count > 0 && `${f.subfolder_count} папок · `}
-                      {f.recursive_track_count || f.track_count || 0} трек(ов)
-                    </div>
-                  </div>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      openFolder(f)
-                    }}
-                    title="Открыть папку (иерархия)"
-                    style={{
-                      width: '36px',
-                      height: '36px',
-                      borderRadius: '8px',
-                      border: '1px solid var(--line)',
-                      background: 'transparent',
-                      color: 'var(--ink)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      cursor: 'pointer',
-                      flexShrink: 0,
-                    }}
-                  >
-                    <ChevronRight size={16} />
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      playFolder(f)
-                    }}
-                    title="В плейлист + играть"
-                    style={{
-                      width: '36px',
-                      height: '36px',
-                      borderRadius: '50%',
-                      border: 'none',
-                      background: 'var(--accent)',
-                      color: '#141210',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      cursor: 'pointer',
-                      flexShrink: 0,
-                    }}
-                  >
-                    {busy ? (
-                      <Loader2 size={16} className="animate-spin" />
-                    ) : (
-                      <Play size={15} fill="#141210" />
-                    )}
-                  </button>
-                </div>
-              )
-            }
-
-            const t = item.track
-            return (
-              <div
-                key={`t-${t.id}`}
-                className="tmusic-track-row"
-                style={{ ...rowStyle, cursor: 'default' }}
-              >
-                <Music size={16} style={{ color: 'var(--dim)', flexShrink: 0 }} />
-                <div
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    fontSize: '13px',
-                    whiteSpace: 'nowrap',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    color: 'var(--ink)',
-                  }}
-                >
-                  {(t.name || '').replace(/\.[^/.]+$/, '')}
-                </div>
-                <button
-                  onClick={() =>
-                    playQueue([t], 0, {
-                      title: (t.name || '').replace(/\.[^/.]+$/, ''),
-                      artistName: 'Файл',
-                      coverUrl: null,
-                    })
-                  }
-                  title="Играть трек"
-                  style={{
-                    width: '32px',
-                    height: '32px',
-                    borderRadius: '50%',
-                    border: '1px solid var(--line)',
-                    background: 'transparent',
-                    color: 'var(--accent)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    cursor: 'pointer',
-                    flexShrink: 0,
-                  }}
-                >
-                  <Play size={13} fill="var(--accent)" />
-                </button>
-              </div>
-            )
-          })}
+      {!rootsLoading && !error && roots.length > 0 && (
+        <div className="tmusic-tree">
+          {roots.map((node) => (
+            <TreeRow
+              key={`f-${node.folder.id}`}
+              node={node}
+              depth={0}
+              expandedIds={expandedIds}
+              childrenMap={childrenMap}
+              loadingIds={loadingIds}
+              onToggle={onToggle}
+              onPlayFolder={onPlayFolder}
+              onPlayTrack={onPlayTrack}
+              playingId={playingId}
+            />
+          ))}
         </div>
       )}
-
-      <div
-        style={{
-          marginTop: '14px',
-          fontSize: '11px',
-          color: 'var(--dim)',
-          lineHeight: 1.5,
-        }}
-      >
-        Клик по папке — добавить все треки в плейлист и воспроизвести. Кнопка › — открыть папку как
-        в Проводнике.
-      </div>
     </div>
   )
 }
