@@ -14,6 +14,7 @@ from app.schemas.playlist import (
     PlaylistCreate,
     PlaylistDetail,
     PlaylistItemAdd,
+    PlaylistReorder,
     PlaylistSummary,
     PlaylistTrack,
 )
@@ -139,3 +140,31 @@ async def remove_item(
     if not ok:
         raise HTTPException(status_code=404, detail="Playlist item not found.")
     return {"status": "ok"}
+
+
+@router.put("/{playlist_id}/items/order", response_model=PlaylistDetail)
+async def reorder_items(
+    playlist_id: int,
+    body: PlaylistReorder,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    """Reorder all tracks: body.item_ids is the full new order of item ids."""
+    pl = playlist_service.get_playlist(db, user.id, playlist_id)
+    if not pl:
+        raise HTTPException(status_code=404, detail="Playlist not found.")
+    ok = playlist_service.reorder_items(db, user.id, playlist_id, body.item_ids)
+    if not ok:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid item_ids: must be a permutation of this playlist's items.",
+        )
+    rows = playlist_service.playlist_tracks(db, playlist_id)
+    return PlaylistDetail(
+        id=pl.id,
+        name=pl.name,
+        track_count=len(rows),
+        created_at=pl.created_at,
+        updated_at=pl.updated_at,
+        tracks=_tracks_payload(rows),
+    )

@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>T-Music</title>
+  <style>
+    :root {
+      --bg: #141210;
+      --card-bg: #1c1917;
+      --card-border: #2e2926;
+      --ink: #f5f5f4;
+      --muted: #a8a29e;
+      --accent: #d4ff3f;
+      --accent-hover: #bde629;
+      --accent-glow: rgba(212, 255, 63, 0.25);
+      --danger: #ef4444;
+      --success: #22c55e;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+      text-align: center;
+      user-select: none;
+    }
+    .container {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 24px;
+      padding: 32px 24px;
+      max-width: 440px;
+      width: 100%;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+      position: relative;
+      overflow: hidden;
+    }
+    .logo-container {
+      position: relative;
+      width: 80px;
+      height: 80px;
+      margin: 0 auto 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .logo {
+      width: 64px;
+      height: 64px;
+      border-radius: 20px;
+      background: #26221f;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid #3d3733;
+      z-index: 2;
+    }
+    .logo svg {
+      width: 34px;
+      height: 34px;
+      fill: var(--accent);
+    }
+    .radar-pulse {
+      position: absolute;
+      width: 80px;
+      height: 80px;
+      border-radius: 50%;
+      border: 2px solid var(--accent);
+      opacity: 0;
+      animation: radar 2s infinite ease-out;
+      z-index: 1;
+    }
+    .radar-pulse:nth-child(2) {
+      animation-delay: 0.6s;
+    }
+    .radar-pulse:nth-child(3) {
+      animation-delay: 1.2s;
+    }
+    @keyframes radar {
+      0% { transform: scale(0.6); opacity: 0.8; }
+      100% { transform: scale(1.6); opacity: 0; }
+    }
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin-bottom: 6px;
+    }
+    .subtitle {
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.4;
+      margin-bottom: 24px;
+      min-height: 2.5em;
+    }
+    .scan-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      background: #26221f;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      color: var(--accent);
+      font-weight: 600;
+      margin-bottom: 20px;
+    }
+    .spin {
+      animation: spin 1s infinite linear;
+      display: inline-block;
+    }
+    @keyframes spin {
+      100% { transform: rotate(360deg); }
+    }
+    .server-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-bottom: 20px;
+      text-align: left;
+    }
+    .server-card {
+      background: #26221f;
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      transition: border-color 0.2s, transform 0.15s;
+    }
+    .server-card:active {
+      transform: scale(0.98);
+    }
+    .server-card.active-target {
+      border-color: var(--accent);
+      box-shadow: 0 0 16px var(--accent-glow);
+    }
+    .server-info {
+      flex: 1;
+      overflow: hidden;
+      margin-right: 12px;
+    }
+    .server-name {
+      font-weight: 700;
+      font-size: 0.95rem;
+      color: var(--ink);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .badge {
+      font-size: 0.65rem;
+      padding: 2px 6px;
+      border-radius: 6px;
+      background: rgba(212, 255, 63, 0.15);
+      color: var(--accent);
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .server-url {
+      font-size: 0.8rem;
+      color: var(--muted);
+      font-family: monospace;
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--accent);
+      color: #141210;
+      border: none;
+      padding: 10px 18px;
+      border-radius: 12px;
+      font-size: 0.9rem;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.15s, opacity 0.15s;
+      white-space: nowrap;
+    }
+    .btn:active {
+      background: var(--accent-hover);
+      opacity: 0.9;
+    }
+    .btn-full {
+      width: 100%;
+      padding: 14px;
+      font-size: 1rem;
+    }
+    .btn-secondary {
+      background: #26221f;
+      border: 1px solid var(--card-border);
+      color: var(--ink);
+    }
+    .btn-secondary:active {
+      background: #332d29;
+    }
+    .manual-box {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--card-border);
+      text-align: left;
+    }
+    .manual-toggle {
+      font-size: 0.8rem;
+      color: var(--muted);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 0;
+    }
+    .manual-toggle:hover {
+      color: var(--ink);
+    }
+    .manual-fields {
+      margin-top: 12px;
+      display: none;
+    }
+    .manual-fields.open {
+      display: block;
+    }
+    .manual-fields input {
+      width: 100%;
+      padding: 12px 14px;
+      background: var(--bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      color: var(--ink);
+      font-size: 0.9rem;
+      font-family: monospace;
+      margin-bottom: 10px;
+      outline: none;
+    }
+    .manual-fields input:focus {
+      border-color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo-container">
+      <div class="radar-pulse" id="radar1"></div>
+      <div class="radar-pulse" id="radar2"></div>
+      <div class="radar-pulse" id="radar3"></div>
+      <div class="logo">
+        <svg viewBox="0 0 24 24">
+          <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/>
+        </svg>
+      </div>
+    </div>
+
+    <h1>T-Music</h1>
+    <div class="scan-status" id="scan-badge">
+      <span class="spin">⚡</span> Сканирование Wi-Fi...
+    </div>
+    <p class="subtitle" id="status-text">Ищем запущенный сервер T-Music в локальной сети...</p>
+
+    <!-- Discovered servers list -->
+    <div class="server-list" id="servers-container"></div>
+
+    <!-- Main action button (Rescan) -->
+    <button class="btn btn-secondary btn-full" id="rescan-btn" onclick="startDiscovery()" style="display: none; margin-bottom: 12px;">
+      🔄 Повторить поиск
+    </button>
+
+    <!-- Manual IP input fallback -->
+    <div class="manual-box">
+      <div class="manual-toggle" onclick="toggleManual()">
+        <span>Ввести IP вручную</span>
+        <span id="manual-arrow">▼</span>
+      </div>
+      <div class="manual-fields" id="manual-fields">
+        <input type="text" id="manual-url" placeholder="http://192.168.1.100:8005" />
+        <button class="btn btn-full" onclick="connectManual()">Подключиться к адресу</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const STORAGE_KEY = 'tmusic_custom_server_url';
+    const discoveredServers = new Map();
+    let autoConnectTimer = null;
+    let autoConnectSec = 3;
+
+    function log(msg) {
+      console.log('[TMusicDiscovery]', msg);
+    }
+
+    function toggleManual() {
+      const fields = document.getElementById('manual-fields');
+      const arrow = document.getElementById('manual-arrow');
+      fields.classList.toggle('open');
+      arrow.textContent = fields.classList.contains('open') ? '▲' : '▼';
+    }
+
+    function connectToServer(url) {
+      if (autoConnectTimer) clearInterval(autoConnectTimer);
+      document.getElementById('status-text').textContent = 'Подключение к ' + url + '...';
+      localStorage.setItem(STORAGE_KEY, url);
+
+      if (window.AndroidMediaBridge && window.AndroidMediaBridge.connectToServer) {
+        window.AndroidMediaBridge.connectToServer(url);
+      } else {
+        window.location.href = url;
+      }
+    }
+
+    function connectManual() {
+      let url = document.getElementById('manual-url').value.trim();
+      if (!url) return;
+      if (!url.startsWith('http://') && !url.startsWith('https://')) {
+        url = 'http://' + url;
+      }
+      connectToServer(url);
+    }
+
+    function renderServers() {
+      const container = document.getElementById('servers-container');
+      container.innerHTML = '';
+
+      if (discoveredServers.size === 0) return;
+
+      discoveredServers.forEach(server => {
+        const card = document.createElement('div');
+        card.className = 'server-card active-target';
+
+        const info = document.createElement('div');
+        info.className = 'server-info';
+
+        const nameRow = document.createElement('div');
+        nameRow.className = 'server-name';
+        nameRow.innerHTML = `<span>${server.name || 'T-Music Server'}</span> <span class="badge">${server.method || 'LAN'}</span>`;
+
+        const urlRow = document.createElement('div');
+        urlRow.className = 'server-url';
+        urlRow.textContent = server.url;
+
+        info.appendChild(nameRow);
+        info.appendChild(urlRow);
+
+        const btn = document.createElement('button');
+        btn.className = 'btn';
+        btn.id = 'btn-connect-' + server.ip.replace(/\./g, '_');
+        btn.textContent = 'Подключиться';
+        btn.onclick = () => connectToServer(server.url);
+
+        card.appendChild(info);
+        card.appendChild(btn);
+        container.appendChild(card);
+      });
+    }
+
+    // Called by Android native scanner when a server responds
+    window.__onServerFound = function(server) {
+      log('Server discovered: ' + JSON.stringify(server));
+      discoveredServers.set(server.url, server);
+      renderServers();
+
+      document.getElementById('scan-badge').innerHTML = '✅ Найден сервер!';
+      document.getElementById('scan-badge').style.color = 'var(--accent)';
+      document.getElementById('status-text').textContent = `Обнаружен сервер: ${server.name} (${server.url})`;
+
+      // If only one server found, start auto-connect countdown
+      if (discoveredServers.size === 1 && !autoConnectTimer) {
+        const connectBtn = document.getElementById('btn-connect-' + server.ip.replace(/\./g, '_'));
+        autoConnectSec = 2;
+        if (connectBtn) connectBtn.textContent = `Вход (${autoConnectSec}c)`;
+
+        autoConnectTimer = setInterval(() => {
+          autoConnectSec--;
+          if (autoConnectSec <= 0) {
+            clearInterval(autoConnectTimer);
+            connectToServer(server.url);
+          } else if (connectBtn) {
+            connectBtn.textContent = `Вход (${autoConnectSec}c)`;
+          }
+        }, 1000);
+      }
+    };
+
+    // Called by Android native scanner when scan finishes
+    window.__onScanComplete = function(allServers) {
+      log('Scan complete. Count: ' + (allServers ? allServers.length : 0));
+      document.getElementById('radar1').style.display = 'none';
+      document.getElementById('radar2').style.display = 'none';
+      document.getElementById('radar3').style.display = 'none';
+      document.getElementById('rescan-btn').style.display = 'block';
+
+      if (discoveredServers.size === 0) {
+        document.getElementById('scan-badge').innerHTML = '❌ Сервер не найден';
+        document.getElementById('scan-badge').style.color = 'var(--danger)';
+        document.getElementById('status-text').textContent = 'В этой Wi-Fi сети не найдено активных серверов T-Music. Проверьте запущен ли сервер или укажите IP вручную.';
+        // Auto-open manual fields
+        const fields = document.getElementById('manual-fields');
+        fields.classList.add('open');
+        document.getElementById('manual-arrow').textContent = '▲';
+      }
+    };
+
+    function startDiscovery() {
+      discoveredServers.clear();
+      if (autoConnectTimer) clearInterval(autoConnectTimer);
+      autoConnectTimer = null;
+
+      document.getElementById('servers-container').innerHTML = '';
+      document.getElementById('radar1').style.display = 'block';
+      document.getElementById('radar2').style.display = 'block';
+      document.getElementById('radar3').style.display = 'block';
+      document.getElementById('rescan-btn').style.display = 'none';
+      document.getElementById('scan-badge').innerHTML = '<span class="spin">⚡</span> Сканирование Wi-Fi...';
+      document.getElementById('scan-badge').style.color = 'var(--accent)';
+      document.getElementById('status-text').textContent = 'Поиск сервера T-Music через UDP-маяк и опрос подсети...';
+
+      if (window.AndroidMediaBridge && window.AndroidMediaBridge.startNetworkScan) {
+        window.AndroidMediaBridge.startNetworkScan();
+      } else {
+        // Fallback for browser testing (sweep standard local IPs)
+        simulateBrowserSweep();
+      }
+    }
+
+    function simulateBrowserSweep() {
+      // In normal browser mode, try common ports on localhost
+      const candidates = ['http://127.0.0.1:8005', 'http://localhost:8005', 'http://127.0.0.1:8000'];
+      let checked = 0;
+      candidates.forEach(url => {
+        fetch(url + '/health', { mode: 'cors' })
+          .then(r => r.json())
+          .then(data => {
+            if (data.status === 'ok') {
+              window.__onServerFound({
+                name: data.project || 'T-Music Server',
+                url: url,
+                ip: '127.0.0.1',
+                port: 8005,
+                method: 'web'
+              });
+            }
+          })
+          .catch(() => {})
+          .finally(() => {
+            checked++;
+            if (checked === candidates.length) {
+              window.__onScanComplete(Array.from(discoveredServers.values()));
+            }
+          });
+      });
+    }
+
+    async function init() {
+      // 1. Check if user already has a saved server URL
+      const saved = localStorage.getItem(STORAGE_KEY) || (window.AndroidMediaBridge && window.AndroidMediaBridge.getSavedServerUrl && window.AndroidMediaBridge.getSavedServerUrl());
+      if (saved) {
+        document.getElementById('manual-url').value = saved;
+        document.getElementById('status-text').textContent = 'Проверка сохранённого сервера ' + saved + '...';
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 1200);
+          const res = await fetch(saved + '/health', { signal: controller.signal, mode: 'cors' });
+          clearTimeout(timeoutId);
+          if (res.ok) {
+            // Server is directly available! Connect immediately.
+            connectToServer(saved);
+            return;
+          }
+        } catch (e) {
+          log('Saved server not reachable, scanning network...');
+        }
+      }
+
+      // 2. Start automated Wi-Fi network discovery
+      startDiscovery();
+    }
+
+    window.addEventListener('DOMContentLoaded', init);
+  </script>
+</body>
+</html>

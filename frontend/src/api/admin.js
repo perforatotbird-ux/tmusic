@@ -41,4 +41,37 @@ export const adminApi = {
     }),
 
   tgCluster: () => request('/api/admin/tg/cluster'),
+
+  catalogArtists: (params = {}) => {
+    const qs = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== '')
+    ).toString()
+    return request(qs ? `/api/admin/catalog/artists?${qs}` : '/api/admin/catalog/artists')
+  },
+  patchArtist: (id, body) =>
+    request(`/api/admin/catalog/artists/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  createCollection: (body) =>
+    request('/api/admin/catalog/artists', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  deleteArtist: (id) => request(`/api/admin/catalog/artists/${id}`, { method: 'DELETE' }),
+
+  catalogAlbums: (params = {}) => {
+    const qs = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== '')
+    ).toString()
+    return request(qs ? `/api/admin/catalog/albums?${qs}` : '/api/admin/catalog/albums')
+  },
+  patchAlbum: (id, body) =>
+    request(`/api/admin/catalog/albums/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
 }

@@ -3,19 +3,36 @@ music.env
 .env
 .env.*
 !.env.example
+*.session
+*.session-journal
+*.sqlite
+*.sqlite3
+*.db
+
+# Logs
+*.log
+backend/*.log
+backend/_server.log
+backend/_server_err.log
+
+# IDE & Editor caches
+.mimocode/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
 
 # Data / cache (audio vault, covers, sessions)
 data/
 cache/
 backend/data/
 backend/cache/
-*.session
-*.session-journal
 
 # Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
 .venv/
 venv/
 
@@ -24,8 +41,19 @@ node_modules/
 frontend/dist/
 frontend/node_modules/
 
-# OS / editor
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
+# Mobile / Android
+mobile/node_modules/
+mobile/android/app/build/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/local.properties
+**/local.properties
+mobile/android/keystore.properties
+mobile/android/capacitor-cordova-android-plugins/
+mobile/android/app/src/main/assets/public/
+mobile/android/app/src/main/assets/capacitor.config.json
+mobile/android/app/src/main/res/xml/config.xml
+*.jks
+*.keystore
+*.apk
+*.aab

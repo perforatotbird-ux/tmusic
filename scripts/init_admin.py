@@ -38,22 +38,22 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.hash_only is not None:
-        if len(args.hash_only) < 8:
-            print("ERROR: password must be at least 8 characters.", file=sys.stderr)
+        if len(args.hash_only) < 4:
+            print("ERROR: password must be at least 4 characters.", file=sys.stderr)
             return 2
         print(hash_password(args.hash_only))
         return 0
 
     password = args.password
     if password is None:
-        password = getpass.getpass("New admin password (min 8 chars): ")
+        password = getpass.getpass("New admin password (min 4 chars): ")
         confirm = getpass.getpass("Confirm password: ")
         if password != confirm:
             print("ERROR: passwords do not match.", file=sys.stderr)
             return 2
 
-    if password is not None and len(password) < 8:
-        print("ERROR: password must be at least 8 characters.", file=sys.stderr)
+    if password is not None and len(password) < 4:
+        print("ERROR: password must be at least 4 characters.", file=sys.stderr)
         return 2
 
     with SessionLocal() as db:

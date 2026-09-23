@@ -114,5 +114,28 @@ class PlaylistService:
         )
         return list(db.execute(stmt).all())
 
+    @staticmethod
+    def reorder_items(
+        db: Session, user_id: int, playlist_id: int, item_ids: List[int]
+    ) -> bool:
+        """Persist a full permutation of playlist items (position = list order)."""
+        pl = PlaylistService.get_playlist(db, user_id, playlist_id)
+        if not pl:
+            return False
+        rows = list(
+            db.scalars(
+                select(PlaylistItem).where(PlaylistItem.playlist_id == playlist_id)
+            ).all()
+        )
+        current_ids = {row.id for row in rows}
+        if len(item_ids) != len(set(item_ids)) or set(item_ids) != current_ids:
+            return False
+        by_id = {row.id: row for row in rows}
+        for pos, item_id in enumerate(item_ids, start=1):
+            by_id[item_id].position = pos
+        pl.updated_at = utcnow()
+        db.commit()
+        return True
+
 
 playlist_service = PlaylistService()

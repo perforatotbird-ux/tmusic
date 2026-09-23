@@ -108,6 +108,10 @@ class Settings(BaseSettings):
     DISCOGS_CONSUMER_SECRET: Optional[str] = None
     MUSICBRAINZ_RATE_LIMIT_SEC: float = 1.05
 
+    # Lyrics (LRCLIB proxy — no API key, outbound HTTPS only)
+    LYRICS_ENABLED: bool = True
+    LYRICS_HTTP_TIMEOUT_SEC: int = 8
+
     @property
     def lastfm_secret(self) -> Optional[str]:
         """Effective Last.fm secret (shared_secret is the official env name)."""

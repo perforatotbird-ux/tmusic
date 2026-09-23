@@ -1,0 +1,121 @@
+"""
+T-Music Lyrics service — LRCLIB proxy (no API key).
+
+Docs: https://lrclib.net/docs
+  GET /api/get?artist_name=&track_name=&album_name=&duration=
+  GET /api/search?q=
+
+Network failures and timeouts are swallowed (return None). Never logs secrets
+(LRCLIB needs none).
+"""
+import json
+import logging
+from typing import Any, Dict, Optional
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+from app.core.config import settings
+from app.services.lastfm_service import parse_track_meta
+
+logger = logging.getLogger("tmusic.lyrics")
+
+API_BASE = "https://lrclib.net/api"
+USER_AGENT = "T-Music/1.0 (lyrics client)"
+
+
+def lyrics_enabled() -> bool:
+    return bool(getattr(settings, "LYRICS_ENABLED", True))
+
+
+def _get(path: str, params: Dict[str, Any], timeout: float) -> Optional[dict]:
+    if not lyrics_enabled():
+        return None
+    clean = {k: v for k, v in params.items() if v not in (None, "")}
+    url = f"{API_BASE}/{path}?{urlencode(clean)}"
+    req = Request(url, method="GET", headers={"User-Agent": USER_AGENT})
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            return json.loads(raw) if raw else None
+    except Exception as e:
+        # 404 (no match) and network errors both land here as URLError/HTTPError.
+        logger.debug("LRCLIB %s failed: %s", path, e)
+        return None
+
+
+def _normalize(node: Dict[str, Any]) -> Optional[dict]:
+    plain = (node.get("plainLyrics") or "").strip()
+    synced = (node.get("syncedLyrics") or "").strip()
+    if not plain and not synced:
+        return None
+    return {
+        "found": True,
+        "source": "lrclib",
+        "plain": plain or None,
+        "synced": synced or None,
+        "artist": node.get("artistName"),
+        "track": node.get("trackName"),
+        "album": node.get("albumName"),
+        "duration_sec": node.get("duration"),
+    }
+
+
+def get_lyrics(
+    artist: Optional[str] = None,
+    track: Optional[str] = None,
+    album: Optional[str] = None,
+    duration_sec: Optional[float] = None,
+    file_name: Optional[str] = None,
+) -> Optional[dict]:
+    """Best-effort lyrics lookup: exact /api/get then /api/search."""
+    if not lyrics_enabled():
+        return None
+    parsed_artist, parsed_track, parsed_album = parse_track_meta(
+        file_name, artist, track, album
+    )
+    artist = (artist or parsed_artist or "").strip()
+    track = (track or parsed_track or "").strip()
+    if not track or artist == "Unknown" and not track:
+        return None
+    if not track:
+        return None
+
+    timeout = float(getattr(settings, "LYRICS_HTTP_TIMEOUT_SEC", 8) or 8)
+    duration = int(duration_sec) if duration_sec and duration_sec > 0 else None
+
+    if artist and artist != "Unknown":
+        data = _get(
+            "get",
+            {
+                "artist_name": artist,
+                "track_name": track,
+                "album_name": album or parsed_album,
+                "duration": duration,
+            },
+            timeout,
+        )
+        if data:
+            normalized = _normalize(data)
+            if normalized:
+                return normalized
+
+    query = f"{artist} {track}".strip() if artist and artist != "Unknown" else track
+    hits = _get("search", {"q": query}, timeout)
+    if isinstance(hits, list) and hits:
+        # Prefer synced lyrics, then exact artist match, then shortest duration gap.
+        def score(node: dict) -> tuple:
+            has_sync = 0 if (node.get("syncedLyrics") or "").strip() else 1
+            artist_match = 0
+            if artist and artist != "Unknown":
+                artist_match = 0 if (node.get("artistName") or "").lower() == artist.lower() else 1
+            dur = node.get("duration")
+            dur_gap = abs(int(dur) - duration) if (duration and dur) else 9999
+            return (has_sync, artist_match, dur_gap)
+
+        for node in sorted(hits, key=score):
+            if not isinstance(node, dict):
+                continue
+            normalized = _normalize(node)
+            if normalized:
+                return normalized
+    return None

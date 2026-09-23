@@ -38,3 +38,7 @@ class PlaylistDetail(PlaylistSummary):
 
 class PlaylistItemAdd(BaseModel):
     file_id: int
+
+
+class PlaylistReorder(BaseModel):
+    item_ids: List[int] = Field(min_length=1, max_length=5000)

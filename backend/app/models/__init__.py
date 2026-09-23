@@ -5,8 +5,9 @@ from app.models.base import Base
 from app.models.vfs import TGAccount, Folder, FolderClosure, VFile
 from app.models.music import MusicArtist, MusicAlbum
 from app.models.auth import AppUser, RevokedToken, AppSetting
-from app.models.playback import PlaybackPosition, ListeningHistory
+from app.models.playback import PlaybackPosition, ListeningHistory, UserFavorite
 from app.models.playlist import Playlist, PlaylistItem
+from app.models.share import ShareLink
 
 __all__ = [
     "Base",
@@ -21,6 +22,8 @@ __all__ = [
     "AppSetting",
     "PlaybackPosition",
     "ListeningHistory",
+    "UserFavorite",
     "Playlist",
     "PlaylistItem",
+    "ShareLink",
 ]

@@ -5,13 +5,12 @@ Mount: /rest/*
 Clients: Ultrasonic, Symfonium, DSub, Subtracks, etc.
 Auth query params: u, p (password/token) OR t=md5(token+salt)&s=salt, c, v, f=json|xml
 """
-import hashlib
 import logging
 import re
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import unquote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -21,9 +20,11 @@ from app.core.database import get_db
 from app.models.auth import AppUser
 from app.models.music import MusicAlbum, MusicArtist
 from app.models.playlist import Playlist, PlaylistItem
+from app.models.share import ShareLink
 from app.models.vfs import VFile
 from app.repositories.file_repository import FileRepository
-from app.services import subsonic_auth
+from app.services import lastfm_service, lyrics_service, subsonic_auth
+from app.services.playback_service import playback_service
 from app.services.stream_service import stream_service
 from app.services.subsonic_response import (
     album_entry,
@@ -147,6 +148,67 @@ def _random_song_rows(db: Session, size: int) -> list:
     return rows
 
 
+def _file_song(db: Session, vf: VFile) -> Dict[str, Any]:
+    alb = None
+    artist = None
+    if vf.folder_id:
+        alb = db.scalar(select(MusicAlbum).where(MusicAlbum.folder_id == vf.folder_id))
+        if alb:
+            artist = _catalog_artist(db, alb.artist_id)
+    return song_entry(
+        vf,
+        artist=artist.display_name if artist else "Unknown",
+        album=alb.title if alb else "Unknown",
+        artist_id=alb.artist_id if alb else None,
+        album_id=alb.id if alb else None,
+    )
+
+
+def _file_artist_name(db: Session, vf: VFile) -> Optional[str]:
+    if not vf.folder_id:
+        return None
+    alb = db.scalar(select(MusicAlbum).where(MusicAlbum.folder_id == vf.folder_id))
+    if not alb:
+        return None
+    artist = _catalog_artist(db, alb.artist_id)
+    return artist.display_name if artist else None
+
+
+def _multi_ids(request: Request, params: Dict[str, Any], key: str = "id") -> list:
+    vals = request.query_params.getlist(key) or request.query_params.getlist(f"{key}[]")
+    if not vals and params.get(key):
+        vals = [params.get(key)]
+    return vals
+
+
+def _get_song(db: Session, raw_id: Any):
+    kind, num = _parse_id(raw_id)
+    if num is None:
+        return None
+    vf = FileRepository.get_by_id(db, num)
+    if not vf or vf.is_trash or not (vf.mime_type or "").startswith("audio/"):
+        return None
+    return vf
+
+
+_LRC_RE = re.compile(r"\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]")
+
+
+def _parse_lrc(synced: str) -> list:
+    out = []
+    for raw in synced.splitlines():
+        m = _LRC_RE.search(raw)
+        if not m:
+            continue
+        mm, ss = int(m.group(1)), int(m.group(2))
+        frac = m.group(3) or "0"
+        ms = (mm * 60 + ss) * 1000 + int(frac.ljust(3, "0")[:3])
+        value = _LRC_RE.sub("", raw).strip()
+        if value:
+            out.append({"value": value, "start": ms})
+    return out
+
+
 async def _handle(
     method: str,
     request: Request,
@@ -193,7 +255,7 @@ async def _handle(
                 "podcastRole": False,
                 "streamRole": True,
                 "jukeboxRole": False,
-                "shareRole": False,
+                "shareRole": True,
                 "videoConversionRole": False,
                 "folder": [1],
             },
@@ -203,7 +265,6 @@ async def _handle(
         return ok("musicFolders", [{"id": 1, "name": "T-Music"}])
 
     if method in ("getIndexes", "getArtists"):
-        music_folder_id = params.get("musicFolderId")
         stmt = select(MusicArtist).order_by(MusicArtist.display_name)
         artists = list(db.scalars(stmt).all())
         entries = []
@@ -567,6 +628,305 @@ async def _handle(
 
     if method in ("getScanStatus", "startScan"):
         return ok("scanStatus", {"scanning": False, "count": 0})
+
+    if method in ("star", "unstar"):
+        want = method == "star"
+        ids = _multi_ids(request, params, "id")
+        for sid in ids:
+            vf = _get_song(db, sid)
+            if vf:
+                playback_service.set_favorite(db, user.id, vf.id, want)
+        return ok()
+
+    if method in ("getStarred", "getStarred2"):
+        rows, _total = playback_service.list_favorites(db, user.id, limit=500)
+        songs = []
+        for _fav, vf in rows:
+            if vf:
+                songs.append(_file_song(db, vf))
+        return ok("starred2" if method == "getStarred2" else "starred", {"song": songs})
+
+    if method in ("addSongRating",):
+        vf = _get_song(db, params.get("id"))
+        if not vf:
+            return _respond(fail(70, "Song not found."), f)
+        try:
+            rating = int(params.get("rating") or 0)
+        except (TypeError, ValueError):
+            rating = 0
+        playback_service.set_favorite(db, user.id, vf.id, rating >= 4)
+        return ok()
+
+    if method in ("scrobble",):
+        vf = _get_song(db, params.get("id"))
+        if not vf:
+            return _respond(fail(70, "Song not found."), f)
+        submission = (params.get("submission") or "true").lower() not in ("false", "0", "no")
+        try:
+            time_ms = int(params.get("time") or 0)
+        except (TypeError, ValueError):
+            time_ms = 0
+        alb = None
+        if vf.folder_id:
+            alb = db.scalar(select(MusicAlbum).where(MusicAlbum.folder_id == vf.folder_id))
+        album_title = alb.title if alb else None
+        artist, track, album = lastfm_service.parse_track_meta(
+            vf.name, _file_artist_name(db, vf), None, album_title
+        )
+        if submission:
+            pos = playback_service.get_position(db, user.id, vf.id)
+            total = pos.duration_sec if pos else None
+            playback_service.add_history(
+                db,
+                user.id,
+                vf.id,
+                duration_played_sec=float(total or 0),
+                track_duration_sec=total,
+                completed=True,
+            )
+            try:
+                lastfm_service.scrobble(
+                    artist,
+                    track,
+                    album,
+                    timestamp=(time_ms // 1000) if time_ms > 0 else None,
+                )
+            except Exception:
+                pass
+        else:
+            try:
+                lastfm_service.update_now_playing(artist, track, album)
+            except Exception:
+                pass
+        return ok()
+
+    if method in ("getLyrics",):
+        artist = params.get("artist")
+        title = params.get("title") or params.get("track")
+        data = None
+        if title:
+            data = lyrics_service.get_lyrics(artist=artist, track=title, album=params.get("album"))
+        value = ""
+        if data:
+            value = (data.get("plain") or data.get("synced") or "").strip()
+        return ok(
+            "lyrics",
+            {
+                "artist": artist or "",
+                "title": title or "",
+                "value": value,
+            },
+        )
+
+    if method in ("getLyricsBySongId",):
+        vf = _get_song(db, params.get("id"))
+        if not vf:
+            return _respond(fail(70, "Song not found."), f)
+        alb = None
+        if vf.folder_id:
+            alb = db.scalar(select(MusicAlbum).where(MusicAlbum.folder_id == vf.folder_id))
+        artist_name = _file_artist_name(db, vf)
+        base = (vf.name or "").rsplit("/", 1)[-1]
+        if "." in base:
+            base = base.rsplit(".", 1)[0]
+        parsed_artist, parsed_track, _ = lastfm_service.parse_track_meta(
+            vf.name, artist_name, None, alb.title if alb else None
+        )
+        data = lyrics_service.get_lyrics(
+            artist=parsed_artist,
+            track=parsed_track,
+            album=alb.title if alb else None,
+            file_name=vf.name,
+        )
+        structured = []
+        if data:
+            plain = (data.get("plain") or "").strip()
+            synced = (data.get("synced") or "").strip()
+            if plain:
+                structured.append(
+                    {
+                        "format": "plain",
+                        "line": [{"value": ln} for ln in plain.splitlines()],
+                        "synced": False,
+                        "displayArtist": parsed_artist or "",
+                        "displayTitle": parsed_track or base,
+                    }
+                )
+            if synced:
+                lrc_lines = _parse_lrc(synced)
+                if lrc_lines:
+                    structured.append(
+                        {
+                            "format": "lrc",
+                            "line": lrc_lines,
+                            "synced": True,
+                            "displayArtist": parsed_artist or "",
+                            "displayTitle": parsed_track or base,
+                        }
+                    )
+        return ok("structuredLyrics", structured)
+
+    if method in ("getSimilarSongs", "getSimilarSongs2"):
+        limit = 10
+        try:
+            limit = max(1, min(int(params.get("count") or 10), 100))
+        except (TypeError, ValueError):
+            pass
+        vf = _get_song(db, params.get("id"))
+        if not vf:
+            return _respond(fail(70, "Song not found."), f)
+        artist_name = _file_artist_name(db, vf)
+        similar_names = []
+        if artist_name:
+            try:
+                info = lastfm_service.get_artist_info(artist_name)
+                if info:
+                    similar_names = info.get("similar") or []
+            except Exception:
+                similar_names = []
+        rows = []
+        if similar_names:
+            pattern_list = [n.lower() for n in similar_names if n]
+            if pattern_list:
+                artists = list(
+                    db.scalars(
+                        select(MusicArtist)
+                        .where(func.lower(MusicArtist.display_name).in_(pattern_list))
+                        .limit(limit)
+                    ).all()
+                )
+                for a in artists:
+                    for song in _artist_songs(db, a, limit=limit):
+                        rows.append(song)
+                        if len(rows) >= limit:
+                            break
+                    if len(rows) >= limit:
+                        break
+        if not rows:
+            rows = _random_song_rows(db, limit)
+        return ok("similarSongs", rows[:limit])
+
+    if method in ("getTopSongs",):
+        try:
+            limit = max(1, min(int(params.get("count") or 10), 100))
+        except (TypeError, ValueError):
+            limit = 10
+        return ok("topSongs", _random_song_rows(db, limit))
+
+    if method in ("getArtistInfo", "getArtistInfo2"):
+        artist = None
+        if method == "getArtistInfo2":
+            kind, num = _parse_id(params.get("id"))
+            if num is not None:
+                artist = _catalog_artist(db, num)
+        else:
+            name = (params.get("artist") or "").strip()
+            if name:
+                artist = db.scalar(
+                    select(MusicArtist).where(func.lower(MusicArtist.display_name) == name.lower())
+                )
+        if not artist:
+            return _respond(fail(70, "Artist not found."), f)
+        bio = artist.bio or ""
+        similar_names: list = []
+        tags: list = []
+        if lastfm_service.metadata_ready():
+            try:
+                info = lastfm_service.get_artist_info(artist.display_name)
+                if info:
+                    bio = bio or info.get("summary") or ""
+                    similar_names = info.get("similar") or []
+                    tags = info.get("tags") or []
+            except Exception:
+                pass
+        payload = {
+            "id": f"ar-{artist.id}",
+            "name": artist.display_name,
+            "coverArt": f"ar-{artist.id}",
+            "albumCount": db.scalar(
+                select(func.count(MusicAlbum.id)).where(MusicAlbum.artist_id == artist.id)
+            )
+            or 0,
+            "biography": bio,
+            "mbid": artist.mbid,
+            "similarArtist": [
+                {"id": None, "name": n, "albumCount": 0, "coverArt": None}
+                for n in similar_names[:10]
+            ],
+            "externalInfo": {
+                "tags": tags,
+            },
+        }
+        return ok("artistInfo", payload)
+
+    if method in ("getAlbumInfo",):
+        kind, num = _parse_id(params.get("id"))
+        if num is None:
+            return _respond(fail(70, "Album not found."), f)
+        alb = db.scalar(select(MusicAlbum).where(MusicAlbum.id == num))
+        if not alb:
+            return _respond(fail(70, "Album not found."), f)
+        artist = _catalog_artist(db, alb.artist_id)
+        payload = album_entry(
+            alb,
+            artist=artist.display_name if artist else "Unknown",
+            artist_id=alb.artist_id,
+        )
+        payload["notes"] = ""
+        return ok("albumInfo", payload)
+
+    if method in ("getNowPlayingList",):
+        return ok("nowPlayingList", [])
+
+    if method in ("getGenres",):
+        return ok("genres", [])
+
+    if method in ("createShare",):
+        ids = _multi_ids(request, params, "id")
+        if not ids:
+            return _respond(fail(10, "At least one song ID is required."), f)
+        from app.api.share_router import create_share_impl
+
+        shares = []
+        for sid in ids:
+            vf = _get_song(db, sid)
+            if not vf:
+                continue
+            share = create_share_impl(db, user.id, vf.id)
+            shares.append(
+                {
+                    "id": str(share.id),
+                    "url": share.token,
+                    "description": vf.name,
+                    "created": ts(share.created_at),
+                    "entry": [_file_song(db, vf)],
+                }
+            )
+        if not shares:
+            return _respond(fail(70, "Media not found."), f)
+        return ok("share", shares[0])
+
+    if method in ("getShares",):
+        rows = db.execute(
+            select(ShareLink, VFile)
+            .outerjoin(VFile, VFile.id == ShareLink.file_id)
+            .where(ShareLink.user_id == user.id)
+            .order_by(ShareLink.created_at.desc())
+        ).all()
+        entries = []
+        for share, vf in rows:
+            if not vf:
+                continue
+            entries.append(
+                {
+                    "id": str(share.id),
+                    "url": share.token,
+                    "description": vf.name,
+                    "created": ts(share.created_at),
+                    "entry": [_file_song(db, vf)],
+                }
+            )
+        return ok("shares", entries)
 
     return _respond(fail(0, f"Method '{method}' is not implemented by T-Music."), f)
 

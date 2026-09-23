@@ -13,6 +13,9 @@ from app.core.database import get_db
 from app.models.auth import AppUser
 from app.models.vfs import VFile
 from app.schemas.playback import (
+    FavoriteItem,
+    FavoriteList,
+    FavoriteToggleResponse,
     HistoryCreate,
     HistoryItem,
     HistoryList,
@@ -187,3 +190,37 @@ async def search_tracks(
         )
         for vf in files
     ]
+
+
+@router.get("/favorites", response_model=FavoriteList)
+async def list_favorites(
+    limit: int = Query(500, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    rows, total = playback_service.list_favorites(db, user.id, limit=limit, offset=offset)
+    items = [
+        FavoriteItem(
+            file_id=fav.file_id,
+            file_name=vf.name if vf else None,
+            size=vf.size if vf else None,
+            mime_type=vf.mime_type if vf else None,
+            folder_id=vf.folder_id if vf else None,
+            stream_url=f"/api/stream/{fav.file_id}",
+            created_at=fav.created_at,
+        )
+        for fav, vf in rows
+    ]
+    return FavoriteList(items=items, total=total)
+
+
+@router.post("/favorites/{file_id}", response_model=FavoriteToggleResponse)
+async def toggle_favorite(
+    file_id: int,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    _require_vfile(db, file_id)
+    is_fav = playback_service.toggle_favorite(db, user.id, file_id)
+    return FavoriteToggleResponse(file_id=file_id, is_favorite=is_fav)

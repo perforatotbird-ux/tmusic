@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { streamApi } from '../api/stream'
 import { setMediaPlaybackState } from '../services/mediaSession'
+import { IS_NATIVE } from '../services/nativeBridge'
 
 const precachedTracks = new Set()
 // In-flight prefetch aborters, keyed by track id: a new playQueue aborts
@@ -79,6 +80,7 @@ export const usePlayerStore = create((set, get) => {
 
   /** Resume on next user gesture / tab visible if OS blocked autoplay. */
   function armGlobalResume() {
+    if (IS_NATIVE) return
     const handler = () => {
       const { isPlaying, currentTrack, audioElement } = get()
       if (!isPlaying || !currentTrack || !audioElement) {
@@ -109,7 +111,7 @@ export const usePlayerStore = create((set, get) => {
 
   /** Resume watchdog: OS pause vs store isPlaying=true (lockscreen case). */
   function ensureWatchdog() {
-    if (get()._watchdogId) return
+    if (IS_NATIVE || get()._watchdogId) return
     const id = setInterval(() => {
       const { isPlaying, currentTrack, audioElement } = get()
       if (!isPlaying || !currentTrack || !audioElement) {

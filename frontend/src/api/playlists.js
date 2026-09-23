@@ -26,4 +26,11 @@ export const playlistsApi = {
 
   removeItem: (playlistId, itemId) =>
     request(`/api/playlists/${playlistId}/items/${itemId}`, { method: 'DELETE' }),
+
+  reorder: (playlistId, itemIds) =>
+    request(`/api/playlists/${playlistId}/items/order`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_ids: itemIds }),
+    }),
 }

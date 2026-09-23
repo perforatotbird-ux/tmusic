@@ -21,6 +21,9 @@ class MusicArtist(Base):
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     folder_id: Mapped[int] = mapped_column(ForeignKey("folders.id", ondelete="CASCADE"), unique=True, index=True)
     kind: Mapped[str] = mapped_column(String, default="artist", index=True)  # artist | compilation | standalone_album | genre_collection
+    parent_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("music_artists.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     display_name: Mapped[str] = mapped_column(String)
     search_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     mbid: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -37,11 +40,18 @@ class MusicArtist(Base):
     albums: Mapped[List["MusicAlbum"]] = relationship(
         "MusicAlbum", back_populates="artist", cascade="all, delete-orphan"
     )
+    # Self-referencing catalog hierarchy: collections/compilations can nest
+    # artists, other collections, etc. Deletion detaches children (SET NULL),
+    # never cascades into them.
+    parent: Mapped[Optional["MusicArtist"]] = relationship(
+        "MusicArtist", remote_side=[id], backref="children"
+    )
 
     __table_args__ = (
         Index("idx_music_artists_kind", "kind"),
         Index("idx_music_artists_display_name", "display_name"),
         Index("idx_music_artists_search_name", "search_name"),
+        Index("idx_music_artists_parent", "parent_id"),
     )
 
 

@@ -23,6 +23,16 @@ _LIST_TAGS = {
     "children": "child",
     "shortcuts": "shortcut",
     "indexes": "index",
+    "similarSongs": "child",
+    "topSongs": "child",
+    "nowPlayingList": "child",
+    "starred": "child",
+    "starred2": "child",
+    "structuredLyrics": "structuredLyric",
+    "line": "line",
+    "genres": "genre",
+    "share": "entry",
+    "shares": "entry",
 }
 
 

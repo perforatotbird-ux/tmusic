@@ -15,6 +15,7 @@ _ARTIST_CARD_COLUMNS = (
     MusicArtist.id,
     MusicArtist.folder_id,
     MusicArtist.kind,
+    MusicArtist.parent_id,
     MusicArtist.display_name,
     MusicArtist.custom_image_key,
     MusicArtist.image_url,
@@ -47,8 +48,12 @@ class ArtistRepository:
         search: Optional[str] = None,
         limit: int = 200,
         offset: int = 0
-    ) -> List[Tuple[MusicArtist, int]]:
-        """List artists with album_count via correlated subquery (no full album load)."""
+    ) -> List[Tuple[MusicArtist, int, Optional[str], int]]:
+        """List artists with album_count, parent_name, children_count.
+
+        All three aggregates ride as correlated subqueries in one round trip —
+        no join fan-out and no lazy loads while building the card list.
+        """
         album_count = (
             select(func.count(MusicAlbum.id))
             .where(MusicAlbum.artist_id == MusicArtist.id)
@@ -56,8 +61,24 @@ class ArtistRepository:
             .scalar_subquery()
             .label("album_count")
         )
+        parent = select(MusicArtist).alias("parent_entity")
+        parent_name = (
+            select(parent.c.display_name)
+            .where(parent.c.id == MusicArtist.parent_id)
+            .correlate(MusicArtist)
+            .scalar_subquery()
+            .label("parent_name")
+        )
+        child = select(MusicArtist).alias("child_entity")
+        children_count = (
+            select(func.count(child.c.id))
+            .where(child.c.parent_id == MusicArtist.id)
+            .correlate(MusicArtist)
+            .scalar_subquery()
+            .label("children_count")
+        )
         stmt = (
-            select(MusicArtist, album_count)
+            select(MusicArtist, album_count, parent_name, children_count)
             .options(load_only(*_ARTIST_CARD_COLUMNS))
         )
         if kind and kind not in ("null", "undefined"):
@@ -77,3 +98,35 @@ class ArtistRepository:
         if kind:
             stmt = stmt.where(MusicArtist.kind == kind)
         return db.execute(stmt).scalar() or 0
+
+    @staticmethod
+    def list_children(db: Session, parent_id: int) -> List[MusicArtist]:
+        """Direct children of a catalog card, ordered by display name."""
+        stmt = (
+            select(MusicArtist)
+            .options(load_only(*_ARTIST_CARD_COLUMNS))
+            .where(MusicArtist.parent_id == parent_id)
+            .order_by(MusicArtist.display_name.asc())
+        )
+        return list(db.execute(stmt).scalars().all())
+
+    @staticmethod
+    def ancestor_ids(db: Session, artist_id: int, max_depth: int = 64) -> List[int]:
+        """Chain of parent ids above artist_id (nearest parent first).
+
+        The depth cap is a self-healing guard against reference cycles that
+        could have been written outside the service layer.
+        """
+        chain: List[int] = []
+        current_id: Optional[int] = artist_id
+        for _ in range(max_depth):
+            if current_id is None:
+                break
+            row = db.execute(
+                select(MusicArtist.parent_id).where(MusicArtist.id == current_id)
+            ).scalar_one_or_none()
+            if row is None:
+                break
+            chain.append(row)
+            current_id = row
+        return chain

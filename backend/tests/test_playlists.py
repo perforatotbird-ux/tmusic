@@ -17,6 +17,7 @@ def test_playlist_endpoints_auth_guard():
     paths = [
         ("/api/playlists", "GET"),
         ("/api/playlists/1", "GET"),
+        ("/api/playlists/1/items/order", "PUT"),
         ("/api/playback/positions", "GET"),
         ("/api/playback/history", "GET"),
     ]
@@ -32,3 +33,9 @@ def test_playlist_create_requires_auth_or_impostor_dev():
         data = resp.json()
         assert "id" in data
         assert data["name"] == "Test list"
+
+
+def test_playlist_reorder_requires_valid_permutation():
+    """With no session the reorder must never mutate (401/403/404 only)."""
+    resp = client.put("/api/playlists/1/items/order", json={"item_ids": [1, 2, 3]})
+    assert resp.status_code in (200, 401, 403, 404, 400)

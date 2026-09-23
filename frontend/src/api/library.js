@@ -32,6 +32,10 @@ function invalidateCatalogCache() {
   }
 }
 
+export function bustCatalogCache() {
+  invalidateCatalogCache()
+}
+
 export const libraryApi = {
   getArtists: (params = {}) => {
     const qs = toQuery(params)

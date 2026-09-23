@@ -4,7 +4,8 @@ Endpoints for username/password login, profile status, and password updates.
 """
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, File, Form
+from fastapi.responses import Response as RawResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
@@ -19,9 +20,21 @@ from app.schemas.auth import (
     ChangePasswordRequest,
 )
 from app.services.auth_service import AuthService
+from app.services.cover_cache_service import cover_cache, is_safe_host, MAX_IMAGE_BYTES
 from app.utils.client_ip import get_client_ip
+from app.utils.http import cover_cache_headers
+from app.utils.time import utcnow
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+# Same bound as library cover uploads: cap RAM buffering, real check after decode.
+MAX_AVATAR_UPLOAD_BYTES = MAX_IMAGE_BYTES + 1
+
+
+def _avatar_url(user: AppUser) -> Optional[str]:
+    if user.avatar_key:
+        return f"/api/auth/avatar?v={user.avatar_version or 0}"
+    return None
 
 
 def _set_session_cookie(response: Response, token_resp: TokenResponse) -> None:
@@ -61,6 +74,7 @@ async def get_me(user: AppUser = Depends(get_current_user)):
         username=user.username,
         is_active=user.is_active,
         role=getattr(user, "role", "user") or "user",
+        avatar_url=_avatar_url(user),
     )
 
 
@@ -92,4 +106,76 @@ async def logout(
         revoke_access_token(db, token)
     response.delete_cookie(key="access_token")
     response.delete_cookie(key=CSRF_COOKIE, path="/")
+    return {"status": "ok"}
+
+
+@router.get("/avatar")
+async def get_avatar(user: AppUser = Depends(get_current_user)):
+    """Serve the current user's profile avatar (custom-cover store)."""
+    if not user.avatar_key:
+        raise HTTPException(status_code=404, detail="No avatar set.")
+    cached = cover_cache.get_cached_item(user.avatar_key, is_custom=True)
+    if cached:
+        data, mime = cached
+        return RawResponse(content=data, media_type=mime, headers=cover_cache_headers(user.avatar_key))
+    path = cover_cache.get_cached_path(user.avatar_key, is_custom=True)
+    if path:
+        from fastapi.responses import FileResponse
+        return FileResponse(path, headers=cover_cache_headers(user.avatar_key))
+    raise HTTPException(status_code=404, detail="Avatar not found.")
+
+
+@router.post("/avatar")
+async def set_avatar(
+    request: Request,
+    url: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    """Set profile avatar from an uploaded file or an image URL."""
+    if file:
+        declared = request.headers.get("content-length")
+        if declared is not None:
+            try:
+                if int(declared) > MAX_AVATAR_UPLOAD_BYTES + 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="Uploaded file is too large.")
+            except ValueError:
+                pass
+        try:
+            content = await file.read(MAX_AVATAR_UPLOAD_BYTES)
+        finally:
+            await file.close()
+        if len(content) >= MAX_AVATAR_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Uploaded file is too large.")
+        key = cover_cache.save_custom_cover(content)
+        if not key:
+            raise HTTPException(status_code=400, detail="Invalid image file or unsupported format.")
+    elif url:
+        if not await is_safe_host(url):
+            raise HTTPException(status_code=400, detail="Restricted or invalid image URL.")
+        data, _ = await cover_cache.fetch_and_cache(url)
+        if not data:
+            raise HTTPException(status_code=502, detail="Failed to download image from provided URL.")
+        key = cover_cache.save_custom_cover(data)
+    else:
+        raise HTTPException(status_code=400, detail="Provide either an image file or a valid URL.")
+
+    user.avatar_key = key
+    user.avatar_version = (user.avatar_version or 0) + 1
+    user.updated_at = utcnow()
+    db.commit()
+    return {"status": "ok", "avatar_url": _avatar_url(user)}
+
+
+@router.delete("/avatar")
+async def reset_avatar(
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    """Remove the profile avatar (falls back to the letter badge)."""
+    user.avatar_key = None
+    user.avatar_version = (user.avatar_version or 0) + 1
+    user.updated_at = utcnow()
+    db.commit()
     return {"status": "ok"}

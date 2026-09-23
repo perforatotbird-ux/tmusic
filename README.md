@@ -74,6 +74,26 @@ start_tmusic.bat
 
 ---
 
+## 📱 Мобильное приложение (Android 14+)
+
+Проект включает нативную оболочку для Android 14+ (API 34) на базе Capacitor в remote-режиме, с поддержкой:
+- Фонового воспроизведения через Foreground Service (`mediaPlayback`);
+- Управления и обложек на экране блокировки (`MediaSessionCompat`, `NotificationCompat.MediaStyle`);
+- Управления с Bluetooth-гарнитур и проводных наушников;
+- Защиты от засыпания процессора (`PARTIAL_WAKE_LOCK`).
+
+### Сборка APK:
+```powershell
+# Сборка Debug APK под ваш сервер:
+.\scripts\build_android_apk.ps1 -ServerUrl "https://your-tmusic-domain.com"
+
+# Установка на подключённое устройство через ADB:
+adb install -r mobile/app-debug.apk
+```
+Подробности сборки, настройки ключей Release и оптимизации батареи: [`mobile/README.md`](mobile/README.md) и заметка в базе знаний `obsidian/10-Мобильное/Android APK.md`.
+
+---
+
 ## 🔒 Безопасность
 
 Подробное описание мер безопасности и защиты интернет-доступа приведено в файле [SECURITY.md](SECURITY.md).

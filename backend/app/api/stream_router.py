@@ -101,12 +101,16 @@ async def stream_audio_file(
     headers = {
         "Content-Disposition": f"inline; filename*=UTF-8''{encoded_name}",
         "Accept-Ranges": "bytes",
-        "Content-Range": f"bytes {start}-{end}/{total_size}",
         "Content-Length": str(content_length),
         "Cache-Control": "private, max-age=3600"
     }
 
     status_code = 206 if range_header else 200
+    if status_code == 206:
+        # Content-Range MUST only be sent with 206 (RFC 7233). Sending it
+        # on a 200 breaks duration detection in Chrome — duration stays
+        # NaN/Infinity, 'ended' never fires, playlist auto-advance stalls.
+        headers["Content-Range"] = f"bytes {start}-{end}/{total_size}"
 
     stream_gen = stream_service.get_stream_generator(track, start, content_length)
 

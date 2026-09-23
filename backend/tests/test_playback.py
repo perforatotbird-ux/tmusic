@@ -40,6 +40,8 @@ def test_playback_endpoints_guard():
         ("/api/playback/history", "GET"),
         ("/api/playback/tracks/search", "GET"),
         ("/api/playback/positions", "GET"),
+        ("/api/playback/favorites", "GET"),
+        ("/api/playback/favorites/1", "POST"),
     ]:
         resp = client.request(method, path)
         assert resp.status_code in (200, 401), f"{method} {path} -> {resp.status_code}"

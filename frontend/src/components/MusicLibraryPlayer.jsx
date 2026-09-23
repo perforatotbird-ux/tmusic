@@ -1,6 +1,10 @@
-import React, { useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { usePlayerStore } from '../store/playerStore'
+import { useFavoritesStore } from '../store/favoritesStore'
+import { useAuthStore } from '../store/authStore'
 import { resolveReleaseCoverUrl } from '../utils/cover'
+import { metadataApi } from '../api/metadata'
+import { parseLrc, findLrcIndex, plainLines } from '../utils/lrc'
 import {
   Play,
   Pause,
@@ -16,6 +20,8 @@ import {
   ListMusic,
   ChevronDown,
   Trash2,
+  Star,
+  FileText,
 } from 'lucide-react'
 
 function formatTime(seconds) {
@@ -27,6 +33,12 @@ function formatTime(seconds) {
 
 export function MusicLibraryPlayer() {
   const [showQueue, setShowQueue] = useState(false)
+  const [showLyrics, setShowLyrics] = useState(false)
+  const [lyrics, setLyrics] = useState(null) // LyricsResponse | null
+  const [lyricsLoading, setLyricsLoading] = useState(false)
+  const [lyricsError, setLyricsError] = useState(null)
+  const lyricsSeq = useRef(0)
+  const lyricsScrollRef = useRef(null)
   const {
     currentTrack,
     currentRelease,
@@ -52,6 +64,76 @@ export function MusicLibraryPlayer() {
     setPlayerExpanded,
     playQueue,
   } = usePlayerStore()
+  const { isAuthenticated } = useAuthStore()
+  const favIds = useFavoritesStore((s) => s.ids)
+  const loadFavorites = useFavoritesStore((s) => s.load)
+  const toggleFavorite = useFavoritesStore((s) => s.toggle)
+
+  useEffect(() => {
+    if (isAuthenticated) loadFavorites()
+  }, [isAuthenticated, loadFavorites])
+
+  // Fetch lyrics when panel is open and track changes (or on first open).
+  const trackId = currentTrack?.id ?? null
+  const trackName = currentTrack?.name ?? ''
+  useEffect(() => {
+    if (!showLyrics || !trackId || !isAuthenticated) return undefined
+    const seq = ++lyricsSeq.current
+    setLyricsLoading(true)
+    setLyricsError(null)
+    ;(async () => {
+      try {
+        const release = usePlayerStore.getState().currentRelease
+        const artistName = release?.artistName
+        const artist =
+          artistName && artistName !== 'T-Music' && artistName !== 'Недавнее'
+            ? artistName
+            : null
+        const base = trackName.replace(/\.[^/.]+$/, '')
+        // When artist comes from the release context, strip "Artist - " from the title hint.
+        let trackHint = base
+        if (artist && base.includes(' - ')) {
+          trackHint = base.split(' - ').slice(1).join(' - ').trim()
+        }
+        const res = await metadataApi.lyrics({
+          artist,
+          track: artist ? trackHint : undefined,
+          duration: usePlayerStore.getState().duration || null,
+          fileName: trackName,
+        })
+        if (seq !== lyricsSeq.current) return
+        setLyrics(res?.found ? res : null)
+      } catch (e) {
+        if (seq !== lyricsSeq.current) return
+        setLyrics(null)
+        setLyricsError(e?.message || 'Не удалось загрузить текст')
+      } finally {
+        if (seq === lyricsSeq.current) setLyricsLoading(false)
+      }
+    })()
+    return () => {
+      /* seq guard cancels stale writes */
+    }
+  }, [showLyrics, trackId, trackName, isAuthenticated])
+
+  const lrcLines = useMemo(() => parseLrc(lyrics?.synced || ''), [lyrics])
+  const activeLine = useMemo(
+    () => (lrcLines.length ? findLrcIndex(lrcLines, currentTime) : -1),
+    [lrcLines, currentTime]
+  )
+  const displayLines = useMemo(() => {
+    if (lrcLines.length) return lrcLines.map((l) => l.text || ' ')
+    return plainLines(lyrics?.plain || '')
+  }, [lrcLines, lyrics])
+
+  // Keep active LRC line visible while playing.
+  useEffect(() => {
+    if (!showLyrics || activeLine < 0 || !lyricsScrollRef.current) return
+    const el = lyricsScrollRef.current.querySelector(`[data-lrc="${activeLine}"]`)
+    if (el && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }
+  }, [showLyrics, activeLine])
 
   if (!currentTrack) return null
 
@@ -59,6 +141,8 @@ export function MusicLibraryPlayer() {
   const artistName = currentRelease?.artistName || 'T-Music'
   const albumTitle = currentRelease?.title || ''
   const coverUrl = resolveReleaseCoverUrl(currentRelease)
+  const isFav = favIds.has(currentTrack.id)
+  const sideMode = showLyrics ? 'lyrics' : showQueue ? 'queue' : 'art'
 
   // Android: store may say "playing" while <audio> is paused after lockscreen.
   const handlePlayPause = () => {
@@ -68,6 +152,11 @@ export function MusicLibraryPlayer() {
       return
     }
     togglePlay()
+  }
+
+  const handleToggleFav = (e) => {
+    e?.stopPropagation?.()
+    if (currentTrack?.id) toggleFavorite(currentTrack.id)
   }
 
   return (
@@ -263,6 +352,22 @@ export function MusicLibraryPlayer() {
             >
               {repeat === 'one' ? <Repeat1 size={15} /> : <Repeat size={15} />}
             </button>
+            {isAuthenticated && (
+              <button
+                className="tmusic-hide-mobile"
+                onClick={handleToggleFav}
+                title={isFav ? 'Убрать из любимых (L)' : 'В любимые (L)'}
+                aria-label={isFav ? 'Убрать из любимых' : 'В любимые'}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: isFav ? 'var(--accent)' : 'var(--dim)',
+                  cursor: 'pointer',
+                }}
+              >
+                <Star size={15} fill={isFav ? 'var(--accent)' : 'none'} />
+              </button>
+            )}
           </div>
 
           {/* Scrubber */}
@@ -349,19 +454,35 @@ export function MusicLibraryPlayer() {
               </div>
             </div>
             <button
-              onClick={() => setShowQueue((prev) => !prev)}
+              onClick={() => {
+                setShowLyrics(false)
+                setShowQueue((prev) => !prev)
+              }}
               className={`tmusic-np-btn ${showQueue ? 'active' : ''}`}
               aria-label="Очередь воспроизведения"
               title={showQueue ? 'Показать обложку' : 'Показать очередь'}
             >
               <ListMusic size={22} />
             </button>
+            {isAuthenticated && (
+              <button
+                onClick={() => {
+                  setShowQueue(false)
+                  setShowLyrics((prev) => !prev)
+                }}
+                className={`tmusic-np-btn ${showLyrics ? 'active' : ''}`}
+                aria-label="Текст песни"
+                title={showLyrics ? 'Скрыть текст' : 'Текст песни'}
+              >
+                <FileText size={20} />
+              </button>
+            )}
           </div>
 
           {/* Main Content Grid */}
           <div className="tmusic-nowplaying-body">
             {/* Left Column: Artwork & Track Meta */}
-            <div className={`tmusic-nowplaying-art ${showQueue ? 'mobile-hidden' : ''}`}>
+            <div className={`tmusic-nowplaying-art ${sideMode !== 'art' ? 'mobile-hidden' : ''}`}>
               <img
                 src={coverUrl}
                 alt="Cover Full"
@@ -398,6 +519,30 @@ export function MusicLibraryPlayer() {
               <div style={{ fontSize: '12.5px', color: 'var(--dim)', marginBottom: '18px' }}>
                 {albumTitle}
               </div>
+
+              {/* Favorite toggle */}
+              {isAuthenticated && (
+                <button
+                  onClick={handleToggleFav}
+                  className="tmusic-np-btn"
+                  style={{
+                    color: isFav ? 'var(--accent)' : 'var(--dim)',
+                    marginBottom: '14px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                  }}
+                  title={isFav ? 'Убрать из любимых' : 'В любимые'}
+                >
+                  <Star size={18} fill={isFav ? 'var(--accent)' : 'none'} />
+                  {isFav ? 'В любимых' : 'В любимые'}
+                </button>
+              )}
 
               {/* Progress Slider */}
               <div style={{ width: '100%', maxWidth: '380px', marginBottom: '16px' }}>
@@ -473,58 +618,128 @@ export function MusicLibraryPlayer() {
               </div>
             </div>
 
-            {/* Right Column: Active Queue */}
-            <div className={`tmusic-nowplaying-queue ${showQueue ? 'mobile-active' : 'mobile-hidden'}`}>
-              <div
-                style={{
-                  padding: '16px 20px',
-                  borderBottom: '1px solid var(--line)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  color: 'var(--accent)',
-                  fontWeight: '700',
-                  fontSize: '13px',
-                }}
-              >
-                <ListMusic size={16} /> ОЧЕРЕДЬ ВОСПРОИЗВЕДЕНИЯ ({queue.length})
-              </div>
-              <div style={{ flex: 1, overflowY: 'auto', padding: '10px' }}>
-                {queue.map((t, idx) => {
-                  const isCurrent = idx === queueIndex
-                  return (
-                    <div
-                      key={t.id || idx}
-                      onClick={() => playQueue(queue, idx, currentRelease)}
-                      style={{
-                        padding: '12px 14px',
-                        borderRadius: '8px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        backgroundColor: isCurrent ? 'var(--accent-muted)' : 'transparent',
-                        color: isCurrent ? 'var(--accent)' : 'var(--ink)',
-                        cursor: 'pointer',
-                        marginBottom: '4px',
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', overflow: 'hidden' }}>
-                        <span style={{ fontSize: '11px', color: 'var(--dim)', width: '20px' }}>
-                          {idx + 1}
-                        </span>
-                        <span style={{ fontSize: '13.5px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {t.name.replace(/\.[^/.]+$/, '')}
-                        </span>
+            {/* Right Column: Queue OR Lyrics */}
+            <div
+              className={`tmusic-nowplaying-queue ${
+                sideMode !== 'art' ? 'mobile-active' : 'mobile-hidden'
+              }`}
+            >
+              {showLyrics ? (
+                <>
+                  <div
+                    style={{
+                      padding: '16px 20px',
+                      borderBottom: '1px solid var(--line)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      color: 'var(--accent)',
+                      fontWeight: '700',
+                      fontSize: '13px',
+                    }}
+                  >
+                    <FileText size={16} /> ТЕКСТ ПЕСНИ
+                  </div>
+                  <div
+                    ref={lyricsScrollRef}
+                    style={{ flex: 1, overflowY: 'auto', padding: '18px 20px 28px' }}
+                  >
+                    {lyricsLoading && (
+                      <div style={{ color: 'var(--dim)', fontSize: '13px' }}>Загрузка текста…</div>
+                    )}
+                    {!lyricsLoading && lyricsError && (
+                      <div style={{ color: 'var(--danger, #f87171)', fontSize: '13px' }}>
+                        {lyricsError}
                       </div>
-                      {isCurrent && isPlaying && (
-                        <div style={{ fontSize: '11px', color: 'var(--accent)', fontWeight: '700', flexShrink: 0 }}>
-                          ИГРАЕТ
+                    )}
+                    {!lyricsLoading && !lyricsError && !lyrics && (
+                      <div style={{ color: 'var(--dim)', fontSize: '13px' }}>
+                        Текст не найден для этого трека
+                      </div>
+                    )}
+                    {!lyricsLoading &&
+                      displayLines.map((line, idx) => {
+                        const isActive = lrcLines.length > 0 && idx === activeLine
+                        return (
+                          <div
+                            key={`${idx}-${line.slice(0, 24)}`}
+                            data-lrc={lrcLines.length ? idx : undefined}
+                            onClick={() => {
+                              if (lrcLines.length && lrcLines[idx]) {
+                                seek(lrcLines[idx].time)
+                              }
+                            }}
+                            style={{
+                              fontSize: isActive ? '17px' : '14.5px',
+                              lineHeight: 1.55,
+                              fontWeight: isActive ? 700 : 500,
+                              color: isActive ? 'var(--accent)' : 'var(--dim)',
+                              marginBottom: '8px',
+                              cursor: lrcLines.length ? 'pointer' : 'default',
+                              transition: 'color 0.15s ease, font-size 0.15s ease',
+                              textShadow: isActive ? '0 0 24px rgba(61,214,198,0.25)' : 'none',
+                            }}
+                          >
+                            {line || '·'}
+                          </div>
+                        )
+                      })}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div
+                    style={{
+                      padding: '16px 20px',
+                      borderBottom: '1px solid var(--line)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      color: 'var(--accent)',
+                      fontWeight: '700',
+                      fontSize: '13px',
+                    }}
+                  >
+                    <ListMusic size={16} /> ОЧЕРЕДЬ ВОСПРОИЗВЕДЕНИЯ ({queue.length})
+                  </div>
+                  <div style={{ flex: 1, overflowY: 'auto', padding: '10px' }}>
+                    {queue.map((t, idx) => {
+                      const isCurrent = idx === queueIndex
+                      return (
+                        <div
+                          key={t.id || idx}
+                          onClick={() => playQueue(queue, idx, currentRelease)}
+                          style={{
+                            padding: '12px 14px',
+                            borderRadius: '8px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            backgroundColor: isCurrent ? 'var(--accent-muted)' : 'transparent',
+                            color: isCurrent ? 'var(--accent)' : 'var(--ink)',
+                            cursor: 'pointer',
+                            marginBottom: '4px',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', overflow: 'hidden' }}>
+                            <span style={{ fontSize: '11px', color: 'var(--dim)', width: '20px' }}>
+                              {idx + 1}
+                            </span>
+                            <span style={{ fontSize: '13.5px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {t.name.replace(/\.[^/.]+$/, '')}
+                            </span>
+                          </div>
+                          {isCurrent && isPlaying && (
+                            <div style={{ fontSize: '11px', color: 'var(--accent)', fontWeight: '700', flexShrink: 0 }}>
+                              ИГРАЕТ
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
+                      )
+                    })}
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>

@@ -13,8 +13,8 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.models.auth import AppUser
 from app.models.music import MusicArtist
-from app.models.vfs import Folder
-from app.services import lastfm_service
+from app.services import lastfm_service, lyrics_service
+from app.schemas.playback import LyricsResponse
 
 router = APIRouter(prefix="/api/metadata", tags=["metadata"])
 
@@ -35,7 +35,35 @@ async def metadata_status(user: AppUser = Depends(get_current_user)):
             "consumer_secret": bool(settings.DISCOGS_CONSUMER_SECRET),
             "ready": settings.discogs_ready,
         },
+        "lyrics": {
+            "enabled": lyrics_service.lyrics_enabled(),
+            "source": "lrclib",
+        },
     }
+
+
+@router.get("/lyrics", response_model=LyricsResponse)
+async def lyrics_lookup(
+    artist: Optional[str] = Query(None, max_length=200),
+    track: Optional[str] = Query(None, max_length=300),
+    album: Optional[str] = Query(None, max_length=200),
+    duration: Optional[float] = Query(None, ge=0, le=6 * 3600),
+    file_name: Optional[str] = Query(None, max_length=500),
+    user: AppUser = Depends(get_current_user),
+):
+    """Fetch plain + synced (LRC) lyrics from LRCLIB. found=false when missing."""
+    if not lyrics_service.lyrics_enabled():
+        raise HTTPException(status_code=503, detail="Lyrics provider is disabled.")
+    data = lyrics_service.get_lyrics(
+        artist=artist,
+        track=track,
+        album=album,
+        duration_sec=duration,
+        file_name=file_name,
+    )
+    if not data:
+        return LyricsResponse(found=False, source="lrclib")
+    return LyricsResponse(**data)
 
 
 @router.get("/artist")

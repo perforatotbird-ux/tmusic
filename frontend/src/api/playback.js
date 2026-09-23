@@ -33,4 +33,10 @@ export const playbackApi = {
     const q = encodeURIComponent(search || '')
     return request(`/api/playback/tracks/search?search=${q}&limit=${limit}`)
   },
+
+  listFavorites: (limit = 500, offset = 0) =>
+    request(`/api/playback/favorites?limit=${limit}&offset=${offset}`),
+
+  toggleFavorite: (fileId) =>
+    request(`/api/playback/favorites/${fileId}`, { method: 'POST' }),
 }

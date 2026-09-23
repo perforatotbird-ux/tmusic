@@ -56,3 +56,34 @@ class TrackSearchItem(BaseModel):
     mime_type: Optional[str] = None
     folder_id: Optional[int] = None
     stream_url: str
+
+
+class FavoriteToggleResponse(BaseModel):
+    file_id: int
+    is_favorite: bool
+
+
+class FavoriteItem(BaseModel):
+    file_id: int
+    file_name: Optional[str] = None
+    size: Optional[int] = None
+    mime_type: Optional[str] = None
+    folder_id: Optional[int] = None
+    stream_url: str
+    created_at: Optional[datetime] = None
+
+
+class FavoriteList(BaseModel):
+    items: List[FavoriteItem]
+    total: int
+
+
+class LyricsResponse(BaseModel):
+    found: bool = False
+    source: Optional[str] = None
+    plain: Optional[str] = None
+    synced: Optional[str] = None
+    artist: Optional[str] = None
+    track: Optional[str] = None
+    album: Optional[str] = None
+    duration_sec: Optional[int] = None

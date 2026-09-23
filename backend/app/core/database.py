@@ -110,7 +110,26 @@ def ensure_auth_schema() -> None:
         "ADD COLUMN IF NOT EXISTS subsonic_token_enc VARCHAR(512)",
         "ALTER TABLE app_users "
         "ADD COLUMN IF NOT EXISTS role VARCHAR(32) NOT NULL DEFAULT 'user'",
+        "ALTER TABLE app_users "
+        "ADD COLUMN IF NOT EXISTS avatar_key VARCHAR(128)",
+        "ALTER TABLE app_users "
+        "ADD COLUMN IF NOT EXISTS avatar_version INTEGER NOT NULL DEFAULT 0",
         "UPDATE app_users SET role = 'admin' WHERE username = 'admin' AND (role IS NULL OR role = '' OR role = 'user')",
+    )
+
+
+def ensure_catalog_schema() -> None:
+    """Additive schema patch for the music catalog hierarchy.
+
+    music_artists.parent_id enables the admin card-nesting feature (drag an
+    artist/collection card into another card). Safe to run on every startup:
+    ADD COLUMN IF NOT EXISTS + conditional index creation.
+    """
+    _run_schema_step(
+        "Catalog schema",
+        "ALTER TABLE music_artists "
+        "ADD COLUMN IF NOT EXISTS parent_id INTEGER REFERENCES music_artists(id) ON DELETE SET NULL",
+        "CREATE INDEX IF NOT EXISTS idx_music_artists_parent ON music_artists (parent_id)",
     )
 
 
@@ -119,19 +138,22 @@ def ensure_feature_tables() -> None:
     try:
         from app.models.base import Base
         from app.models.auth import AppSetting
-        from app.models.playback import ListeningHistory, PlaybackPosition
+        from app.models.playback import ListeningHistory, PlaybackPosition, UserFavorite
         from app.models.playlist import Playlist, PlaylistItem
+        from app.models.share import ShareLink
 
         Base.metadata.create_all(
             bind=engine,
             tables=[
                 PlaybackPosition.__table__,
                 ListeningHistory.__table__,
+                UserFavorite.__table__,
                 Playlist.__table__,
                 PlaylistItem.__table__,
                 AppSetting.__table__,
+                ShareLink.__table__,
             ],
         )
-        logger.info("Playback/playlist/settings tables ensured.")
+        logger.info("Playback/playlist/share/settings tables ensured.")
     except Exception as e:
         logger.warning("Failed to ensure feature tables: %s", e)

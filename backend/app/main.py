@@ -28,6 +28,7 @@ from app.core.database import (
     ensure_auth_schema,
     ensure_trigram_indexes,
     ensure_feature_tables,
+    ensure_catalog_schema,
     SessionLocal,
 )
 from app.core.token_store import purge_expired_revocations
@@ -43,12 +44,15 @@ from app.api.stream_router import router as stream_router
 from app.api.system_router import router as system_router
 from app.api.playback_router import router as playback_router
 from app.api.playlist_router import router as playlist_router
+from app.api.share_router import router as share_router
 from app.api.metadata_router import router as metadata_router
 from app.api.subsonic_router import router as subsonic_router
 from app.api.subsonic_admin_router import router as subsonic_admin_router
 from app.api.vfs_router import router as vfs_router
 from app.api.admin_router import router as admin_router
+from app.api.admin_catalog_router import router as admin_catalog_router
 from app.services.backup_scheduler import start_backup_scheduler, stop_backup_scheduler
+from app.services.discovery_service import discovery_service
 
 logging.basicConfig(
     level=logging.INFO if not settings.DEBUG else logging.DEBUG,
@@ -84,6 +88,7 @@ async def lifespan(app: FastAPI):
         ensure_auth_schema()
         ensure_trigram_indexes()
         ensure_feature_tables()
+        ensure_catalog_schema()
         try:
             with SessionLocal() as db:
                 removed = purge_expired_revocations(db)
@@ -107,14 +112,21 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Backup scheduler failed to start: %s", e)
 
+    # 4. LAN Discovery Service (UDP broadcast responder for mobile clients)
+    try:
+        await discovery_service.start(http_port=settings.PORT, project_name=settings.PROJECT_NAME)
+    except Exception as e:
+        logger.warning("Discovery service failed to start: %s", e)
+
     yield
 
-    # 4. Graceful shutdown
+    # 5. Graceful shutdown
     logger.info("Shutting down T-Music Server...")
     try:
         await stop_backup_scheduler()
     except Exception:
         pass
+    await discovery_service.stop()
     await tg_manager.stop()
     await cover_cache.close()
     logger.info("T-Music Server stopped cleanly.")
@@ -209,6 +221,7 @@ async def security_headers_middleware(request: Request, call_next):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -222,11 +235,13 @@ app.include_router(stream_router)
 app.include_router(system_router)
 app.include_router(playback_router)
 app.include_router(playlist_router)
+app.include_router(share_router)
 app.include_router(metadata_router)
 app.include_router(subsonic_router)
 app.include_router(subsonic_admin_router)
 app.include_router(vfs_router)
 app.include_router(admin_router)
+app.include_router(admin_catalog_router)
 
 
 @app.get("/health", tags=["system"])

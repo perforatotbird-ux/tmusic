@@ -30,6 +30,9 @@ class AppUser(Base):
     subsonic_token_enc: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     # Future-ready RBAC: 'admin' | 'editor' | 'user'. Username 'admin' is treated as admin.
     role: Mapped[str] = mapped_column(String(32), default="user")
+    # Profile avatar: key in the custom-cover store + bumped version for cache busting.
+    avatar_key: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    avatar_version: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 

@@ -1,0 +1,20 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+    <!-- Vinyl outer groove -->
+    <path
+        android:strokeColor="#D4FF3F"
+        android:strokeWidth="24"
+        android:fillColor="#00000000"
+        android:pathData="M 256,76 A 180,180 0 1,0 256,436 A 180,180 0 1,0 256,76" />
+    <!-- Center disc -->
+    <path
+        android:fillColor="#D4FF3F"
+        android:pathData="M 256,186 A 70,70 0 1,0 256,326 A 70,70 0 1,0 256,186" />
+    <!-- Play arrow -->
+    <path
+        android:fillColor="#141210"
+        android:pathData="M 230,160 L 320,256 L 230,352 Z" />
+</vector>

@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, Response as RawResponse
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.api.dependencies import get_current_user
+from app.api.dependencies import get_admin_user, get_current_user
 from app.models.auth import AppUser
 from app.schemas.library import (
     MusicArtistCard, MusicArtistDetail, MusicAlbumCard, LibraryStats, SetCoverRequest
@@ -169,9 +169,12 @@ async def set_cover(
     url: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
-    user: AppUser = Depends(get_current_user)
+    user: AppUser = Depends(get_admin_user)
 ):
-    """Upload custom cover image or download from URL with SSRF validation."""
+    """Upload custom cover image or download from URL with SSRF validation.
+
+    Admin-only: catalog artwork is curated, not per-user.
+    """
     custom_key = None
 
     if file:
@@ -214,8 +217,8 @@ async def reset_cover(
     target_type: str = Query(...),
     target_id: int = Query(...),
     db: Session = Depends(get_db),
-    user: AppUser = Depends(get_current_user)
+    user: AppUser = Depends(get_admin_user)
 ):
-    """Reset custom cover to default auto-enriched image."""
+    """Reset custom cover to default auto-enriched image. Admin-only."""
     library_service.set_custom_cover(db, target_type, target_id, None)
     return {"status": "ok", "message": "Cover reset to default."}

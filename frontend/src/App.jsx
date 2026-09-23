@@ -1,7 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useAuthStore } from './store/authStore'
 import { usePlayerStore } from './store/playerStore'
+import { useFavoritesStore } from './store/favoritesStore'
 import { setupMediaSession, updateMediaSessionMetadata, updateMediaSessionPosition } from './services/mediaSession'
+import { IS_NATIVE } from './services/nativeBridge'
 import {
   onTrackChanged,
   tryRestorePosition,
@@ -35,23 +37,104 @@ export function App() {
     window.addEventListener('tmusic:unauthorized', handleUnauthorized)
 
     // Android lockscreen / tab throttle: resume if we believe playback continues.
-    const resumeIfNeeded = () => {
-      if (document.visibilityState && document.visibilityState !== 'visible') return
-      const { isPlaying, currentTrack: track, audioElement } = usePlayerStore.getState()
-      if (isPlaying && track && audioElement && audioElement.paused) {
-        const p = audioElement.play()
-        if (p && p.catch) p.catch(() => {})
+    // In native WebView with ForegroundService, skip this to avoid race conditions.
+    let onVis = null
+    let resumeIfNeeded = null
+
+    if (!IS_NATIVE) {
+      resumeIfNeeded = () => {
+        if (document.visibilityState && document.visibilityState !== 'visible') return
+        const { isPlaying, currentTrack: track, audioElement } = usePlayerStore.getState()
+        if (isPlaying && track && audioElement && audioElement.paused) {
+          const p = audioElement.play()
+          if (p && p.catch) p.catch(() => {})
+        }
       }
+      onVis = () => resumeIfNeeded()
+      document.addEventListener('visibilitychange', onVis)
+      window.addEventListener('focus', resumeIfNeeded)
     }
-    const onVis = () => resumeIfNeeded()
-    document.addEventListener('visibilitychange', onVis)
-    window.addEventListener('focus', resumeIfNeeded)
 
     return () => {
       window.removeEventListener('tmusic:unauthorized', handleUnauthorized)
-      document.removeEventListener('visibilitychange', onVis)
-      window.removeEventListener('focus', resumeIfNeeded)
+      if (onVis) document.removeEventListener('visibilitychange', onVis)
+      if (resumeIfNeeded) window.removeEventListener('focus', resumeIfNeeded)
     }
+  }, [])
+
+  // Global player hotkeys: Space, ←/→ seek, Shift+←/→ track, M mute, L like.
+  useEffect(() => {
+    const isTypingTarget = (el) => {
+      if (!el) return false
+      const tag = el.tagName
+      return (
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT' ||
+        el.isContentEditable
+      )
+    }
+
+    const onKeyDown = (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      if (isTypingTarget(e.target)) return
+      const s = usePlayerStore.getState()
+      if (!s.currentTrack) return
+
+      const key = e.key
+      if (key === ' ' || key === 'Spacebar') {
+        e.preventDefault()
+        const audio = s.audioElement
+        if (s.isPlaying && audio?.paused) s.forceResume()
+        else s.togglePlay()
+        return
+      }
+      if (key === 'ArrowLeft') {
+        e.preventDefault()
+        if (e.shiftKey) s.prevTrack()
+        else {
+          const audio = s.audioElement
+          if (audio) s.seek(Math.max(0, audio.currentTime - 5))
+        }
+        return
+      }
+      if (key === 'ArrowRight') {
+        e.preventDefault()
+        if (e.shiftKey) s.nextTrack()
+        else {
+          const audio = s.audioElement
+          if (audio) {
+            const dur = Number.isFinite(audio.duration) ? audio.duration : Infinity
+            s.seek(Math.min(dur, audio.currentTime + 5))
+          }
+        }
+        return
+      }
+      if (key === 'ArrowUp') {
+        e.preventDefault()
+        s.setVolume(Math.min(1, (s.isMuted ? 0 : s.volume) + 0.05))
+        return
+      }
+      if (key === 'ArrowDown') {
+        e.preventDefault()
+        s.setVolume(Math.max(0, (s.isMuted ? 0 : s.volume) - 0.05))
+        return
+      }
+      if (key === 'm' || key === 'M' || key === 'ь' || key === 'Ь') {
+        e.preventDefault()
+        s.toggleMute()
+        return
+      }
+      if (key === 'l' || key === 'L' || key === 'д' || key === 'Д') {
+        const { isAuthenticated } = useAuthStore.getState()
+        if (!isAuthenticated) return
+        e.preventDefault()
+        useFavoritesStore.getState().toggle(s.currentTrack.id)
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
   useEffect(() => {
@@ -114,6 +197,17 @@ export function App() {
     )
   }
 
+  const handleError = () => {
+    // Broken stream (e.g. Telegram 503 / ConnectionReset) fires 'error',
+    // not 'ended' — without this the player stalls dead on one track and
+    // the playlist never advances. Skip forward like onEnded does.
+    const state = usePlayerStore.getState()
+    if (!state.currentTrack) return
+    console.warn('Audio stream error, skipping to next track')
+    boundTrackIdRef.current = null
+    state.nextTrack()
+  }
+
   /**
    * Playlist auto-advance: must start the next file in this same event
    * callback — a later React effect is too late on Android 14 lockscreen.
@@ -146,6 +240,7 @@ export function App() {
         onTimeUpdate={handleTimeUpdate}
         onDurationChange={handleDurationChange}
         onEnded={handleEnded}
+        onError={handleError}
         onPlaying={handlePlaying}
       />
 

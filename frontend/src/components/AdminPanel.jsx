@@ -16,11 +16,14 @@ import {
   Loader2,
   CheckCircle2,
   AlertTriangle,
+  FolderHeart,
 } from 'lucide-react'
 import { adminApi } from '../api/admin'
+import { AdminCatalog } from './AdminCatalog'
 
 const TABS = [
   { id: 'overview', label: 'Обзор', icon: Activity },
+  { id: 'catalog', label: 'Каталог', icon: FolderHeart },
   { id: 'db', label: 'База данных', icon: Database },
   { id: 'backups', label: 'Бэкапы', icon: HardDriveDownload },
   { id: 'settings', label: 'Настройки', icon: Settings2 },
@@ -111,7 +114,7 @@ function Panel({ title, children, right }) {
   )
 }
 
-export function AdminPanel({ onBack }) {
+export function AdminPanel({ onBack, onOpenCoverPicker }) {
   const [tab, setTab] = useState('overview')
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -310,6 +313,8 @@ export function AdminPanel({ onBack }) {
           </Panel>
         </>
       )}
+
+      {tab === 'catalog' && <AdminCatalog onOpenCoverPicker={onOpenCoverPicker} />}
 
       {tab === 'db' && (
         <>

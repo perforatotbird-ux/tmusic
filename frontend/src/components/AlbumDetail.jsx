@@ -14,7 +14,9 @@ import {
   Image as ImageIcon,
   ListPlus,
   Check,
+  Star,
 } from 'lucide-react'
+import { useFavoritesStore } from '../store/favoritesStore'
 
 function formatSizeHint(track) {
   if (track?.size && Number.isFinite(track.size) && track.size > 0) {
@@ -41,6 +43,13 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
 
   const { playQueue, queue, queueIndex, isPlaying, togglePlay } = usePlayerStore()
   const { isAuthenticated } = useAuthStore()
+  const favIds = useFavoritesStore((s) => s.ids)
+  const loadFavorites = useFavoritesStore((s) => s.load)
+  const toggleFavorite = useFavoritesStore((s) => s.toggle)
+
+  useEffect(() => {
+    if (isAuthenticated) loadFavorites()
+  }, [isAuthenticated, loadFavorites])
 
   const cover = resolveCoverUrl(album, artist, null)
   const albumTitle = album?.title || album?.display_name || 'Альбом'
@@ -378,6 +387,31 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
                       {formatSizeHint(t)}
                     </span>
                   )}
+                  {isAuthenticated && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        toggleFavorite(t.id)
+                      }}
+                      title={favIds.has(t.id) ? 'Убрать из любимых' : 'В любимые'}
+                      aria-label={favIds.has(t.id) ? 'Убрать из любимых' : 'В любимые'}
+                      style={{
+                        flexShrink: 0,
+                        width: '32px',
+                        height: '32px',
+                        borderRadius: '8px',
+                        border: '1px solid var(--line, #333)',
+                        background: 'transparent',
+                        color: favIds.has(t.id) ? 'var(--accent)' : 'var(--dim)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <Star size={15} fill={favIds.has(t.id) ? 'var(--accent)' : 'none'} />
+                    </button>
+                  )}
                   <button
                     onClick={(e) => {
                       e.stopPropagation()
@@ -409,7 +443,7 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
         {!isLoading && tracks.length > 0 && (
           <div className="tmusic-album-foot">
             <ListMusic size={14} />
-            {tracks.length} {tracks.length === 1 ? 'трек' : 'треков'} • тап — играть • + — в плейлист
+            {tracks.length} {tracks.length === 1 ? 'трек' : 'треков'} • тап — играть • ★ — любимое • + — в плейлист
           </div>
         )}
 

@@ -8,7 +8,7 @@ from typing import List, Optional, Tuple
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
-from app.models.playback import ListeningHistory, PlaybackPosition
+from app.models.playback import ListeningHistory, PlaybackPosition, UserFavorite
 from app.models.vfs import VFile
 from app.utils.time import utcnow
 
@@ -16,7 +16,7 @@ logger = logging.getLogger("tmusic.playback")
 
 
 class PlaybackService:
-    """Thin data-access helpers for resume/history."""
+    """Thin data-access helpers for resume/history/favorites."""
 
     @staticmethod
     def get_position(db: Session, user_id: int, file_id: int) -> Optional[PlaybackPosition]:
@@ -102,6 +102,74 @@ class PlaybackService:
             .offset(offset)
         )
         return list(db.execute(stmt).all()), total
+
+    @staticmethod
+    def is_favorite(db: Session, user_id: int, file_id: int) -> bool:
+        return (
+            db.scalar(
+                select(UserFavorite.id).where(
+                    UserFavorite.user_id == user_id,
+                    UserFavorite.file_id == file_id,
+                )
+            )
+            is not None
+        )
+
+    @staticmethod
+    def toggle_favorite(db: Session, user_id: int, file_id: int) -> bool:
+        """Flip star for user+file; returns new is_favorite state."""
+        row = db.scalar(
+            select(UserFavorite).where(
+                UserFavorite.user_id == user_id,
+                UserFavorite.file_id == file_id,
+            )
+        )
+        if row:
+            db.delete(row)
+            db.commit()
+            return False
+        db.add(UserFavorite(user_id=user_id, file_id=file_id, created_at=utcnow()))
+        db.commit()
+        return True
+
+    @staticmethod
+    def set_favorite(db: Session, user_id: int, file_id: int, value: bool) -> bool:
+        """Ensure favorite state is `value`; returns final state."""
+        row = db.scalar(
+            select(UserFavorite).where(
+                UserFavorite.user_id == user_id,
+                UserFavorite.file_id == file_id,
+            )
+        )
+        if value and row is None:
+            db.add(UserFavorite(user_id=user_id, file_id=file_id, created_at=utcnow()))
+            db.commit()
+            return True
+        if not value and row is not None:
+            db.delete(row)
+            db.commit()
+            return False
+        return row is not None
+
+    @staticmethod
+    def list_favorites(
+        db: Session, user_id: int, limit: int = 500, offset: int = 0
+    ) -> Tuple[List[Tuple[UserFavorite, Optional[VFile]]], int]:
+        base = select(UserFavorite).where(UserFavorite.user_id == user_id)
+        total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
+        stmt = (
+            select(UserFavorite, VFile)
+            .outerjoin(VFile, VFile.id == UserFavorite.file_id)
+            .where(
+                UserFavorite.user_id == user_id,
+                VFile.is_trash == False,  # noqa: E712
+                VFile.mime_type.like("audio/%"),
+            )
+            .order_by(UserFavorite.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(db.execute(stmt).all()), int(total)
 
 
 playback_service = PlaybackService()

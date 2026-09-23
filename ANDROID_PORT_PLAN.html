@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>T-Music — план портирования на Android 14+</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #171d24;
+    --ink: #e7eef5;
+    --muted: #8b9aab;
+    --accent: #3dd6c6;
+    --ok: #3ecf8e;
+    --warn: #f0b429;
+    --risk: #ef6e6e;
+    --todo: #6b7c8f;
+    --line: #2a3440;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    line-height: 1.55;
+    padding: 32px 20px 64px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 1.75rem; margin: 0 0 8px; font-weight: 650; }
+  h2 { font-size: 1.2rem; margin: 36px 0 12px; color: var(--accent); font-weight: 600; }
+  h3 { font-size: 1rem; margin: 20px 0 8px; font-weight: 600; }
+  p.lead { color: var(--muted); margin: 0 0 24px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 28px; }
+  .chip {
+    font-size: 0.75rem;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    background: var(--panel);
+  }
+  .chip strong { color: var(--ink); font-weight: 600; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+    margin: 8px 0 16px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  th { color: var(--muted); font-weight: 550; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  code {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 1px 6px;
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 0.85em;
+    color: var(--ink);
+  }
+  pre {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: 0.82rem;
+    line-height: 1.5;
+  }
+  pre code { background: none; border: none; padding: 0; }
+  ul, ol { margin: 8px 0 16px; padding-left: 22px; }
+  li { margin: 5px 0; }
+  .callout {
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    background: var(--panel);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 14px 0;
+    font-size: 0.92rem;
+  }
+  .warn { border-left-color: var(--warn); }
+  .ok { border-left-color: var(--ok); }
+  .phase {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin: 40px 0 4px;
+  }
+  .phase .num {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--bg);
+    background: var(--accent);
+    border-radius: 6px;
+    padding: 2px 8px;
+    white-space: nowrap;
+  }
+  .phase h2 { margin: 0; }
+  .est { color: var(--muted); font-size: 0.8rem; margin: 0 0 10px; }
+  a { color: var(--accent); }
+  .tag-ok { color: var(--ok); }
+  .tag-risk { color: var(--risk); }
+  .tag-q { color: var(--warn); font-weight: 600; }
+  .toc {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin: 0 0 28px;
+    font-size: 0.9rem;
+    columns: 2;
+    column-gap: 32px;
+  }
+  .toc a { display: block; padding: 3px 0; text-decoration: none; color: var(--ink); }
+  .toc a:hover { color: var(--accent); }
+  .filelist { font-size: 0.88rem; }
+  h4 { font-size: 0.9rem; margin: 16px 0 6px; }
+  .hr { border: none; border-top: 1px solid var(--line); margin: 36px 0 0; }
+  footer { color: var(--muted); font-size: 0.8rem; margin-top: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>План портирования T-Music на Android 14+</h1>
+<p class="lead">APK-оболочка (Capacitor, remote-режим) поверх существующего PWA · sideload для личного использования</p>
+
+<div class="meta">
+  <span class="chip"><strong>Стратегия:</strong> Capacitor WebView → сервер T-Music по HTTPS</span>
+  <span class="chip"><strong>Целевая ОС:</strong> Android 14 (API 34), minSdk = targetSdk = 34</span>
+  <span class="chip"><strong>Изменений во фронте:</strong> минимальные, под флагом IS_NATIVE</span>
+  <span class="chip"><strong>Оценка:</strong> ~4–5 рабочих дней</span>
+  <span class="chip"><strong>Источник:</strong> .mimocode/plans/android-14-port.md</span>
+</div>
+
+<nav class="toc">
+  <a href="#s0">0. Резюме решения</a>
+  <a href="#s1">1. Фаза 0 — Prerequisites</a>
+  <a href="#s2">2. Фаза 1 — Каркас оболочки</a>
+  <a href="#s3">3. Фаза 2 — Нативный слой (ядро)</a>
+  <a href="#s4">4. Фаза 3 — Правки фронтенда</a>
+  <a href="#s5">5. Фаза 4 — Сборка и подпись</a>
+  <a href="#s6">6. Фаза 5 — Тестовая матрица</a>
+  <a href="#s7">7. Риски и отступные</a>
+  <a href="#s8">8. Вне объёма</a>
+  <a href="#s9">9. Итоговые артефакты</a>
+  <a href="#s10">10. Трудоёмкость</a>
+  <a href="#s11">11. Открытые вопросы</a>
+</nav>
+
+<h2 id="s0">0. Резюме решения</h2>
+<p><strong>Цель:</strong> sideload-APK с личным музыкальным плеером на базе существующего React-PWA, с фоновым и lock-screen воспроизведением на Android 14+ (API&nbsp;34).</p>
+<p><strong>Выбранный путь:</strong> Capacitor (Android) в <strong>remote-режиме</strong> — WebView загружает развёрнутый T-Music по адресу сервера (<code>server.url</code>), а не бандлит <code>dist/</code> локально.</p>
+
+<h3>Почему remote-режим, а не бандл / TWA</h3>
+<ul>
+  <li><code>frontend/src/api/client.js</code> работает на <code>BASE_URL=''</code> + HttpOnly-cookie <code>SameSite=Lax</code> + CSRF double-submit. Локальная схема Capacitor (<code>https://localhost</code>) делает сервер <strong>кросс-ориджиновым</strong> → cookie не отправляются, auth ломается. Переделка на Bearer — лишний фронтенд-рефакторинг (сервер его поддерживает: <code>backend/app/api/dependencies.py</code>, CSRF для Bearer отключён в <code>backend/app/core/csrf.py</code>, stream-токены <code>?token=</code> уже есть в <code>stream.js</code>). В remote-режиме origin = реальный сервер → <strong>вся существующая JS-логика работает без изменений</strong>.</li>
+  <li>TWA/Bubblewrap отпадает: требует публичный HTTPS + верификацию <code>assetlinks.json</code>, а сервер может быть LAN-ным.</li>
+  <li>Фоновое воспроизведение в WebView нативно появилось именно на Android 14: <code>androidx.webkit</code> <code>MediaSessionManagerCompat</code> (мост <code>navigator.mediaSession</code> WebView → системная MediaSession) раскрывается на Android 13/14 WebView; поэтому «порт на 14+» содержателен, а не формален.</li>
+</ul>
+
+<h3>Что требует Android 14 (API 34) и обязателен по этому плану</h3>
+<table>
+  <tr><th>Требование API 34</th><th>Мера</th></tr>
+  <tr><td>FGS обязателен тип + разрешение</td><td>Service <code>android:foregroundServiceType="mediaPlayback"</code>, permission <code>FOREGROUND_SERVICE_MEDIA_PLAYBACK</code></td></tr>
+  <tr><td>Notifications runtime-permission (API 33+)</td><td><code>POST_NOTIFICATIONS</code> — запрос при первом старте</td></tr>
+  <tr><td>targetSdk 34 behaviour changes</td><td><code>targetSdk 34</code>, <code>compileSdk 35</code>, <code>minSdk 34</code> (целевая ОС одна, shim-ов не пишем — упрощает native-слой)</td></tr>
+  <tr><td>Strict TLS по умолчанию</td><td>HTTPS-развёртывание сервера (см. Фазу 0); cleartext запрещён</td></tr>
+  <tr><td>Autoplay / user gesture в WebView</td><td><code>setMediaPlaybackRequiresUserGesture(false)</code> в кастомном Activity</td></tr>
+</table>
+
+<div class="phase" id="s1"><span class="num">ФАЗА 0</span><h2 style="margin:0">Prerequisites (среда разработки + сервер)</h2></div>
+<p class="est">≈ 0.5 дня · без этого фаза 2 невозможна</p>
+<ol>
+  <li>Установить Android-окружение (сегодня на машине <span class="tag-risk">НЕТ</span> SDK/adb/gradle; Java 17 <span class="tag-ok">✓</span>, Node 22 <span class="tag-ok">✓</span>):
+    <ul>
+      <li>Android Studio (или command-line tools) → SDK Platform 34/35 + Build-Tools, принятие лицензий <code>sdkmanager --licenses</code>;</li>
+      <li>env: <code>ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk</code>; adb в PATH.</li>
+    </ul>
+  </li>
+  <li>HTTPS для экземпляра T-Music — <strong>обязательное</strong> условие: <code>navigator.mediaSession</code> и service worker доступны только в secure context. Варианты (выбрать один, <span class="tag-q">⚑</span>):
+    <ul>
+      <li>домен + Caddy/Nginx + Let's Encrypt (правильно, если сервер доступен извне);</li>
+      <li><code>tailscale serve</code> (автоматический TLS для личного доступа, без публичного DNS);</li>
+      <li>mkcert: локальный CA + <code>.test</code>-домен, корневой сертификат установить в хранилище Android (Настройки → Безопасность → доверенные учётные данные).</li>
+      <li>Проверить <code>COOKIE_SECURE</code>: на HTTPS ставить <code>true</code> в <code>music.env</code> (+ HSTS уже отдаётся <code>main.py</code>).</li>
+    </ul>
+  </li>
+  <li>На телефоне обновить Android System WebView и включить режим разработчика.</li>
+  <li><strong>Выход фазы:</strong> сервер отвечает <code>https://…</code> с валидным сертификатом; <code>adb devices</code> видит телефон.</li>
+</ol>
+
+<div class="phase" id="s2"><span class="num">ФАЗА 1</span><h2 style="margin:0">Каркас оболочки (<code style="font-size:.85em">mobile/</code> в корне репозитория)</h2></div>
+<p class="est">≈ 0.5 дня</p>
+<p>Отдельная папка, чтобы не смешивать npm-зависимости фронта и обёртки.</p>
+<pre><code>mobile/
+├── package.json            # @capacitor/core, @capacitor/cli, @capacitor/android
+├── capacitor.config.ts     # см. ниже
+├── www/index.html          # заглушка-загрузчик (remote-режим грузит сервер;
+│                           #  офлайн-экран нужен только при недоступном сервере)
+└── android/                # `npx cap add android` — нативный проект (патчится в Фазе 2)</code></pre>
+
+<p><code>capacitor.config.ts</code>:</p>
+<pre><code>{
+  appId: 'app.tmusic.mobile',          // ⚑ финальное имя пакета выбрать раз и навсегда
+  appName: 'T-Music',
+  webDir: 'www',
+  android: {
+    allowMixedContent: 0,               // никакого http-контента на https-странице
+  },
+  server: {
+    url: 'https://&lt;tmusic-host&gt;',       // адрес из Фазы 0
+    hostname: 'tmusic.app',
+    allowNavigation: ['&lt;tmusic-host&gt;'],
+  },
+}</code></pre>
+
+<ul>
+  <li>Команды: <code>npm init -y &amp;&amp; npm i @capacitor/core @capacitor/cli @capacitor/android &amp;&amp; npx cap init … &amp;&amp; npx cap add android &amp;&amp; npx cap sync</code>.</li>
+  <li>Иконки: <code>npm i -D @capacitor/assets</code> → сгенерировать из <code>frontend/public/icon.svg</code> adaptive icon + splash (<code>npx capacitor-assets generate --android</code>).</li>
+</ul>
+<div class="callout ok"><strong>Выход:</strong> <code>npx cap open android</code> собирает дебаг-APK, который открывает T-Music в WebView; вход по логину работает, cookie переживают перезапуск.</div>
+
+<div class="phase" id="s3"><span class="num">ФАЗА 2</span><h2 style="margin:0">Нативный слой: background playback + media session</h2></div>
+<p class="est">≈ 1–2 дня · самый трудоёмкий этап · все правки — в <code>mobile/android/app/src/main/</code></p>
+
+<h3>1. <code>AndroidManifest.xml</code> — permissions и service</h3>
+<pre><code>&lt;uses-permission android:name="android.permission.FOREGROUND_SERVICE"/&gt;
+&lt;uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/&gt;
+&lt;uses-permission android:name="android.permission.POST_NOTIFICATIONS"/&gt;
+&lt;uses-permission android:name="android.permission.WAKE_LOCK"/&gt;
+...
+&lt;service android:name=".MediaPlaybackService"
+         android:foregroundServiceType="mediaPlayback"
+         android:exported="false"/&gt;</code></pre>
+<p>Плюс <code>android:allowBackup="false"</code> (не выносить cookie-хранилище WebView в бэкапы).</p>
+
+<h3>2. <code>MainActivity.kt</code> (наследник <code>BridgeActivity</code> из Capacitor)</h3>
+<ul>
+  <li><code>settings.mediaPlaybackRequiresUserGesture = false</code>;</li>
+  <li><strong>НЕ</strong> вызывать <code>webView.onPause()</code> при уходе в background (переопределить lifecycle-хуки Capacitor-моста так, чтобы аудио продолжалось);</li>
+  <li>при старте — запрос <code>POST_NOTIFICATIONS</code> (runtime, API 33+);</li>
+  <li>обработка <code>onNewIntent</code> для тапов по notification-действиям (play/pause/next/prev — dispatch в JS, см. п.4).</li>
+</ul>
+
+<h3>3. <code>MediaPlaybackService.kt</code> — foreground-service <code>mediaPlayback</code></h3>
+<ul>
+  <li><code>startForeground()</code> с типом mediaPlayback и persistent-уведомлением: обложка (URL из MediaMetadata уже приходит из JS-слоя), title/artist, действия Play/Pause/Next/Previous, <code>MediaStyle</code>;</li>
+  <li>запуск только из активного UI (в API 34 действуют FGS-ограничения; сценарий «запустить музыку, потом свернуть» их удовлетворяет) — service стартует при первом <code>play()</code> и останавливается при <code>pause()</code>/stop();</li>
+  <li><code>onTaskRemoved</code>: оставить воспроизведение до конца трека, затем stopSelf (<span class="tag-q">⚑</span> политику «swipe-to-kill» — решить на тестах).</li>
+</ul>
+
+<h3>4. Мост WebView ↔ система (ключевое)</h3>
+<ul>
+  <li><code>androidx.webkit:webkit:1.12+</code>, <code>MediaSessionManagerCompat.from(context).setDelegate(ServiceDelegate(this))</code>, где <code>ServiceDelegate</code>:</li>
+  <li><code>onActive()</code>/<code>onInactive()</code> → start/stopForeground service;</li>
+  <li><code>onPlaybackStateChanged</code> / <code>onMetadataChanged</code> / <code>onPositionStateChanged</code> → обновление уведомления и lock-screen (обложки, кнопки, прогресс — всё уже публикуется из <code>frontend/src/services/mediaSession.js</code>: metadata, positionState, action handlers);</li>
+  <li>системные команды (кнопки уведомления/BT-гарнитуры) Android 14 delegate принимает и транслирует сам в <code>navigator.mediaSession.setActionHandler</code> внутри WebView — повторной прокладки в JS не нужно; проверить на тестах, при глюках — костыль через <code>evaluateJavascript</code>;</li>
+  <li><code>build.gradle</code>: <code>implementation "androidx.webkit:webkit:1.12.0"</code>, <code>androidx.media</code> при необходимости.</li>
+</ul>
+
+<h3>5. Gradle</h3>
+<p><code>minSdk 34, targetSdk 34, compileSdk 35</code> — в <code>mobile/android/app/build.gradle</code>; подпись release — см. Фазу 4.</p>
+<div class="callout ok"><strong>Выход:</strong> с телефона: play → экран выключен → музыка играет; на lock-screen обложка/прогресс/кнопки; с BT-наушников next/pause; при остановке воспроизведения service останавливается.</div>
+
+<div class="phase" id="s4"><span class="num">ФАЗА 3</span><h2 style="margin:0">Минимальные правки во фронтенде</h2></div>
+<p class="est">≈ 0.5 дня · web-код остаётся единым, адаптации — под флагом окружения</p>
+<ol>
+  <li><code>frontend/src/services/nativeBridge.js</code> (новый, ~20 строк): детект оболочки (<code>navigator.userAgent</code> содержит <code>TMusicApp/</code>) → экспортировать <code>const IS_NATIVE</code>.</li>
+  <li><code>frontend/src/store/playerStore.js</code> + <code>App.jsx:38–56</code> (watchdogs / <code>armGlobalResume</code> / <code>visibilitychange</code>-replay): при <code>IS_NATIVE</code> <strong>не включать</strong> <code>ensureWatchdog</code> (interval) и global-resume слушателей — в WebView с FGS и <code>mediaPlaybackRequiresUserGesture=false</code> они создают риск двойного play/pause-мигания и фоновой нагрузки. Обычные <code>ended</code>-обработчики очереди оставить.</li>
+  <li><code>frontend/src/api/stream.js</code>: <code>getStreamUrl(fileId)</code> оставить — cookie same-origin работает (remote-режим = origin сервера), токен-режим не нужен.</li>
+  <li><code>App.jsx</code>: скрыть UI-бейдж «PWA update / install prompt» при <code>IS_NATIVE</code>; статус-бар: <code>theme-color</code> из manifest уже <code>#141210</code> — синхронизировать цвет статус-бара Android (native, <code>MainActivity.setStatusBarColor</code>).</li>
+  <li><code>sw.js</code> не трогаем: в WebView он регистрируется так же, даёт shell-cache; для remote-режима безвреден.</li>
+  <li>Проверить <code>index.html</code>/<code>App.jsx</code> на beforeinstallprompt — ничего не ломать (в WebView события не срабатывают).</li>
+</ol>
+<div class="callout ok"><strong>Выход:</strong> регрессия в обычном Chrome на том же URL: lock-screen, перемотка, очередь — без изменений; APK-путь без watchdog-мигания.</div>
+
+<div class="phase" id="s5"><span class="num">ФАЗА 4</span><h2 style="margin:0">Сборка, подпись, дистрибуция (sideload)</h2></div>
+<p class="est">≈ 0.5 дня</p>
+<ol>
+  <li>Keystore один раз: <code>keytool -genkeypair -alias tmusic -keystore tmusic-release.jks</code> (пароли — в <code>mobile/android/keystore.properties</code>; <strong>.gitignore:</strong> <code>mobile/keystore.properties</code>, <code>*.jks</code>).</li>
+  <li><code>build.gradle</code> → <code>signingConfigs.release</code> из keystore.properties; <code>assembleRelease</code> с minify (R8) от Capacitor — держать <code>keep androidx.webkit.**</code> в proguard-rules.</li>
+  <li>Билд-скрипт <code>scripts/build_android_apk.ps1</code>: <code>cd frontend &amp;&amp; npm run build</code> → <code>cd ../mobile &amp;&amp; npx cap sync</code> → <code>cd android &amp;&amp; .\gradlew assembleRelease</code> → артефакт <code>app-release.apk</code>.</li>
+  <li>Установка на телефон: <code>adb install -r</code> (или файлом через «неизвестные источники»). <code>applicationId</code>/package стабильны → переустановка поверх без потери сессии в cookie jar WebView.</li>
+</ol>
+<div class="callout ok"><strong>Выход:</strong> подписанный release-APK, ставится и работает на Android 14.</div>
+
+<div class="phase" id="s6"><span class="num">ФАЗА 5</span><h2 style="margin:0">Тестовая матрица (обязательная, на реальном Android 14+)</h2></div>
+<p class="est">≈ 1 день (с полировкой и документацией)</p>
+<table>
+  <tr><th>#</th><th>Сценарий</th><th>Критерий</th></tr>
+  <tr><td>1</td><td>Логин → kill app → старт</td><td>Сессия cookie жива, без нового логина</td></tr>
+  <tr><td>2</td><td>Play → screen off</td><td>Аудио не рвётся, FGS-уведомление видно</td></tr>
+  <tr><td>3</td><td>Lock-screen: обложка/прогресс/seek/next</td><td>Все контролы работают (позиция обновляется <code>setPositionState</code> каждые ~10с)</td></tr>
+  <tr><td>4</td><td>30+ мин фонового воспроизведения очередью</td><td><code>ended</code>-переходы срабатывают (проверка throttling фоновых таймеров)</td></tr>
+  <tr><td>5</td><td>BT-гарнитура: кнопки play/pause/next</td><td>Работают</td></tr>
+  <tr><td>6</td><td>Failover стрима (серверный mid-stream)</td><td>В фоне не ломается</td></tr>
+  <tr><td>7</td><td>Swipe-to-kill app</td><td>Поведение совпадает с выбранной политикой (Фаза 2, п.3)</td></tr>
+  <tr><td>8</td><td>Перебой сервера → восстановление</td><td>Ретраи / экран ошибки без white-screen</td></tr>
+  <tr><td>9</td><td>Смена IP/домена сервера</td><td>APK перенастраивается пересборкой (задокументировано) или <span class="tag-q">⚑</span> добавить экран выбора сервера (см. будущие расширения)</td></tr>
+  <tr><td>10</td><td>Регрессия: мобильный Chrome на том же URL</td><td>Без изменений</td></tr>
+  <tr><td>11</td><td>Xiaomi/Samsung battery kill-политики</td><td>Инструкция «No restrictions» в mobile README; при необходимости <code>REQUEST_IGNORE_BATTERY_OPTIMIZATIONS</code> <span class="tag-q">(⚑)</span></td></tr>
+  <tr><td>12</td><td>HTTPS-сертификат истекает/недоверенный</td><td>WebView честно валит ошибку; в README — раздел, что самоподписанные certs без user-CA = неработающий APK</td></tr>
+  <tr><td>13</td><td>Юнит-тесты backend (<code>backend/tests</code>) и сборка фронта</td><td>Не сломать правками Фазы 3; CI для фронта не заведён — прогнать локально</td></tr>
+</table>
+<div class="callout ok"><strong>Выход:</strong> все пункты зелёные; задокументированный mobile README.</div>
+
+<div class="phase" id="s7"><span class="num">РАЗДЕЛ 7</span><h2 style="margin:0">Риски и отступные варианты</h2></div>
+<table>
+  <tr><th>Риск</th><th>Вероятность</th><th>Фолбэк</th></tr>
+  <tr><td><code>MediaSessionManagerCompat</code> глючит в конкретном WebView-билде (lock-screen не появляется)</td><td>средняя</td><td>1) обновить WebView; 2) прокладка: native <code>MediaSessionCompat</code> в service + вызовы store-экшенов через <code>evaluateJavascript('window.__tmusicNativeCmd&amp;&amp;__tmusicNativeCmd("play")')</code> с экспортом обработчиков в <code>mediaSession.js</code> (~40 строк JS)</td></tr>
+  <tr><td>Нужна работа без сети / со сменой сервера</td><td>—</td><td>Расширение «local bundle»: бандл <code>dist/</code> + reauth на Bearer (сервер уже готов: <code>dependencies.py</code>, CSRF-skip для Bearer, <code>?token=</code> для <code>&lt;audio&gt;</code>) + экран «URL сервера» в UI; тогда app не remote</td></tr>
+  <tr><td>Фоновый таймер-throttling ломает очередь треков</td><td>низкая (audio focus = exempt)</td><td>очередь переводится на MediaSession <code>nexttrack</code> из system commands (native-кнопки) вместо JS-зависимости от <code>ended</code></td></tr>
+  <tr><td>Self-signed cert отклоняется WebView</td><td>высокая на mkcert-варианте</td><td>установка mkcert-CA как user-CA в Android 14 trust store — прописать шагом в инструкцию</td></tr>
+</table>
+
+<div class="phase" id="s8"><span class="num">РАЗДЕЛ 8</span><h2 style="margin:0">Вне объёма / будущие расширения</h2></div>
+<ul>
+  <li>Нативный Kotlin/Compose-клиент — не делается в этом плане.</li>
+  <li>Портирование сервера (FastAPI/PostgreSQL/Telegram) на устройство — отдельный проект.</li>
+  <li>Play Store (assetlinks, App Bundle, требование 16 KB page size — для sideload неактуально).</li>
+  <li>iOS-сборка того же wrapper (Capacitor её покрывает почти бесплатно, но вне рамок «Android 14+»).</li>
+  <li>Экран настройки server URL внутри APK (появится вместе с режимом local bundle).</li>
+</ul>
+
+<div class="phase" id="s9"><span class="num">РАЗДЕЛ 9</span><h2 style="margin:0">Итоговые артефакты</h2></div>
+<ul class="filelist">
+  <li><code>mobile/</code> — capacitor-проект + android-модули <code>MediaPlaybackService.kt</code>, <code>MainActivity.kt</code>, манифест, gradle, keystore-инструкции в <code>mobile/README.md</code>;</li>
+  <li><code>scripts/build_android_apk.ps1</code>;</li>
+  <li>Правки: <code>frontend/src/services/nativeBridge.js</code>, <code>playerStore.js</code>, <code>App.jsx</code> (минимальные, под флагом);</li>
+  <li>Заметка в базе проекта: <code>obsidian/10-Мобильное/Android APK.md</code> (сборка, установка, troubleshooting) + строка в <code>Карта репозитория.md</code>;</li>
+  <li>Раздел в README.md проекта: «📱 Android».</li>
+</ul>
+
+<div class="phase" id="s10"><span class="num">РАЗДЕЛ 10</span><h2 style="margin:0">Оценка трудоёмкости</h2></div>
+<table>
+  <tr><th>Фаза</th><th>Время</th></tr>
+  <tr><td>0 · Prerequisites (SDK, HTTPS-развёртывание)</td><td>0.5 д</td></tr>
+  <tr><td>1 · Каркас Capacitor</td><td>0.5 д</td></tr>
+  <tr><td>2 · Native service + media-session мост</td><td>1–2 д</td></tr>
+  <tr><td>3 · Фронтенд-правки</td><td>0.5 д</td></tr>
+  <tr><td>4 · Сборка/подпись</td><td>0.5 д</td></tr>
+  <tr><td>5 · Тесты/полировка/доки</td><td>1 д</td></tr>
+  <tr><td><strong>Итого</strong></td><td><strong>≈ 4–5 дней</strong></td></tr>
+</table>
+
+<div class="phase" id="s11"><span class="num">РАЗДЕЛ 11</span><h2 style="margin:0">Открытые вопросы (решить до Фазы 2)</h2></div>
+<div class="callout warn">
+  <ul style="margin:0">
+    <li><span class="tag-q">⚑</span> Адрес сервера для <code>server.url</code> (домен / Tailscale / LAN + mkcert) — от него зависит Фаза 0.</li>
+    <li><span class="tag-q">⚑</span> Поведение при swipe-to-kill (останавливать или доигрывать трек).</li>
+    <li><span class="tag-q">⚑</span> Нужен ли экран настроек сервера сразу (тогда тащить local-bundle-режим в Фазу 1).</li>
+    <li><span class="tag-q">⚑</span> <code>applicationId</code> (по умолчанию предложен <code>app.tmusic.mobile</code>).</li>
+  </ul>
+</div>
+
+<hr class="hr" />
+<footer>T-Music · план портирования на Android 14+ · синхронизирован с <code>.mimocode/plans/android-14-port.md</code> (при изменении плана обновлять оба файла)</footer>
+
+</div>
+</body>
+</html>

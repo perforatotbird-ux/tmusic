@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { libraryApi } from '../api/library'
+import { libraryApi, bustCatalogCache } from '../api/library'
 import { streamApi } from '../api/stream'
+import { adminApi } from '../api/admin'
+import { metadataApi } from '../api/metadata'
 import { missingCoverKeys, parseCoverKey } from '../services/coverMissing'
 import { resolveCoverUrl } from '../utils/cover'
 import { AlbumDetail } from './AlbumDetail'
 import { LibraryPanel } from './HomeExtraPanels'
 import { FolderBrowser } from './FolderBrowser'
 import { AdminPanel } from './AdminPanel'
+import { ProfileMenu, roleLabel } from './ProfileMenu'
 import { usePlayerStore } from '../store/playerStore'
 import { useAuthStore } from '../store/authStore'
 import {
@@ -29,6 +32,11 @@ import {
   LayoutGrid,
   History,
   ListMusic,
+  Plus,
+  Unlink,
+  CornerUpLeft,
+  AlertTriangle,
+  Star,
 } from 'lucide-react'
 
 // Deterministic hue generator based on string hash for generative badges
@@ -132,12 +140,23 @@ const SECTIONS = [
 
 const SECTIONS_BY_ID = Object.fromEntries(SECTIONS.map((s) => [s.id, s]))
 
+// Card kinds for the admin "create object" form (same catalog kinds as AdminCatalog).
+const CARD_KINDS = [
+  { id: 'artist', label: 'Исполнитель' },
+  { id: 'compilation', label: 'Сборник' },
+  { id: 'standalone_album', label: 'Отдельный релиз' },
+  { id: 'genre_collection', label: 'Коллекция' },
+]
+const CARD_KIND_LABEL = Object.fromEntries(CARD_KINDS.map((k) => [k.id, k.label]))
+
 // The "Артисты" / "Альбомы" tabs are fixed views catalogued under these kinds.
 const MOBILE_TAB_KIND = { artists: 'artist', albums: 'albums' }
 
 export function MusicLibrary({ onOpenCoverPicker }) {
   const [items, setItems] = useState([])
   const [selectedArtist, setSelectedArtist] = useState(null)
+  const [similarArtists, setSimilarArtists] = useState([])
+  const [similarLoading, setSimilarLoading] = useState(false)
   const [selectedAlbum, setSelectedAlbum] = useState(null) // { album, artist } — AlbumDetail sheet
   const [activeKind, setActiveKind] = useState('artist')
   const [mobileTab, setMobileTab] = useState('library') // 'library' | 'artists' | 'albums' | 'search' | 'profile'
@@ -152,8 +171,8 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       return 'covers'
     }
   })
-  // Top bar section: catalog is default; recent/playlists open panels
-  const [libSection, setLibSection] = useState(null) // null | 'recent' | 'playlists'
+  // Top bar section: catalog is default; recent/playlists/favorites open panels
+  const [libSection, setLibSection] = useState(null) // null | 'recent' | 'playlists' | 'favorites'
   const [showAdmin, setShowAdmin] = useState(false)
   // Bumped when the cover manifest arrives so the grid re-renders with fresh
   // missing-cover knowledge (the registry itself is not React state).
@@ -163,7 +182,10 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   const loadSeq = useRef(0)
 
   const { playQueue, currentTrack } = usePlayerStore()
-  const { user, isAuthenticated, logout, setAuthModalOpen } = useAuthStore()
+  const { user, isAuthenticated, logout, setAuthModalOpen, checkAuth } = useAuthStore()
+
+  // Catalog curation (rename / covers / collections) is admin-only.
+  const isAdmin = user?.role === 'admin' || user?.username === 'admin'
 
   // Which catalog section is on screen: the Артисты/Альбомы tabs are fixed views,
   // everything else follows the category strip picked under Медиатека.
@@ -304,6 +326,43 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     }
   }
 
+  // Last.fm similar artists for the open artist card (best-effort).
+  useEffect(() => {
+    let cancelled = false
+    setSimilarArtists([])
+    if (!selectedArtist?.display_name || !isAuthenticated) return undefined
+    setSimilarLoading(true)
+    ;(async () => {
+      try {
+        const info = await metadataApi.artist(selectedArtist.display_name)
+        if (!cancelled) setSimilarArtists(info?.similar || [])
+      } catch {
+        if (!cancelled) setSimilarArtists([])
+      } finally {
+        if (!cancelled) setSimilarLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [selectedArtist?.id, selectedArtist?.display_name, isAuthenticated])
+
+  const openSimilarArtist = async (name) => {
+    setSelectedArtist(null)
+    setSearch(name)
+    setMobileTab('artists')
+    window.scrollTo(0, 0)
+    try {
+      const list = await libraryApi.getArtists({ search: name, limit: 20 })
+      const exact = (list || []).find(
+        (a) => (a.display_name || '').toLowerCase() === name.toLowerCase()
+      )
+      if (exact) await openArtist(exact.id)
+    } catch (e) {
+      console.error('Similar artist lookup failed:', e)
+    }
+  }
+
   const handlePlayAlbum = async (album, artist = null) => {
     try {
       const tracks = await streamApi.getFolderTracks(album.folder_id, !album.is_tracks)
@@ -327,6 +386,155 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     setSelectedAlbum({ album, artist })
   }
 
+  // ─── Admin card curation: drag-and-drop + create (admin-only) ────────────
+  // dragItem: {type:'artist'|'album', id, parent_id?|artist_id?}; dropKey is a
+  // `kind:id` string so artist and album grids never fight over the highlight.
+  const [dragItem, setDragItem] = useState(null)
+  const [dropKey, setDropKey] = useState(null)
+  const [actionError, setActionError] = useState(null)
+  const [mutationBusy, setMutationBusy] = useState(false)
+  const [showCreate, setShowCreate] = useState(false)
+  const [newCard, setNewCard] = useState({ name: '', kind: 'artist', bio: '' })
+  const [creating, setCreating] = useState(false)
+
+  const reportError = (e, fallback) => {
+    console.error(fallback, e)
+    setActionError(e?.detail || e?.message || fallback)
+  }
+
+  const refreshCatalog = async () => {
+    bustCatalogCache()
+    await Promise.all([loadData(), loadStats()])
+    if (selectedArtist) {
+      try {
+        setSelectedArtist(await libraryApi.getArtistDetail(selectedArtist.id))
+      } catch {
+        // Detail row may have been deleted upstream — fall back to the grid.
+        setSelectedArtist(null)
+      }
+    }
+  }
+
+  // targetId = null detaches the card to the catalog root.
+  const moveArtistInto = async (artistId, targetId) => {
+    setMutationBusy(true)
+    setActionError(null)
+    try {
+      await adminApi.patchArtist(artistId, { parent_id: targetId })
+      await refreshCatalog()
+    } catch (e) {
+      reportError(e, 'Не удалось переместить карточку')
+    } finally {
+      setMutationBusy(false)
+    }
+  }
+
+  const moveAlbumTo = async (albumId, targetArtistId) => {
+    setMutationBusy(true)
+    setActionError(null)
+    try {
+      await adminApi.patchAlbum(albumId, { artist_id: targetArtistId })
+      await refreshCatalog()
+    } catch (e) {
+      reportError(e, 'Не удалось переместить релиз')
+    } finally {
+      setMutationBusy(false)
+    }
+  }
+
+  const startArtistDrag = (e, artist) => {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', `artist:${artist.id}`)
+    setDragItem({ type: 'artist', id: artist.id, parent_id: artist.parent_id ?? null })
+  }
+
+  const startAlbumDrag = (e, album) => {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', `album:${album.id}`)
+    setDragItem({ type: 'album', id: album.id, artist_id: album.artist_id })
+  }
+
+  const endDrag = () => {
+    setDragItem(null)
+    setDropKey(null)
+  }
+
+  // Artist-level cards accept: artist cards (nest) and albums (re-parent).
+  const artistDropAllowed = (artist) => {
+    if (!dragItem) return false
+    if (dragItem.type === 'artist') {
+      return dragItem.id !== artist.id && dragItem.parent_id !== artist.id
+    }
+    return dragItem.artist_id !== artist.id
+  }
+
+  const overArtistCard = (e, artist) => {
+    if (!artistDropAllowed(artist)) return
+    e.preventDefault()
+    e.stopPropagation()
+    e.dataTransfer.dropEffect = 'move'
+    setDropKey(`artist:${artist.id}`)
+  }
+
+  const dropOnArtistCard = (e, artist) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const item = dragItem
+    endDrag()
+    if (!item || !artistDropAllowed(artist)) return
+    if (item.type === 'artist') moveArtistInto(item.id, artist.id)
+    else moveAlbumTo(item.id, artist.id)
+  }
+
+  // Album cards accept: other albums (move to the target's owner).
+  const albumDropAllowed = (album) =>
+    !!dragItem &&
+    dragItem.type === 'album' &&
+    dragItem.id !== album.id &&
+    dragItem.artist_id !== album.artist_id
+
+  const overAlbumCard = (e, album) => {
+    if (!albumDropAllowed(album)) return
+    e.preventDefault()
+    e.stopPropagation()
+    e.dataTransfer.dropEffect = 'move'
+    setDropKey(`album:${album.id}`)
+  }
+
+  const dropOnAlbumCard = (e, album) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const item = dragItem
+    endDrag()
+    if (!item || !albumDropAllowed(album)) return
+    moveAlbumTo(item.id, album.artist_id)
+  }
+
+  const createCard = async () => {
+    const name = newCard.name.trim()
+    if (!name || creating) return
+    setCreating(true)
+    setActionError(null)
+    try {
+      const created = await adminApi.createCollection({
+        display_name: name,
+        kind: newCard.kind,
+        ...(newCard.bio.trim() ? { bio: newCard.bio.trim() } : {}),
+      })
+      setNewCard({ name: '', kind: newCard.kind, bio: '' })
+      setShowCreate(false)
+      bustCatalogCache()
+      setActiveKind(created.kind)
+      setSearch('')
+      await loadData()
+    } catch (e) {
+      reportError(e, 'Не удалось создать карточку')
+    } finally {
+      setCreating(false)
+    }
+  }
+  // ─── End admin card curation ─────────────────────────────────────────────
+
   const handlePlayAllArtist = async (artist) => {
     try {
       const tracks = await streamApi.getFolderTracks(artist.folder_id, true)
@@ -341,6 +549,148 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       console.error('Failed to play all artist tracks:', e)
     }
   }
+
+  // ─── Card renderers (shared by catalog / search / detail grids) ──────────
+  // DnD attributes exist only for admins; everyone else gets plain cards.
+  const artistCardDnd = (artist) =>
+    isAdmin
+      ? {
+          draggable: true,
+          onDragStart: (e) => startArtistDrag(e, artist),
+          onDragEnd: endDrag,
+          onDragOver: (e) => overArtistCard(e, artist),
+          onDragLeave: () => setDropKey((k) => (k === `artist:${artist.id}` ? null : k)),
+          onDrop: (e) => dropOnArtistCard(e, artist),
+        }
+      : {}
+
+  const albumCardDnd = (album) =>
+    isAdmin
+      ? {
+          draggable: true,
+          onDragStart: (e) => startAlbumDrag(e, album),
+          onDragEnd: endDrag,
+          onDragOver: (e) => overAlbumCard(e, album),
+          onDragLeave: () => setDropKey((k) => (k === `album:${album.id}` ? null : k)),
+          onDrop: (e) => dropOnAlbumCard(e, album),
+        }
+      : {}
+
+  const renderArtistCard = (artist) => {
+    const cover = resolveCoverUrl(artist, null, null)
+    const isDragging = dragItem?.type === 'artist' && dragItem.id === artist.id
+    const isDropTarget = dropKey === `artist:${artist.id}`
+    const subParts = [
+      `${artist.album_count} ${artist.album_count === 1 ? 'релиз' : 'релизов'}`,
+      ...(artist.parent_id ? [`↳ ${artist.parent_name || 'вложено'}`] : []),
+      ...(artist.children_count > 0 ? [`+${artist.children_count} влож.`] : []),
+    ]
+    return (
+      <div
+        key={artist.id}
+        onClick={() => openArtist(artist.id)}
+        className="tmusic-artist-card"
+        {...artistCardDnd(artist)}
+        style={{
+          ...(isDropTarget
+            ? { outline: '2px dashed var(--accent)', outlineOffset: '3px', borderRadius: '14px' }
+            : {}),
+          opacity: isDragging ? 0.45 : 1,
+          cursor: isAdmin ? 'grab' : undefined,
+        }}
+      >
+        <div className="tmusic-artist-card-avatar-wrap" style={{ position: 'relative' }}>
+          <ImgWithFallback
+            name={artist.display_name}
+            kind="artist"
+            src={cover}
+            size="100%"
+            className="tmusic-artist-card-avatar"
+          />
+          {isAdmin && artist.parent_id && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                moveArtistInto(artist.id, null)
+              }}
+              title={`Извлечь из «${artist.parent_name || 'родительской карточки'}»`}
+              aria-label={`Извлечь ${artist.display_name} из родителя`}
+              style={{
+                position: 'absolute',
+                top: '6px',
+                left: '6px',
+                width: '26px',
+                height: '26px',
+                borderRadius: '50%',
+                backgroundColor: 'rgba(20, 18, 16, 0.85)',
+                border: '1px solid var(--line-bright)',
+                color: 'var(--ink)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                padding: 0,
+              }}
+            >
+              <Unlink size={13} />
+            </button>
+          )}
+        </div>
+        <div className="tmusic-artist-card-name">{artist.display_name}</div>
+        <div className="tmusic-artist-card-sub">
+          {viewKind === 'all' && artist.kind !== 'artist' && `${CARD_KIND_LABEL[artist.kind] || artist.kind} · `}
+          {subParts.join(' · ')}
+        </div>
+      </div>
+    )
+  }
+
+  const renderAlbumCard = (album, artist = null) => {
+    const cover = resolveCoverUrl(album, artist, null)
+    const title = album.title || album.display_name
+    const isDragging = dragItem?.type === 'album' && dragItem.id === album.id
+    const isDropTarget = dropKey === `album:${album.id}`
+    return (
+      <div
+        key={album.id}
+        onClick={() => openAlbum(album, artist)}
+        className="tmusic-card"
+        {...albumCardDnd(album)}
+        style={{
+          ...(isDropTarget
+            ? { outline: '2px dashed var(--accent)', outlineOffset: '3px', borderRadius: '14px' }
+            : {}),
+          opacity: isDragging ? 0.45 : 1,
+          cursor: isAdmin ? 'grab' : undefined,
+        }}
+      >
+        <div className="tmusic-card-cover-wrap">
+          <ImgWithFallback
+            name={title}
+            kind="album"
+            src={cover}
+            size="100%"
+            className="tmusic-card-img"
+          />
+          <button
+            className="tmusic-card-play-btn"
+            onClick={(e) => {
+              e.stopPropagation()
+              handlePlayAlbum(album, artist)
+            }}
+            aria-label={`Воспроизвести ${title}`}
+          >
+            <Play size={20} fill="#141210" style={{ marginLeft: '2px' }} />
+          </button>
+        </div>
+        <div className="tmusic-card-title">{title}</div>
+        <div className="tmusic-card-sub">
+          {album.year || (album.album_count ? `${album.album_count} альб.` : 'Релиз')}
+        </div>
+      </div>
+    )
+  }
+  // ─── End card renderers ──────────────────────────────────────────────────
 
   const showCatalogStrip = mobileTab === 'library'
 
@@ -457,22 +807,17 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               <span style={{ fontWeight: '600' }}>SSL • SECURE</span>
             </div>
             {user ? (
-              <button
-                onClick={logout}
-                title="Выйти"
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: 'var(--dim)',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '4px',
-                  fontSize: '12px',
+              <ProfileMenu
+                user={user}
+                isAdmin={isAdmin}
+                onLogout={logout}
+                onLogin={() => setAuthModalOpen(true)}
+                onOpenAdmin={() => {
+                  setMobileTab('profile')
+                  setShowAdmin(true)
                 }}
-              >
-                <LogOut size={16} />
-              </button>
+                onProfileChanged={checkAuth}
+              />
             ) : (
               <button
                 onClick={() => setAuthModalOpen(true)}
@@ -561,7 +906,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                       hasCustom: !!selectedArtist.custom_image_url,
                     })
                   }
-                  title="Изменить фото"
+                  title="Изменить фото (админ)"
                   style={{
                     position: 'absolute',
                     bottom: '6px',
@@ -572,7 +917,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                     backgroundColor: 'var(--bg-card)',
                     border: '1px solid var(--line-bright)',
                     color: 'var(--ink)',
-                    display: 'flex',
+                    display: isAdmin ? 'flex' : 'none',
                     alignItems: 'center',
                     justifyContent: 'center',
                     cursor: 'pointer',
@@ -602,6 +947,44 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                     {selectedArtist.bio}
                   </p>
                 )}
+                {(similarLoading || similarArtists.length > 0) && (
+                  <div style={{ marginBottom: '18px', maxWidth: '780px' }}>
+                    <div
+                      style={{
+                        fontSize: '11px',
+                        textTransform: 'uppercase',
+                        color: 'var(--dim)',
+                        fontWeight: '700',
+                        letterSpacing: '0.08em',
+                        marginBottom: '8px',
+                      }}
+                    >
+                      Похожие артисты {similarLoading ? '…' : ''}
+                    </div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                      {similarArtists.map((name) => (
+                        <button
+                          key={name}
+                          type="button"
+                          onClick={() => openSimilarArtist(name)}
+                          style={{
+                            padding: '6px 12px',
+                            borderRadius: '999px',
+                            border: '1px solid var(--line-bright)',
+                            background: 'transparent',
+                            color: 'var(--ink)',
+                            fontSize: '12px',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                          }}
+                          title="Найти в каталоге"
+                        >
+                          {name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div className="tmusic-artist-actions">
                   <button
                     onClick={() => handlePlayAllArtist(selectedArtist)}
@@ -630,61 +1013,42 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               РЕЛИЗЫ И АЛЬБОМЫ ({(selectedArtist.albums || []).length})
             </h3>
             <div className="tmusic-grid-albums">
-              {(selectedArtist.albums || []).map((album) => {
-                const cover = resolveCoverUrl(album, selectedArtist, null)
-                return (
-                  <div
-                    key={album.id}
-                    onClick={() => openAlbum(album, selectedArtist)}
-                    className="tmusic-card"
-                  >
-                    <div className="tmusic-card-cover-wrap">
-                      <ImgWithFallback
-                        name={album.title}
-                        kind="album"
-                        src={cover}
-                        size="100%"
-                        className="tmusic-card-img"
-                      />
-                      <button
-                        className="tmusic-card-play-btn"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          handlePlayAlbum(album, selectedArtist)
-                        }}
-                        aria-label={`Воспроизвести ${album.title}`}
-                      >
-                        <Play size={20} fill="#141210" style={{ marginLeft: '2px' }} />
-                      </button>
-                    </div>
-
-                    <div className="tmusic-card-title">
-                      {album.title}
-                    </div>
-                    <div className="tmusic-card-sub">
-                      {album.year || 'Альбом'}
-                    </div>
-                  </div>
-                )
-              })}
+              {(selectedArtist.albums || []).map((album) => renderAlbumCard(album, selectedArtist))}
             </div>
+
+            {/* Nested cards (artists/collections dropped inside this one) */}
+            {(selectedArtist.children || []).length > 0 && (
+              <>
+                <h3 className="title-zine" style={{ fontSize: '18px', margin: '26px 0 16px' }}>
+                  ВНУТРИ ({selectedArtist.children.length})
+                </h3>
+                <div className="tmusic-grid-artists">
+                  {selectedArtist.children.map((child) => renderArtistCard(child))}
+                </div>
+              </>
+            )}
           </div>
         ) : mobileTab === 'profile' ? (
           /* ─── Mobile Profile Screen ───────────────────────────────────────── */
           showAdmin ? (
-            <AdminPanel onBack={() => setShowAdmin(false)} />
+            <AdminPanel onBack={() => setShowAdmin(false)} onOpenCoverPicker={onOpenCoverPicker} />
           ) : (
           <div className="tmusic-profile-screen">
             <div className="tmusic-profile-header">
-              <div className="tmusic-profile-avatar">
-                <span>{(user?.username || 'A').toUpperCase().charAt(0)}</span>
+              <div className="tmusic-profile-avatar" style={{ overflow: 'hidden', padding: 0 }}>
+                {user?.avatar_url ? (
+                  <img
+                    src={user.avatar_url}
+                    alt={user.username}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                  />
+                ) : (
+                  <span>{(user?.username || 'A').toUpperCase().charAt(0)}</span>
+                )}
               </div>
               <div className="tmusic-profile-username">{user?.username || 'admin'}</div>
               <div className="tmusic-profile-badge">
-                <ShieldCheck size={14} />{' '}
-                {user?.role === 'admin' || user?.username === 'admin'
-                  ? 'Администратор • SSL Защищено'
-                  : 'Слушатель • SSL Защищено'}
+                <ShieldCheck size={14} /> {roleLabel(user)} • SSL Защищено
               </div>
             </div>
 
@@ -804,72 +1168,18 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               </div>
             ) : isAlbumSection ? (
               <div className="tmusic-grid-albums">
-                {items.map((album) => {
-                  const cover = resolveCoverUrl(album, null, null)
-                  return (
-                    <div
-                      key={album.id}
-                      onClick={() => openAlbum(album)}
-                      className="tmusic-card"
-                    >
-                      <div className="tmusic-card-cover-wrap">
-                        <ImgWithFallback
-                          name={album.title || album.display_name}
-                          kind="album"
-                          src={cover}
-                          size="100%"
-                          className="tmusic-card-img"
-                        />
-                        <button
-                          className="tmusic-card-play-btn"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            handlePlayAlbum(album)
-                          }}
-                          aria-label={`Воспроизвести ${album.title || album.display_name}`}
-                        >
-                          <Play size={20} fill="#141210" style={{ marginLeft: '2px' }} />
-                        </button>
-                      </div>
-                      <div className="tmusic-card-title">{album.title || album.display_name}</div>
-                      <div className="tmusic-card-sub">{album.year || 'Релиз'}</div>
-                    </div>
-                  )
-                })}
+                {items.map((album) => renderAlbumCard(album))}
               </div>
             ) : (
               <div className="tmusic-grid-artists">
-                {items.map((artist) => {
-                  const cover = resolveCoverUrl(artist, null, null)
-                  return (
-                    <div
-                      key={artist.id}
-                      onClick={() => openArtist(artist.id)}
-                      className="tmusic-artist-card"
-                    >
-                      <div className="tmusic-artist-card-avatar-wrap">
-                        <ImgWithFallback
-                          name={artist.display_name}
-                          kind="artist"
-                          src={cover}
-                          size="100%"
-                          className="tmusic-artist-card-avatar"
-                        />
-                      </div>
-                      <div className="tmusic-artist-card-name">{artist.display_name}</div>
-                      <div className="tmusic-artist-card-sub">
-                        {artist.album_count} {artist.album_count === 1 ? 'релиз' : 'релизов'}
-                      </div>
-                    </div>
-                  )
-                })}
+                {items.map((artist) => renderArtistCard(artist))}
               </div>
             )}
           </div>
         ) : (
           /* ─── Catalog: Медиатека (category strip) / Артисты / Альбомы ──────── */
           <div>
-            {/* Top bar: Недавнее | Плейлисты */}
+            {/* Top bar: Недавнее | Плейлисты | Любимые */}
             <div className="tmusic-library-bar">
               <button
                 type="button"
@@ -885,6 +1195,13 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               >
                 <ListMusic size={15} /> Плейлисты
               </button>
+              <button
+                type="button"
+                className={`tmusic-library-bar-btn ${libSection === 'favorites' ? 'active' : ''}`}
+                onClick={() => setLibSection(libSection === 'favorites' ? null : 'favorites')}
+              >
+                <Star size={15} /> Любимые
+              </button>
               <div className="tmusic-library-bar-hint-wrap" style={{ marginLeft: 'auto' }}>
                 {(libSection || folderMode) && (
                   <span
@@ -898,7 +1215,8 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                     }}
                   >
                     {libSection === 'recent' && 'История и продолжение прослушивания'}
-                    {libSection === 'playlists' && 'Создание и запуск плейлистов'}
+                    {libSection === 'playlists' && 'Порядок треков: DnD или ↑↓'}
+                    {libSection === 'favorites' && 'Звёздочки из альбомов и плеера'}
                     {!libSection && folderMode && 'Клик по папке → плейлист + play'}
                   </span>
                 )}
@@ -906,6 +1224,140 @@ export function MusicLibrary({ onOpenCoverPicker }) {
             </div>
 
             <LibraryPanel section={libSection} />
+
+            {/* Admin: create catalog cards (artist / compilation / release / collection) */}
+            {isAdmin && !folderMode && (
+              <div style={{ marginBottom: 14 }}>
+                {showCreate ? (
+                  <div
+                    style={{
+                      background: 'var(--bg-card)',
+                      border: '1px solid var(--line)',
+                      borderRadius: 12,
+                      padding: '14px 16px',
+                    }}
+                  >
+                    <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <Plus size={15} style={{ color: 'var(--accent)' }} /> Новая карточка каталога
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                      <input
+                        value={newCard.name}
+                        onChange={(e) => setNewCard((c) => ({ ...c, name: e.target.value }))}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') createCard()
+                          if (e.key === 'Escape') setShowCreate(false)
+                        }}
+                        placeholder="Название"
+                        autoFocus
+                        style={{
+                          background: 'var(--bg)',
+                          border: '1px solid var(--line)',
+                          color: 'var(--ink)',
+                          borderRadius: 8,
+                          padding: '8px 10px',
+                          minHeight: 40,
+                          fontSize: 14,
+                          flex: 1,
+                          minWidth: 160,
+                        }}
+                      />
+                      <select
+                        value={newCard.kind}
+                        onChange={(e) => setNewCard((c) => ({ ...c, kind: e.target.value }))}
+                        title="Тип карточки"
+                        style={{
+                          background: 'var(--bg)',
+                          border: '1px solid var(--line)',
+                          color: 'var(--ink)',
+                          borderRadius: 8,
+                          padding: '8px 10px',
+                          minHeight: 40,
+                          fontSize: 14,
+                        }}
+                      >
+                        {CARD_KINDS.map((k) => (
+                          <option key={k.id} value={k.id}>
+                            {k.label}
+                          </option>
+                        ))}
+                      </select>
+                      <textarea
+                        value={newCard.bio}
+                        onChange={(e) => setNewCard((c) => ({ ...c, bio: e.target.value }))}
+                        placeholder="Описание (необязательно)"
+                        rows={1}
+                        style={{
+                          background: 'var(--bg)',
+                          border: '1px solid var(--line)',
+                          color: 'var(--ink)',
+                          borderRadius: 8,
+                          padding: '8px 10px',
+                          fontSize: 14,
+                          flex: 2,
+                          minWidth: 160,
+                          minHeight: 40,
+                          resize: 'vertical',
+                        }}
+                      />
+                      <button
+                        type="button"
+                        disabled={creating || !newCard.name.trim()}
+                        onClick={createCard}
+                        style={{
+                          background: 'var(--accent)',
+                          color: '#141210',
+                          border: 'none',
+                          borderRadius: 8,
+                          padding: '8px 14px',
+                          minHeight: 40,
+                          fontWeight: 800,
+                          fontSize: 12,
+                          cursor: creating || !newCard.name.trim() ? 'default' : 'pointer',
+                          opacity: creating || !newCard.name.trim() ? 0.5 : 1,
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                        }}
+                      >
+                        {creating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Создать
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowCreate(false)}
+                        style={{
+                          background: 'transparent',
+                          border: '1px solid var(--line)',
+                          color: 'var(--dim)',
+                          borderRadius: 8,
+                          minWidth: 36,
+                          minHeight: 40,
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                        aria-label="Отмена"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                    <div style={{ fontSize: 11.5, color: 'var(--dim)', marginTop: 8 }}>
+                      После создания перетаскивайте карточки артистов, сборники и релизы прямо на эту карточку в сетке.
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="tmusic-library-bar-btn"
+                    onClick={() => setShowCreate(true)}
+                    title="Создать карточку (админ)"
+                  >
+                    <Plus size={15} /> Создать карточку
+                  </button>
+                )}
+              </div>
+            )}
 
             {folderMode ? (
               <FolderBrowser />
@@ -970,73 +1422,12 @@ export function MusicLibrary({ onOpenCoverPicker }) {
             ) : isAlbumSection ? (
               /* ─── Albums / Compilations Grid (Square Cards) ─────────────── */
               <div className="tmusic-grid-albums">
-                {items.map((album) => {
-                  const cover = resolveCoverUrl(album, null, null)
-                  return (
-                    <div
-                      key={album.id}
-                      onClick={() => openAlbum(album)}
-                      className="tmusic-card"
-                    >
-                      <div className="tmusic-card-cover-wrap">
-                        <ImgWithFallback
-                          name={album.title || album.display_name}
-                          kind="album"
-                          src={cover}
-                          size="100%"
-                          className="tmusic-card-img"
-                        />
-                        <button
-                          className="tmusic-card-play-btn"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            handlePlayAlbum(album)
-                          }}
-                          aria-label={`Воспроизвести ${album.title || album.display_name}`}
-                        >
-                          <Play size={20} fill="#141210" style={{ marginLeft: '2px' }} />
-                        </button>
-                      </div>
-
-                      <div className="tmusic-card-title">
-                        {album.title || album.display_name}
-                      </div>
-                      <div className="tmusic-card-sub">
-                        {album.year || (album.album_count ? `${album.album_count} альб.` : 'Релиз')}
-                      </div>
-                    </div>
-                  )
-                })}
+                {items.map((album) => renderAlbumCard(album))}
               </div>
             ) : (
               /* ─── Artists Grid (Circular Avatar Cards) ──────────────────── */
               <div className="tmusic-grid-artists">
-                {items.map((artist) => {
-                  const cover = resolveCoverUrl(artist, null, null)
-                  return (
-                    <div
-                      key={artist.id}
-                      onClick={() => openArtist(artist.id)}
-                      className="tmusic-artist-card"
-                    >
-                      <div className="tmusic-artist-card-avatar-wrap">
-                        <ImgWithFallback
-                          name={artist.display_name}
-                          kind="artist"
-                          src={cover}
-                          size="100%"
-                          className="tmusic-artist-card-avatar"
-                        />
-                      </div>
-                      <div className="tmusic-artist-card-name">
-                        {artist.display_name}
-                      </div>
-                      <div className="tmusic-artist-card-sub">
-                        {artist.album_count} {artist.album_count === 1 ? 'релиз' : 'релизов'}
-                      </div>
-                    </div>
-                  )
-                })}
+                {items.map((artist) => renderArtistCard(artist))}
               </div>
             ))}
           </div>
@@ -1049,8 +1440,44 @@ export function MusicLibrary({ onOpenCoverPicker }) {
           album={selectedAlbum.album}
           artist={selectedAlbum.artist}
           onClose={() => setSelectedAlbum(null)}
-          onOpenCoverPicker={onOpenCoverPicker}
+          onOpenCoverPicker={isAdmin ? onOpenCoverPicker : null}
         />
+      )}
+
+      {/* Admin curation error toast (drag-and-drop / create failures) */}
+      {actionError && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: 'calc(var(--player-bar-h) + 20px + var(--safe-bottom))',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 8000,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '10px 14px',
+            borderRadius: 10,
+            fontSize: 12.5,
+            fontWeight: 600,
+            background: 'rgba(255,107,107,0.14)',
+            color: 'var(--danger, #ff6b6b)',
+            border: '1px solid var(--line)',
+            backdropFilter: 'blur(8px)',
+            maxWidth: '92vw',
+          }}
+          role="alert"
+        >
+          <AlertTriangle size={15} style={{ flexShrink: 0 }} />
+          <span>{actionError}</span>
+          <button
+            onClick={() => setActionError(null)}
+            style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', padding: 0, display: 'flex' }}
+            aria-label="Закрыть"
+          >
+            <X size={14} />
+          </button>
+        </div>
       )}
 
       {/* ─── Mobile Bottom Navigation Bar ──────────────────────────────────── */}

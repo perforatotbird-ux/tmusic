@@ -33,6 +33,9 @@ class MusicArtistCard(BaseModel):
     custom_image_url: Optional[str] = None
     confidence: int = 0
     album_count: int = 0
+    parent_id: Optional[int] = None
+    parent_name: Optional[str] = None
+    children_count: int = 0
     enriched_at: Optional[datetime] = None
 
 
@@ -51,8 +54,11 @@ class MusicArtistDetail(BaseModel):
     wikipedia_url: Optional[str] = None
     confidence: int = 0
     locked: bool = False
+    parent_id: Optional[int] = None
+    parent_name: Optional[str] = None
     enriched_at: Optional[datetime] = None
     albums: List[MusicAlbumCard] = []
+    children: List[MusicArtistCard] = []
 
 
 class LibraryStats(BaseModel):

@@ -9,7 +9,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fastapi.testclient import TestClient
 
-from app.core.config import settings
 from app.core.security import hash_password
 from app.core.database import SessionLocal
 from app.main import app
@@ -21,6 +20,15 @@ client = TestClient(app)
 
 USERNAME = "subsonic_test_user"
 PASSWORD = "Subsonic!Test1"
+
+
+def _ensure_feature_tables() -> None:
+    from app.core.database import ensure_feature_tables
+
+    ensure_feature_tables()
+
+
+_ensure_feature_tables()
 
 
 def _ensure_user() -> AppUser:
@@ -109,3 +117,185 @@ def test_admin_credentials_endpoint_shape():
     # Without JWT may 401 — that's fine
     resp = client.get("/api/subsonic/credentials")
     assert resp.status_code in (200, 401)
+
+
+def _base_params(**extra):
+    p = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "T-Music", "f": "json"}
+    p.update(extra)
+    return p
+
+
+def _ensure_audio_file(name: str = "Artist - Song.mp3") -> int:
+    from app.models.vfs import Folder, VFile
+
+    with SessionLocal() as db:
+        from sqlalchemy import func as sa_func
+
+        vf = db.scalar(
+            select(VFile).where(VFile.name == name, VFile.is_trash == False)  # noqa: E712
+        )
+        if vf:
+            return vf.id
+        folder = db.scalar(select(Folder).where(Folder.name == "SubsonicTest"))
+        if not folder:
+            folder = Folder(name="SubsonicTest")
+            db.add(folder)
+            db.commit()
+            db.refresh(folder)
+        vf = VFile(name=name, mime_type="audio/mpeg", folder_id=folder.id, is_trash=False)
+        db.add(vf)
+        db.commit()
+        db.refresh(vf)
+        assert db.scalar(sa_func.count(VFile.id)) >= 1
+        return vf.id
+
+
+def test_subsonic_star_unstar_getstarred():
+    _ensure_user()
+    fid = _ensure_audio_file()
+    file_id = f"fl-{fid}"
+
+    resp = client.get("/rest/star.view", params=_base_params(id=file_id))
+    assert resp.json()["subsonic-response"]["status"] == "ok"
+
+    resp = client.get("/rest/getStarred2.view", params=_base_params())
+    body = resp.json()["subsonic-response"]
+    assert body["status"] == "ok"
+    songs = body["starred2"]["song"]
+    assert any(s["id"] == file_id for s in songs)
+
+    resp = client.get("/rest/unstar.view", params=_base_params(id=file_id))
+    assert resp.json()["subsonic-response"]["status"] == "ok"
+
+    resp = client.get("/rest/getStarred.view", params=_base_params())
+    body = resp.json()["subsonic-response"]
+    assert body["status"] == "ok"
+    songs = body["starred"].get("song") or []
+    assert not any(s["id"] == file_id for s in songs)
+
+
+def test_subsonic_add_song_rating_maps_to_favorite():
+    _ensure_user()
+    fid = _ensure_audio_file()
+    file_id = f"fl-{fid}"
+
+    client.get("/rest/unstar.view", params=_base_params(id=file_id))
+    resp = client.get(
+        "/rest/addSongRating.view", params=_base_params(id=file_id, rating=5)
+    )
+    assert resp.json()["subsonic-response"]["status"] == "ok"
+    with SessionLocal() as db:
+        from app.models.playback import UserFavorite
+
+        assert db.scalar(
+            select(UserFavorite.id).where(
+                UserFavorite.file_id == fid, UserFavorite.user_id == _ensure_user().id
+            )
+        )
+
+    resp = client.get(
+        "/rest/addSongRating.view", params=_base_params(id=file_id, rating=1)
+    )
+    assert resp.json()["subsonic-response"]["status"] == "ok"
+    with SessionLocal() as db:
+        from app.models.playback import UserFavorite
+
+        user_id = _ensure_user().id
+        assert (
+            db.scalar(
+                select(UserFavorite.id).where(
+                    UserFavorite.file_id == fid, UserFavorite.user_id == user_id
+                )
+            )
+            is None
+        )
+
+
+def test_subsonic_scrobble_submission():
+    _ensure_user()
+    fid = _ensure_audio_file()
+    resp = client.get(
+        "/rest/scrobble.view",
+        params=_base_params(id=f"fl-{fid}", submission="true", time="1700000000000"),
+    )
+    assert resp.json()["subsonic-response"]["status"] == "ok"
+
+    from app.models.playback import ListeningHistory
+
+    with SessionLocal() as db:
+        rows = db.scalars(
+            select(ListeningHistory).where(
+                ListeningHistory.file_id == fid,
+                ListeningHistory.user_id == _ensure_user().id,
+            )
+        ).all()
+        assert len(rows) >= 1
+
+
+def test_subsonic_get_lyrics_shape(monkeypatch):
+    _ensure_user()
+    from app.services import lyrics_service
+
+    monkeypatch.setattr(
+        lyrics_service,
+        "get_lyrics",
+        lambda **kw: {
+            "found": True,
+            "source": "lrclib",
+            "plain": "line one\nline two",
+            "synced": "[00:01.00] line one\n[00:02.50] line two",
+            "artist": "Artist",
+            "track": "Song",
+            "album": None,
+            "duration_sec": None,
+        },
+    )
+
+    resp = client.get(
+        "/rest/getLyrics.view",
+        params=_base_params(artist="Artist", title="Song"),
+    )
+    body = resp.json()["subsonic-response"]
+    assert body["status"] == "ok"
+    assert "line one" in body["lyrics"]["value"]
+
+    fid = _ensure_audio_file()
+    resp = client.get(
+        "/rest/getLyricsBySongId.view",
+        params=_base_params(id=f"fl-{fid}"),
+    )
+    body = resp.json()["subsonic-response"]
+    assert body["status"] == "ok"
+    structured = body["structuredLyrics"]
+    assert isinstance(structured, list)
+    assert any(s.get("synced") for s in structured)
+    lrc = next(s for s in structured if s.get("synced"))
+    assert lrc["line"][0]["start"] == 1000
+    assert lrc["line"][1]["start"] == 2500
+
+
+def test_subsonic_similar_and_info_methods_smoke():
+    _ensure_user()
+    fid = _ensure_audio_file()
+    for method, extra in (
+        ("getSimilarSongs.view", {"id": f"fl-{fid}", "count": 5}),
+        ("getTopSongs.view", {"count": 5}),
+        ("getGenres.view", {}),
+        ("getNowPlayingList.view", {}),
+    ):
+        resp = client.get(f"/rest/{method}", params=_base_params(**extra))
+        assert resp.status_code == 200, method
+        body = resp.json()["subsonic-response"]
+        assert body["status"] == "ok", method
+
+
+def test_subsonic_xml_star_and_lyrics():
+    _ensure_user()
+    fid = _ensure_audio_file()
+    resp = client.get(
+        "/rest/star.view",
+        params=_base_params(id=f"fl-{fid}", f="xml"),
+    )
+    assert resp.headers["content-type"].startswith("text/xml")
+    assert 'status="ok"' in resp.text
+    client.get("/rest/unstar.view", params=_base_params(id=f"fl-{fid}"))
