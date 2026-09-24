@@ -27,6 +27,15 @@ export const adminApi = {
     }),
 
   listUsers: () => request('/api/admin/users'),
+  unlockUser: (id) => request(`/api/admin/users/${id}/unlock`, { method: 'POST' }),
+  revokeUserSessions: (id) => request(`/api/admin/users/${id}/revoke-sessions`, { method: 'POST' }),
+  deleteUser: (id) => request(`/api/admin/users/${id}`, { method: 'DELETE' }),
+  listAudit: (params = {}) => {
+    const qs = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== '')
+    ).toString()
+    return request(qs ? `/api/admin/audit?${qs}` : '/api/admin/audit')
+  },
   createUser: (body) =>
     request('/api/admin/users', {
       method: 'POST',

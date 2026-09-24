@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_admin_user
+from app.api.dependencies import get_catalog_user
 from app.core.database import get_db
 from app.models.auth import AppUser
 from app.models.music import MusicArtist
@@ -55,7 +55,7 @@ async def catalog_artists(
     limit: int = Query(200, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    user: AppUser = Depends(get_admin_user),
+    user: AppUser = Depends(get_catalog_user),
 ):
     if kind in ("null", "undefined", ""):
         kind = None
@@ -69,7 +69,7 @@ async def catalog_update_artist(
     artist_id: int,
     body: ArtistUpdate,
     db: Session = Depends(get_db),
-    user: AppUser = Depends(get_admin_user),
+    user: AppUser = Depends(get_catalog_user),
 ):
     artist = CatalogAdminService.update_artist(
         db,
@@ -118,7 +118,7 @@ async def catalog_update_artist(
 async def catalog_create_collection(
     body: CollectionCreate,
     db: Session = Depends(get_db),
-    user: AppUser = Depends(get_admin_user),
+    user: AppUser = Depends(get_catalog_user),
 ):
     artist = CatalogAdminService.create_collection(
         db, body.display_name, body.kind, parent_id=body.parent_id, bio=body.bio
@@ -147,7 +147,7 @@ async def catalog_create_collection(
 async def catalog_delete_artist(
     artist_id: int,
     db: Session = Depends(get_db),
-    user: AppUser = Depends(get_admin_user),
+    user: AppUser = Depends(get_catalog_user),
 ):
     return CatalogAdminService.delete_artist(db, artist_id)
 
@@ -159,7 +159,7 @@ async def catalog_albums(
     limit: int = Query(200, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    user: AppUser = Depends(get_admin_user),
+    user: AppUser = Depends(get_catalog_user),
 ):
     if search in ("null", "undefined") or not (search or "").strip():
         search = None
@@ -194,7 +194,7 @@ async def catalog_update_album(
     album_id: int,
     body: AlbumUpdate,
     db: Session = Depends(get_db),
-    user: AppUser = Depends(get_admin_user),
+    user: AppUser = Depends(get_catalog_user),
 ):
     album = CatalogAdminService.update_album(
         db, album_id, title=body.title, year=body.year, artist_id=body.artist_id

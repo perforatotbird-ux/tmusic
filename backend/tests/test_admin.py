@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.api.dependencies import user_is_admin
+from app.api.dependencies import user_has_permission, user_is_admin
 from app.models.auth import AppUser
 from app.core.database import SessionLocal
 from app.core.security import hash_password
@@ -38,6 +38,17 @@ def test_user_is_admin_logic():
     assert user_is_admin(a) is True
     assert user_is_admin(b) is True
     assert user_is_admin(c) is False
+
+
+def test_role_permissions():
+    admin = AppUser(username="root", role="admin", password_hash="x")
+    editor = AppUser(username="editor", role="editor", password_hash="x")
+    user = AppUser(username="user", role="user", password_hash="x")
+    assert user_has_permission(admin, "admin.users.manage") is True
+    assert user_has_permission(editor, "catalog.manage") is True
+    assert user_has_permission(editor, "admin.users.manage") is False
+    assert user_has_permission(user, "catalog.manage") is False
+    assert user_has_permission(user, "admin.access") is False
 
 
 def test_settings_roundtrip_key_guard():

@@ -5,7 +5,7 @@ Designed for Internet-facing security with brute-force defense and session lifec
 from typing import Optional
 from datetime import datetime
 from sqlalchemy import (
-    String, Boolean, DateTime, Integer
+    String, Boolean, DateTime, Integer, Text, ForeignKey
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -48,6 +48,20 @@ class AppSetting(Base):
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class AdminAuditEvent(Base):
+    __tablename__ = "admin_audit_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    actor_id: Mapped[Optional[int]] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"), nullable=True, index=True)
+    actor_username: Mapped[str] = mapped_column(String(64), index=True)
+    action: Mapped[str] = mapped_column(String(120), index=True)
+    target_type: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    target_id: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    metadata_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    ip_address: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
 class RevokedToken(Base):

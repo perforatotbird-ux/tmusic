@@ -3,10 +3,11 @@ T-Music Admin API
 Database maintenance, scheduled backups, settings, users/roles.
 Access: JWT session of user with role=admin (or username admin).
 """
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -15,9 +16,11 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_admin_user
 from app.core.config import settings
 from app.core.database import get_db
-from app.models.auth import AppUser, RevokedToken
+from app.models.auth import AdminAuditEvent, AppUser, RevokedToken
 from app.models.music import MusicAlbum, MusicArtist
 from app.models.playlist import Playlist
+from app.models.playback import ListeningHistory, PlaybackPosition, UserFavorite
+from app.models.share import ShareLink
 from app.models.vfs import TGAccount, VFile
 from app.services import admin_service
 from app.services.ram_cache_service import ram_cache
@@ -25,6 +28,7 @@ from app.tg.manager import tg_manager
 from app.utils.time import utcnow
 from app.api.dependencies import user_is_admin
 from app.core.user_cache import invalidate_user
+from app.utils.client_ip import get_client_ip
 
 logger = logging.getLogger("tmusic.admin")
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -50,6 +54,47 @@ class CreateUser(BaseModel):
     username: str = Field(min_length=2, max_length=64)
     password: str = Field(min_length=8, max_length=128)
     role: str = Field(default="user", pattern="^(admin|editor|user)$")
+
+
+def _audit(
+    db: Session,
+    request: Request,
+    actor: AppUser,
+    action: str,
+    target_type: Optional[str] = None,
+    target_id: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    event = AdminAuditEvent(
+        actor_id=actor.id,
+        actor_username=actor.username,
+        action=action,
+        target_type=target_type,
+        target_id=str(target_id) if target_id is not None else None,
+        metadata_json=json.dumps(metadata, ensure_ascii=False) if metadata else None,
+        ip_address=get_client_ip(request),
+    )
+    db.add(event)
+    db.flush()
+
+
+def _active_admin_count(db: Session) -> int:
+    return db.scalar(
+        select(func.count(AppUser.id)).where(
+            AppUser.is_active.is_(True),
+            (AppUser.role == "admin") | (AppUser.username == "admin"),
+        )
+    ) or 0
+
+
+def _user_data_counts(db: Session, user_id: int) -> Dict[str, int]:
+    return {
+        "playlists": db.scalar(select(func.count(Playlist.id)).where(Playlist.user_id == user_id)) or 0,
+        "history": db.scalar(select(func.count(ListeningHistory.id)).where(ListeningHistory.user_id == user_id)) or 0,
+        "favorites": db.scalar(select(func.count(UserFavorite.id)).where(UserFavorite.user_id == user_id)) or 0,
+        "positions": db.scalar(select(func.count(PlaybackPosition.id)).where(PlaybackPosition.user_id == user_id)) or 0,
+        "shares": db.scalar(select(func.count(ShareLink.id)).where(ShareLink.user_id == user_id)) or 0,
+    }
 
 
 def _library_counts(db: Session) -> Dict[str, int]:
@@ -255,6 +300,7 @@ async def admin_list_users(
             "failed_login_attempts": u.failed_login_attempts,
             "locked_until": u.locked_until.isoformat() if u.locked_until else None,
             "created_at": u.created_at.isoformat() if u.created_at else None,
+            "token_version": u.token_version or 0,
             "has_subsonic_token": bool(u.subsonic_token_enc),
         }
         for u in users
@@ -264,6 +310,7 @@ async def admin_list_users(
 @router.post("/users")
 async def admin_create_user(
     body: CreateUser,
+    request: Request,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
@@ -279,6 +326,8 @@ async def admin_create_user(
         is_active=True,
     )
     db.add(new_user)
+    db.flush()
+    _audit(db, request, user, "user.created", "user", new_user.id, {"username": new_user.username, "role": new_user.role})
     db.commit()
     db.refresh(new_user)
     logger.info("Admin %s created user %s role=%s", user.username, new_user.username, new_user.role)
@@ -289,24 +338,22 @@ async def admin_create_user(
 async def admin_patch_user(
     user_id: int,
     body: UserPatch,
+    request: Request,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
     target = db.scalar(select(AppUser).where(AppUser.id == user_id))
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
-    if body.role is not None:
-        # Last admin guard
-        if user_is_admin(target) and body.role != "admin":
-            admins = db.scalar(
-                select(func.count(AppUser.id)).where(
-                    (AppUser.role == "admin") | (AppUser.username == "admin")
-                )
-            ) or 0
-            if admins <= 1:
-                raise HTTPException(status_code=400, detail="Cannot demote the last administrator")
+    if target.id == user.id and (body.role is not None or body.is_active is False):
+        raise HTTPException(status_code=400, detail="Cannot demote or disable your own account")
+    if body.role is not None and body.role != target.role:
+        if user_is_admin(target) and body.role != "admin" and _active_admin_count(db) <= 1:
+            raise HTTPException(status_code=400, detail="Cannot demote the last active administrator")
         target.role = body.role
-    if body.is_active is not None:
+    if body.is_active is not None and body.is_active != target.is_active:
+        if target.is_active and not body.is_active and user_is_admin(target) and _active_admin_count(db) <= 1:
+            raise HTTPException(status_code=400, detail="Cannot disable the last active administrator")
         target.is_active = body.is_active
     if body.new_password:
         from app.core.security import hash_password
@@ -315,6 +362,20 @@ async def admin_patch_user(
         target.token_version = (target.token_version or 0) + 1
         target.failed_login_attempts = 0
         target.locked_until = None
+    _audit(
+        db,
+        request,
+        user,
+        "user.updated",
+        "user",
+        target.id,
+        {
+            "username": target.username,
+            "role": target.role,
+            "is_active": target.is_active,
+            "password_changed": bool(body.new_password),
+        },
+    )
     db.commit()
     invalidate_user(target.username)
     logger.info("Admin %s patched user %s", user.username, target.username)
@@ -324,6 +385,95 @@ async def admin_patch_user(
         "role": getattr(target, "role", "user"),
         "is_active": target.is_active,
     }
+
+
+@router.get("/audit")
+async def admin_list_audit(
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    action: Optional[str] = Query(None, max_length=120),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_admin_user),
+):
+    query = select(AdminAuditEvent).order_by(AdminAuditEvent.created_at.desc(), AdminAuditEvent.id.desc())
+    if action:
+        query = query.where(AdminAuditEvent.action == action)
+    events = db.scalars(query.offset(offset).limit(limit)).all()
+    return {
+        "items": [
+            {
+                "id": event.id,
+                "actor": event.actor_username,
+                "action": event.action,
+                "target_type": event.target_type,
+                "target_id": event.target_id,
+                "metadata": json.loads(event.metadata_json) if event.metadata_json else {},
+                "ip": event.ip_address,
+                "created_at": event.created_at.isoformat() if event.created_at else None,
+            }
+            for event in events
+        ],
+        "total": db.scalar(select(func.count(AdminAuditEvent.id)).where(AdminAuditEvent.action == action) if action else select(func.count(AdminAuditEvent.id))),
+    }
+
+
+@router.post("/users/{user_id}/unlock")
+async def admin_unlock_user(
+    user_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_admin_user),
+):
+    target = db.scalar(select(AppUser).where(AppUser.id == user_id))
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    target.failed_login_attempts = 0
+    target.locked_until = None
+    _audit(db, request, user, "user.unlocked", "user", target.id, {"username": target.username})
+    db.commit()
+    invalidate_user(target.username)
+    return {"ok": True, "username": target.username}
+
+
+@router.post("/users/{user_id}/revoke-sessions")
+async def admin_revoke_user_sessions(
+    user_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_admin_user),
+):
+    target = db.scalar(select(AppUser).where(AppUser.id == user_id))
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    target.token_version = (target.token_version or 0) + 1
+    _audit(db, request, user, "user.sessions_revoked", "user", target.id, {"username": target.username})
+    db.commit()
+    invalidate_user(target.username)
+    return {"ok": True, "username": target.username}
+
+
+@router.delete("/users/{user_id}")
+async def admin_delete_user(
+    user_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_admin_user),
+):
+    target = db.scalar(select(AppUser).where(AppUser.id == user_id))
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.id == user.id:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+    if user_is_admin(target) and _active_admin_count(db) <= 1:
+        raise HTTPException(status_code=400, detail="Cannot delete the last active administrator")
+    counts = _user_data_counts(db, user_id)
+    if any(counts.values()):
+        raise HTTPException(status_code=409, detail={"message": "User has data; deactivate instead", "counts": counts})
+    _audit(db, request, user, "user.deleted", "user", target.id, {"username": target.username})
+    db.delete(target)
+    db.commit()
+    invalidate_user(target.username)
+    return {"ok": True}
 
 
 @router.get("/tg/cluster")

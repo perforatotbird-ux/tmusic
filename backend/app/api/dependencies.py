@@ -16,6 +16,35 @@ from app.models.auth import AppUser
 
 security_bearer = HTTPBearer(auto_error=False)
 
+ROLE_PERMISSIONS = {
+    "admin": frozenset({
+        "admin.access",
+        "admin.audit.view",
+        "admin.users.manage",
+        "admin.settings.manage",
+        "admin.db.manage",
+        "admin.backups.manage",
+        "catalog.manage",
+    }),
+    "editor": frozenset({"catalog.manage"}),
+    "user": frozenset(),
+}
+
+
+def user_permissions(user: AppUser) -> frozenset:
+    role = (getattr(user, "role", None) or "user") if user else "user"
+    if role not in ROLE_PERMISSIONS:
+        return frozenset()
+    return ROLE_PERMISSIONS[role]
+
+
+def user_has_permission(user: AppUser, permission: str) -> bool:
+    if not user:
+        return False
+    if user.username == "admin":
+        return True
+    return permission in user_permissions(user)
+
 
 def _extract_token(
     request: Request,
@@ -126,10 +155,17 @@ def user_is_admin(user: AppUser) -> bool:
     return role == "admin" or user.username == "admin"
 
 
+async def get_catalog_user(
+    user: AppUser = Depends(get_current_user),
+) -> AppUser:
+    if not user_has_permission(user, "catalog.manage"):
+        raise HTTPException(status_code=403, detail="Catalog management permission required.")
+    return user
+
+
 async def get_admin_user(
     user: AppUser = Depends(get_current_user),
 ) -> AppUser:
-    """Admin panel / maintenance endpoints."""
-    if not user_is_admin(user):
+    if not user_has_permission(user, "admin.access"):
         raise HTTPException(status_code=403, detail="Administrator role required.")
     return user

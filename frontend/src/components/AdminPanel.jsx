@@ -17,6 +17,9 @@ import {
   CheckCircle2,
   AlertTriangle,
   FolderHeart,
+  ScrollText,
+  KeyRound,
+  UnlockKeyhole,
 } from 'lucide-react'
 import { adminApi } from '../api/admin'
 import { AdminCatalog } from './AdminCatalog'
@@ -28,6 +31,7 @@ const TABS = [
   { id: 'backups', label: 'Бэкапы', icon: HardDriveDownload },
   { id: 'settings', label: 'Настройки', icon: Settings2 },
   { id: 'users', label: 'Пользователи', icon: Users },
+  { id: 'audit', label: 'Аудит', icon: ScrollText },
 ]
 
 function fmtBytes(n) {
@@ -125,6 +129,7 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
   const [backups, setBackups] = useState(null)
   const [settings, setSettings] = useState(null)
   const [users, setUsers] = useState(null)
+  const [audit, setAudit] = useState(null)
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' })
 
   const flash = (msg, kind = 'ok') => {
@@ -139,12 +144,14 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
       const ov = await adminApi.overview()
       setOverview(ov)
       setSettings(ov.settings)
-      const [bk, us] = await Promise.all([
+      const [bk, us, au] = await Promise.all([
         adminApi.listBackups().catch(() => null),
         adminApi.listUsers().catch(() => null),
+        adminApi.listAudit().catch(() => null),
       ])
       if (bk) setBackups(bk)
       if (us) setUsers(us)
+      if (au) setAudit(au)
     } catch (e) {
       setError(e.message || 'Нет доступа к админке')
     } finally {
@@ -575,6 +582,42 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
                   >
                     {u.is_active ? 'Active' : 'Disabled'}
                   </Btn>
+                  <Btn
+                    title="Разблокировать"
+                    onClick={() => runAction(() => adminApi.unlockUser(u.id), 'Аккаунт разблокирован')}
+                  >
+                    <UnlockKeyhole size={12} />
+                  </Btn>
+                  <Btn
+                    title="Сбросить пароль"
+                    onClick={() => {
+                      const password = window.prompt(`Новый пароль для ${u.username} (минимум 8 символов)`)
+                      if (password && password.length >= 8) {
+                        runAction(() => adminApi.patchUser(u.id, { new_password: password }), 'Пароль изменён')
+                      }
+                    }}
+                  >
+                    <KeyRound size={12} />
+                  </Btn>
+                  <Btn
+                    title="Завершить все сессии"
+                    onClick={() =>
+                      runAction(() => adminApi.revokeUserSessions(u.id), 'Сессии завершены')
+                    }
+                  >
+                    <ShieldAlert size={12} />
+                  </Btn>
+                  <Btn
+                    variant="danger"
+                    title="Удалить без данных"
+                    onClick={() => {
+                      if (window.confirm(`Удалить пользователя ${u.username}? Действие необратимо.`)) {
+                        runAction(() => adminApi.deleteUser(u.id), 'Пользователь удалён')
+                      }
+                    }}
+                  >
+                    <Trash2 size={12} />
+                  </Btn>
                 </div>
               ))}
             </div>
@@ -651,6 +694,33 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
             </div>
           </Panel>
         </>
+      )}
+
+      {tab === 'audit' && (
+        <Panel title="Журнал административных действий">
+          {!audit?.items?.length && <div style={{ color: 'var(--dim)', fontSize: 13 }}>Событий пока нет</div>}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {(audit?.items || []).map((event) => (
+              <div
+                key={event.id}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'minmax(130px, 1fr) minmax(180px, 1.4fr) minmax(150px, 1fr)',
+                  gap: 10,
+                  padding: '8px 4px',
+                  borderBottom: '1px solid var(--line)',
+                  fontSize: 12,
+                }}
+              >
+                <span style={{ color: 'var(--dim)' }}>{event.created_at}</span>
+                <span><b>{event.actor}</b> · {event.action}</span>
+                <span style={{ color: 'var(--dim)' }}>
+                  {event.target_type ? `${event.target_type} #${event.target_id || '—'}` : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Panel>
       )}
     </div>
   )

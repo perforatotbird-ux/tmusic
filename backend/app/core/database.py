@@ -137,7 +137,7 @@ def ensure_feature_tables() -> None:
     """Create additive feature tables (playback + playlists + settings) on startup."""
     try:
         from app.models.base import Base
-        from app.models.auth import AppSetting
+        from app.models.auth import AdminAuditEvent, AppSetting
         from app.models.playback import ListeningHistory, PlaybackPosition, UserFavorite
         from app.models.playlist import Playlist, PlaylistItem
         from app.models.share import ShareLink
@@ -151,6 +151,7 @@ def ensure_feature_tables() -> None:
                 Playlist.__table__,
                 PlaylistItem.__table__,
                 AppSetting.__table__,
+                AdminAuditEvent.__table__,
                 ShareLink.__table__,
             ],
         )
