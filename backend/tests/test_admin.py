@@ -54,6 +54,16 @@ def test_role_permissions():
     assert user_has_permission(user, "admin.access") is False
 
 
+def test_spa_csp_allows_reported_inline_hash_without_unsafe_inline_scripts():
+    response = client.get("/")
+    assert response.status_code == 200
+    csp = response.headers["content-security-policy"]
+    assert "script-src 'self' 'sha256-cEEJXZkc6tLNJmk1I/w8YnMuXFWQuspQWrTyhDyTmmY='" in csp
+    assert "script-src-elem 'self' 'sha256-cEEJXZkc6tLNJmk1I/w8YnMuXFWQuspQWrTyhDyTmmY='" in csp
+    assert "script-src 'self' 'unsafe-inline'" not in csp
+    assert "<script>" not in response.text
+
+
 def test_admin_analytics_shape():
     username = "analytics_admin_test"
     password = "AnalyticsAdmin!1"
