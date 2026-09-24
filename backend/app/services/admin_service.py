@@ -262,7 +262,8 @@ def delete_backup(db: Session, name: str) -> bool:
     cfg = get_all_settings(db)
     bdir = Path(cfg["backup_dir"])
     path = (bdir / name).resolve()
-    if not str(path).startswith(str(bdir.resolve())):
+    root = bdir.resolve()
+    if not path.is_relative_to(root) or path.is_symlink():
         raise ValueError("Path escape")
     if not path.is_file():
         return False
@@ -276,7 +277,8 @@ def download_backup_path(db: Session, name: str) -> Path:
     cfg = get_all_settings(db)
     bdir = Path(cfg["backup_dir"])
     path = (bdir / name).resolve()
-    if not str(path).startswith(str(bdir.resolve())) or not path.is_file():
+    root = bdir.resolve()
+    if not path.is_relative_to(root) or path.is_symlink() or not path.is_file():
         raise FileNotFoundError(name)
     return path
 

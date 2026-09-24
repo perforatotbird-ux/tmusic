@@ -8,6 +8,7 @@ Token is stored Fernet-encrypted on app_users.subsonic_token_enc.
 """
 import base64
 import hashlib
+from datetime import timedelta
 import hmac
 import logging
 import secrets
@@ -18,10 +19,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.security import verify_password
+from app.core.security import hash_password, verify_password
 from app.models.auth import AppUser
+from app.utils.time import utcnow
 
 logger = logging.getLogger("tmusic.subsonic")
+_DUMMY_HASH = hash_password("tmusic-subsonic-dummy")
 
 
 def _fernet() -> Optional[Fernet]:
@@ -70,6 +73,20 @@ def ensure_subsonic_token(db: Session, user: AppUser) -> str:
     return token
 
 
+def _record_failure(db: Session, user: AppUser) -> None:
+    user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+    if user.failed_login_attempts >= settings.MAX_FAILED_LOGIN_ATTEMPTS:
+        user.locked_until = utcnow() + timedelta(minutes=settings.LOCKOUT_MINUTES)
+        logger.warning("Subsonic account locked: user=%r", user.username)
+    db.commit()
+
+
+def _record_success(db: Session, user: AppUser) -> None:
+    user.failed_login_attempts = 0
+    user.locked_until = None
+    db.commit()
+
+
 def authenticate_subsonic(
     db: Session,
     username: Optional[str],
@@ -81,22 +98,28 @@ def authenticate_subsonic(
         return None
     user = db.scalar(select(AppUser).where(AppUser.username == username))
     if not user or not user.is_active:
-        # timing equalizer for unknown user
-        verify_password(password or "x", "$2b$12$" + "A" * 53)
+        verify_password(password or "x", _DUMMY_HASH)
+        return None
+    if user.locked_until and user.locked_until > utcnow():
+        verify_password(password or "x", user.password_hash)
         return None
 
+    authenticated = False
     if password:
         if verify_password(password, user.password_hash):
-            return user
-        shared = decrypt_token(user.subsonic_token_enc)
-        if shared and hmac.compare_digest(password, shared):
-            return user
+            authenticated = True
+        else:
+            shared = decrypt_token(user.subsonic_token_enc)
+            authenticated = bool(shared and hmac.compare_digest(password, shared))
 
-    if token and salt:
+    if not authenticated and token and salt:
         shared = decrypt_token(user.subsonic_token_enc)
         if shared:
             expected = hashlib.md5((shared + salt).encode("utf-8")).hexdigest()
-            if hmac.compare_digest(token.lower(), expected.lower()):
-                return user
+            authenticated = hmac.compare_digest(token.lower(), expected.lower())
 
+    if authenticated:
+        _record_success(db, user)
+        return user
+    _record_failure(db, user)
     return None

@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import { authApi } from '../api/auth'
+import { usePlayerStore } from './playerStore'
+import { useFavoritesStore } from './favoritesStore'
 import { createLogger } from '../utils/logger'
 
 const log = createLogger('auth')
@@ -45,8 +47,14 @@ export const useAuthStore = create((set, get) => ({
       set({ user: me, isAuthenticated: true, isAuthModalOpen: false })
     } catch {
       log.debug('no active session')
-      set({ user: null, isAuthenticated: false, isAuthModalOpen: true })
+      get().clearLocalSession()
     }
+  },
+
+  clearLocalSession: () => {
+    usePlayerStore.getState().reset()
+    useFavoritesStore.getState().reset()
+    set({ user: null, isAuthenticated: false, isAuthModalOpen: true, error: null })
   },
 
   logout: async () => {
@@ -54,8 +62,7 @@ export const useAuthStore = create((set, get) => ({
     try {
       await authApi.logout()
     } catch {
-      // Ignore network errors — still clear local session state
     }
-    set({ user: null, isAuthenticated: false, isAuthModalOpen: true })
+    get().clearLocalSession()
   },
 }))

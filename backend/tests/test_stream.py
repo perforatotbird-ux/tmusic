@@ -40,6 +40,10 @@ def test_parse_range_header_valid_ranges():
     start, end, length = StreamService.parse_range_header("bytes=500-", 1000)
     assert (start, end, length) == (500, 999, 500)
 
+    # suffix range
+    start, end, length = StreamService.parse_range_header("bytes=-200", 1000)
+    assert (start, end, length) == (800, 999, 200)
+
     # single byte
     start, end, length = StreamService.parse_range_header("bytes=10-10", 1000)
     assert (start, end, length) == (10, 10, 1)

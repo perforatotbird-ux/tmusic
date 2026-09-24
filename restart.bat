@@ -16,7 +16,7 @@ timeout /t 2 /nobreak > nul
 
 echo [2/3] Checking Python dependencies...
 cd backend
-python -c "import fastapi, uvicorn, sqlalchemy, pyrogram, passlib; print('[OK] Backend dependencies verified')" 2>nul
+python -c "import fastapi, uvicorn, sqlalchemy, pyrogram, bcrypt, jwt, cryptography; print('[OK] Backend dependencies verified')" 2>nul
 if errorlevel 1 (
     echo [ERROR] Missing python dependencies. Please run: pip install -r requirements.txt
     pause

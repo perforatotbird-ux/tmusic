@@ -69,6 +69,7 @@ def _authenticate_request(
     missing_detail: str = "Authentication required.",
     inactive_detail: str = "User account is inactive.",
     query_scope: Optional[str] = None,
+    required_scope: Optional[str] = None,
 ) -> AppUser:
     if not settings.REQUIRE_AUTH:
         user = get_user_by_username(db, "admin")
@@ -84,11 +85,13 @@ def _authenticate_request(
     if not payload or "sub" not in payload:
         raise HTTPException(status_code=401, detail=invalid_token_detail)
 
-    # Tokens passed via URL query (?token=) end up in proxy/browser logs, so they
-    # must be short-lived single-purpose tokens — never a full session JWT.
-    if token_source == "query" and query_scope is not None:
-        if payload.get("scope") != query_scope:
-            raise HTTPException(status_code=401, detail=invalid_token_detail)
+    token_scope = payload.get("scope")
+    if required_scope is not None and token_scope != required_scope:
+        raise HTTPException(status_code=401, detail=invalid_token_detail)
+    if required_scope is None and token_scope is not None:
+        raise HTTPException(status_code=401, detail=invalid_token_detail)
+    if token_source == "query" and query_scope is not None and token_scope != query_scope:
+        raise HTTPException(status_code=401, detail=invalid_token_detail)
 
     if is_token_revoked(db, payload.get("jti", "")):
         raise HTTPException(status_code=401, detail=invalid_token_detail)
@@ -141,6 +144,7 @@ async def get_stream_user(
         db,
         query_token=token,
         query_scope="stream",
+        required_scope="stream",
         missing_detail="Authentication required for stream playback.",
         invalid_token_detail="Invalid or expired stream token.",
         inactive_detail="User account inactive.",

@@ -1,8 +1,8 @@
 # Stage 1: Build Frontend
 FROM node:20-alpine AS frontend-builder
 WORKDIR /app/frontend
-COPY frontend/package.json ./
-RUN npm install
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
 COPY frontend ./
 RUN npm run build
 
@@ -11,7 +11,7 @@ FROM python:3.13-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc libpq-dev curl && \
+    gcc libpq-dev postgresql-client curl && \
     rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt ./

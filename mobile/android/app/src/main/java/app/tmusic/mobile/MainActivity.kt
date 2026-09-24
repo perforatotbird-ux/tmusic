@@ -6,12 +6,10 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
-import android.webkit.WebView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.getcapacitor.BridgeActivity
-import com.getcapacitor.WebViewListener
 import java.lang.ref.WeakReference
 
 /**
@@ -81,17 +79,6 @@ class MainActivity : BridgeActivity() {
         // Bridge for background playback, lockscreen control and Wi-Fi server discovery
         webView.addJavascriptInterface(AndroidMediaBridge(this), "AndroidMediaBridge")
 
-        // Redirect to local discovery screen on connection failure
-        bridge.addWebViewListener(object : WebViewListener() {
-            override fun onReceivedError(wv: WebView?) {
-                val currentUrl = wv?.url ?: ""
-                if (!currentUrl.contains("localhost")) {
-                    wv?.post {
-                        wv.loadUrl("https://localhost/index.html")
-                    }
-                }
-            }
-        })
     }
 
     override fun onPause() {

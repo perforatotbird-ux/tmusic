@@ -12,6 +12,25 @@ from app.core.security import (
     create_access_token, decode_access_token
 )
 from app.core.rate_limiter import SlidingWindowRateLimiter
+from app.main import _safe_log_path, _safe_log_query
+from app.services.cover_cache_service import _ip_allowed
+
+
+def test_sensitive_query_values_are_redacted():
+    query = _safe_log_query("u=admin&p=secret&t=digest&s=salt&token=jwt&v=1.16.1")
+    assert "secret" not in query
+    assert "digest" not in query
+    assert "salt" not in query
+    assert "jwt" not in query
+    assert "u=admin" in query
+    assert _safe_log_path("/s/share-secret") == "/s/[redacted]"
+
+
+def test_ssrf_blocks_non_global_addresses():
+    assert _ip_allowed("100.64.0.1", "cgnat") is False
+    assert _ip_allowed("100.100.100.200", "metadata") is False
+    assert _ip_allowed("::ffff:100.64.0.1", "mapped") is False
+    assert _ip_allowed("8.8.8.8", "public") is True
 
 
 def test_password_hashing():

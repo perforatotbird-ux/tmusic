@@ -125,6 +125,8 @@ def test_stream_query_token_requires_scope():
     me_headers = {"Authorization": f"Bearer {tok}"}
     st = client.post("/api/stream/token", headers=me_headers).json()["stream_token"]
     assert client.get("/api/stream/999999?token=" + st).status_code == 404
+    assert client.get("/api/stream/999999", headers={"Authorization": f"Bearer {st}"}).status_code == 404
+    assert client.get("/api/library/artists", headers={"Authorization": f"Bearer {st}"}).status_code == 401
     # Revoking the session token kills it even with a warm negative cache.
     with SessionLocal() as db:
         assert revoke_access_token(db, tok) is True

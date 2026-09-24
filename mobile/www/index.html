@@ -345,7 +345,14 @@
 
         const nameRow = document.createElement('div');
         nameRow.className = 'server-name';
-        nameRow.innerHTML = `<span>${server.name || 'T-Music Server'}</span> <span class="badge">${server.method || 'LAN'}</span>`;
+        const nameText = document.createElement('span');
+        nameText.textContent = server.name || 'T-Music Server';
+        const methodText = document.createElement('span');
+        methodText.className = 'badge';
+        methodText.textContent = server.method || 'LAN';
+        nameRow.appendChild(nameText);
+        nameRow.appendChild(document.createTextNode(' '));
+        nameRow.appendChild(methodText);
 
         const urlRow = document.createElement('div');
         urlRow.className = 'server-url';
@@ -376,21 +383,9 @@
       document.getElementById('scan-badge').style.color = 'var(--accent)';
       document.getElementById('status-text').textContent = `Обнаружен сервер: ${server.name} (${server.url})`;
 
-      // If only one server found, start auto-connect countdown
-      if (discoveredServers.size === 1 && !autoConnectTimer) {
+      if (discoveredServers.size === 1) {
         const connectBtn = document.getElementById('btn-connect-' + server.ip.replace(/\./g, '_'));
-        autoConnectSec = 2;
-        if (connectBtn) connectBtn.textContent = `Вход (${autoConnectSec}c)`;
-
-        autoConnectTimer = setInterval(() => {
-          autoConnectSec--;
-          if (autoConnectSec <= 0) {
-            clearInterval(autoConnectTimer);
-            connectToServer(server.url);
-          } else if (connectBtn) {
-            connectBtn.textContent = `Вход (${autoConnectSec}c)`;
-          }
-        }, 1000);
+        if (connectBtn) connectBtn.textContent = 'Подключиться';
       }
     };
 

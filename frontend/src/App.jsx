@@ -23,6 +23,7 @@ export function App() {
   const [coverTarget, setCoverTarget] = useState(null)
   // Track id we've already bound restore/metadata for (store owns src/play).
   const boundTrackIdRef = useRef(null)
+  const errorTrackRef = useRef({ id: null, count: 0 })
 
   const { checkAuth, setAuthModalOpen } = useAuthStore()
   const {
@@ -210,6 +211,7 @@ export function App() {
   }
 
   const handlePlaying = () => {
+    errorTrackRef.current = { id: null, count: 0 }
     updateMediaSessionPosition(
       audioRef.current?.duration || 0,
       audioRef.current?.currentTime || 0
@@ -217,14 +219,21 @@ export function App() {
   }
 
   const handleError = () => {
-    // Broken stream (e.g. Telegram 503 / ConnectionReset) fires 'error',
-    // not 'ended' — without this the player stalls dead on one track and
-    // the playlist never advances. Skip forward like onEnded does.
     const state = usePlayerStore.getState()
     if (!state.currentTrack) return
-    console.warn('Audio stream error, skipping to next track')
+    const trackId = state.currentTrack.id
+    const previous = errorTrackRef.current
+    const count = previous.id === trackId ? previous.count + 1 : 1
+    errorTrackRef.current = { id: trackId, count }
+    if (count >= 2) {
+      state.audioElement?.pause()
+      usePlayerStore.setState({ isPlaying: false })
+      setMediaPlaybackState('none')
+      return
+    }
+    log.warn('Audio stream error, skipping failed track', { id: trackId })
     boundTrackIdRef.current = null
-    state.nextTrack()
+    state.nextTrack({ skipCurrent: true })
   }
 
   /**

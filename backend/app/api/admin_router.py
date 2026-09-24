@@ -234,6 +234,8 @@ async def admin_run_backup(
 ):
     result = admin_service.run_pg_dump(db, reason=f"manual:{user.username}", actor_id=user.id)
     logger.info("Admin %s backup: %s", user.username, result)
+    if not result.get("ok"):
+        raise HTTPException(status_code=500, detail=result.get("error") or "Backup failed")
     return result
 
 

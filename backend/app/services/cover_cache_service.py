@@ -5,7 +5,6 @@ Compatible with CloudByte's SHA-1 32-char cache keys (.bin and .meta).
 Defends against SSRF, Path Traversal, and Malicious payloads (SVG/Executables).
 """
 import os
-import re
 import socket
 import hashlib
 import ipaddress
@@ -94,7 +93,8 @@ def _ip_allowed(ip_str: str, host: str) -> bool:
     except ValueError:
         return False
     if (
-        ip.is_private
+        not ip.is_global
+        or ip.is_private
         or ip.is_loopback
         or ip.is_link_local
         or ip.is_multicast

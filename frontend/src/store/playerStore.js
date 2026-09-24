@@ -146,8 +146,43 @@ export const usePlayerStore = create((set, get) => {
     audioElement: null,
     _watchdogId: null,
 
-    setAudioElement: (el) => set({ audioElement: el }),
+    setAudioElement: (el) => {
+      if (el) {
+        el.volume = get().volume
+        el.muted = get().isMuted
+      }
+      set({ audioElement: el })
+    },
     setPlayerExpanded: (expanded) => set({ isPlayerExpanded: expanded }),
+    reset: () => {
+      const audio = get().audioElement
+      const watchdog = get()._watchdogId
+      if (watchdog) clearInterval(watchdog)
+      for (const timer of resumeTimers) clearTimeout(timer)
+      resumeTimers.clear()
+      for (const ctrl of prefetchAborts.values()) {
+        try { ctrl.abort() } catch { }
+      }
+      prefetchAborts.clear()
+      precachedTracks.clear()
+      if (audio) {
+        audio.pause()
+        audio.removeAttribute('src')
+        audio.load()
+        audio.removeAttribute('data-track-id')
+      }
+      setMediaPlaybackState('none')
+      set({
+        currentTrack: null,
+        currentRelease: null,
+        queue: [],
+        queueIndex: -1,
+        isPlaying: false,
+        currentTime: 0,
+        duration: 0,
+        _watchdogId: null,
+      })
+    },
 
     playTrack: (track, releaseInfo = null) => {
       if (!track) return
@@ -221,11 +256,11 @@ export const usePlayerStore = create((set, get) => {
       }
     },
 
-    nextTrack: () => {
+    nextTrack: (options = {}) => {
       const { queue, queueIndex, repeat, shuffle, audioElement } = get()
       if (queue.length === 0) return
 
-      if (repeat === 'one') {
+      if (repeat === 'one' && !options.skipCurrent) {
         log.debug('nextTrack → repeat=one restart', { id: queue[queueIndex]?.id })
         if (audioElement) {
           audioElement.currentTime = 0
@@ -367,9 +402,17 @@ export const usePlayerStore = create((set, get) => {
           headers: { Range: 'bytes=0-2097152' },
           signal: ctrl.signal,
         })
-          .then((resp) => resp.arrayBuffer().catch(() => {}))
+          .then((resp) => {
+            if (!resp.ok || resp.status !== 206) {
+              precachedTracks.delete(track.id)
+              return null
+            }
+            return resp.arrayBuffer().catch(() => {
+              precachedTracks.delete(track.id)
+              return null
+            })
+          })
           .catch(() => {
-            // Silent background pre-cache error (incl. abort on queue change)
             precachedTracks.delete(track.id)
           })
           .finally(() => {

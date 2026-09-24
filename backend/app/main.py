@@ -15,6 +15,7 @@ import logging
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
@@ -74,6 +75,20 @@ logger = logging.getLogger("tmusic.main")
 API_RATE_LIMIT_PER_MIN = settings.API_RATE_LIMIT_PER_MIN
 AUTH_RATE_LIMIT_PER_MIN = settings.AUTH_RATE_LIMIT_PER_MIN
 AUTH_SENSITIVE_PATHS = frozenset({"/api/auth/login"})
+_REDACTED_QUERY_KEYS = frozenset({"p", "t", "s", "token", "password", "authorization", "access_token", "csrf_token"})
+
+
+def _safe_log_path(path: str) -> str:
+    if path.startswith("/s/") and len(path) > 3:
+        return "/s/[redacted]"
+    return path
+
+
+def _safe_log_query(query: str) -> str | None:
+    if not query:
+        return None
+    pairs = parse_qsl(query, keep_blank_values=True)
+    return urlencode([(key, "[redacted]" if key.lower() in _REDACTED_QUERY_KEYS else value) for key, value in pairs])
 
 
 @asynccontextmanager
@@ -297,7 +312,7 @@ async def access_log_middleware(request: Request, call_next):
             )
             raise
         duration_ms = round((time.perf_counter() - started) * 1000, 2)
-        path = request.url.path
+        path = _safe_log_path(request.url.path)
         quiet = (
             status < 400
             and request.method == "GET"
@@ -314,7 +329,7 @@ async def access_log_middleware(request: Request, call_next):
                 "status": status,
                 "duration_ms": duration_ms,
                 "client_ip": request.client.host if request.client else None,
-                "query": str(request.url.query) or None,
+                "query": _safe_log_query(str(request.url.query)),
             },
         )
         response.headers["X-Request-ID"] = rid

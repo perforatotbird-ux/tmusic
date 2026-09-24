@@ -105,7 +105,8 @@ async def stream_audio_file(
         "Cache-Control": "private, max-age=3600"
     }
 
-    status_code = 206 if range_header else 200
+    valid_range = bool(range_header and range_header.startswith("bytes=") and "," not in range_header)
+    status_code = 206 if valid_range else 200
     if status_code == 206:
         # Content-Range MUST only be sent with 206 (RFC 7233). Sending it
         # on a 200 breaks duration detection in Chrome — duration stays

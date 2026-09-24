@@ -260,12 +260,16 @@ export function FolderBrowser() {
       const my = ++reqSeq.current
       try {
         const kids = await loadChildren(folder.id, nodeId)
-        if (my === reqSeq.current || true) {
+        if (my === reqSeq.current) {
           setChildrenMap((prev) => ({ ...prev, [nodeId]: kids }))
         }
       } catch (e) {
         console.error(e)
-        setChildrenMap((prev) => ({ ...prev, [nodeId]: [] }))
+        setChildrenMap((prev) => {
+          const nextMap = { ...prev }
+          delete nextMap[nodeId]
+          return nextMap
+        })
         const collapsed = new Set(next)
         collapsed.delete(nodeId)
         setExpandedIds(collapsed)

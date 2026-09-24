@@ -47,30 +47,36 @@ class StreamService:
 
     @staticmethod
     def parse_range_header(range_header: Optional[str], total_size: int) -> Tuple[int, int, int]:
-        """
-        Parses Range: bytes=start-end header.
-        Returns (start, end, content_length).
-        """
+        if total_size <= 0:
+            return 0, -1, 0
         if not range_header or not range_header.startswith("bytes="):
-            return 0, max(0, total_size - 1), total_size
+            return 0, total_size - 1, total_size
 
+        value = range_header[6:].strip()
+        if "," in value or "-" not in value:
+            return 0, total_size - 1, total_size
+        start_raw, end_raw = value.split("-", 1)
         try:
-            byte_range = range_header.replace("bytes=", "").split("-")
-            start = int(byte_range[0]) if byte_range[0] else 0
-            end = int(byte_range[1]) if len(byte_range) > 1 and byte_range[1] else total_size - 1
+            if not start_raw:
+                suffix_length = int(end_raw)
+                if suffix_length <= 0:
+                    raise ValueError
+                start = max(0, total_size - suffix_length)
+                end = total_size - 1
+            else:
+                start = int(start_raw)
+                end = int(end_raw) if end_raw else total_size - 1
+        except ValueError:
+            return 0, total_size - 1, total_size
 
-            if start >= total_size or end >= total_size or start > end:
-                raise HTTPException(
-                    status_code=416,
-                    detail="Requested Range Not Satisfiable",
-                    headers={"Content-Range": f"bytes */{total_size}"}
-                )
-
-            return start, end, (end - start + 1)
-        except HTTPException:
-            raise
-        except Exception:
-            return 0, max(0, total_size - 1), total_size
+        if start < 0 or start >= total_size or end < start:
+            raise HTTPException(
+                status_code=416,
+                detail="Requested Range Not Satisfiable",
+                headers={"Content-Range": f"bytes */{total_size}"}
+            )
+        end = min(end, total_size - 1)
+        return start, end, end - start + 1
 
     async def get_stream_generator(
         self,

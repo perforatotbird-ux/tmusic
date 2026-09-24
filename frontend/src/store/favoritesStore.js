@@ -25,6 +25,8 @@ export const useFavoritesStore = create((set, get) => ({
     }
   },
 
+  reset: () => set({ ids: new Set(), loaded: false, loading: false }),
+
   toggle: async (fileId) => {
     if (!fileId) return false
     const prev = get().ids
