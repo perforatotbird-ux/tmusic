@@ -58,6 +58,9 @@ export const adminApi = {
     }),
 
   tgCluster: () => request('/api/admin/tg/cluster'),
+  subsonicCredentials: () => request('/api/subsonic/credentials'),
+  rotateSubsonicCredentials: () => request('/api/subsonic/credentials/rotate', { method: 'POST' }),
+  analytics: (days = 30) => request(`/api/admin/analytics?days=${days}`),
   vfsFolders: (params = {}) => {
     const qs = new URLSearchParams(
       Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== '')

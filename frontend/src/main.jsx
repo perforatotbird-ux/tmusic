@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { App } from './App'
+import { SharePage } from './components/SharePage'
 import { installGlobalErrorLogging, log } from './utils/logger'
 import './index.css'
 
@@ -9,9 +10,12 @@ import './index.css'
 installGlobalErrorLogging()
 log.info('main.jsx executing', { href: location.href })
 
-ReactDOM.createRoot(document.getElementById('root')).render(
+const shareMatch = window.location.pathname.match(/^\/s\/([^/]+)\/?$/)
+const root = ReactDOM.createRoot(document.getElementById('root'))
+
+root.render(
   <React.StrictMode>
-    <App />
+    {shareMatch ? <SharePage token={shareMatch[1]} /> : <App />}
   </React.StrictMode>
 )
 

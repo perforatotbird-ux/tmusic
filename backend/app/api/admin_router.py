@@ -5,12 +5,13 @@ Access: JWT session of user with role=admin (or username admin).
 """
 import json
 import logging
+from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_admin_user
@@ -512,6 +513,73 @@ async def admin_delete_user(
     db.commit()
     invalidate_user(target.username)
     return {"ok": True}
+
+
+@router.get("/analytics")
+async def admin_analytics(
+    days: int = Query(30, ge=1, le=365),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_admin_user),
+):
+    since = utcnow() - timedelta(days=days)
+    totals = db.execute(
+        select(
+            func.count(ListeningHistory.id),
+            func.count(func.distinct(ListeningHistory.user_id)),
+            func.count(func.distinct(ListeningHistory.file_id)),
+            func.coalesce(func.sum(ListeningHistory.duration_played_sec), 0.0),
+            func.coalesce(func.sum(case((ListeningHistory.completed.is_(True), 1), else_=0)), 0),
+        ).where(ListeningHistory.started_at >= since)
+    ).one()
+    top_tracks = db.execute(
+        select(
+            VFile.id,
+            VFile.name,
+            func.count(ListeningHistory.id).label("plays"),
+            func.coalesce(func.sum(ListeningHistory.duration_played_sec), 0.0).label("seconds"),
+        )
+        .join(VFile, VFile.id == ListeningHistory.file_id)
+        .where(ListeningHistory.started_at >= since)
+        .group_by(VFile.id, VFile.name)
+        .order_by(func.count(ListeningHistory.id).desc())
+        .limit(20)
+    ).mappings().all()
+    top_users = db.execute(
+        select(
+            AppUser.id,
+            AppUser.username,
+            func.count(ListeningHistory.id).label("plays"),
+            func.coalesce(func.sum(ListeningHistory.duration_played_sec), 0.0).label("seconds"),
+        )
+        .join(ListeningHistory, ListeningHistory.user_id == AppUser.id)
+        .where(ListeningHistory.started_at >= since)
+        .group_by(AppUser.id, AppUser.username)
+        .order_by(func.count(ListeningHistory.id).desc())
+        .limit(20)
+    ).mappings().all()
+    daily = db.execute(
+        select(
+            func.date(ListeningHistory.started_at).label("day"),
+            func.count(ListeningHistory.id).label("plays"),
+            func.coalesce(func.sum(ListeningHistory.duration_played_sec), 0.0).label("seconds"),
+        )
+        .where(ListeningHistory.started_at >= since)
+        .group_by(func.date(ListeningHistory.started_at))
+        .order_by(func.date(ListeningHistory.started_at))
+    ).mappings().all()
+    return {
+        "days": days,
+        "totals": {
+            "plays": int(totals[0] or 0),
+            "listeners": int(totals[1] or 0),
+            "tracks": int(totals[2] or 0),
+            "seconds": float(totals[3] or 0.0),
+            "completed": int(totals[4] or 0),
+        },
+        "top_tracks": [dict(row) for row in top_tracks],
+        "top_users": [dict(row) for row in top_users],
+        "daily": [dict(row) for row in daily],
+    }
 
 
 @router.get("/system/health")

@@ -21,6 +21,7 @@ import {
   KeyRound,
   UnlockKeyhole,
   FolderOpen,
+  BarChart3,
 } from 'lucide-react'
 import { adminApi } from '../api/admin'
 import { AdminCatalog } from './AdminCatalog'
@@ -34,6 +35,7 @@ const TABS = [
   { id: 'users', label: 'Пользователи', icon: Users },
   { id: 'audit', label: 'Аудит', icon: ScrollText },
   { id: 'vfs', label: 'VFS', icon: FolderOpen },
+  { id: 'analytics', label: 'Аналитика', icon: BarChart3 },
 ]
 
 function fmtBytes(n) {
@@ -138,6 +140,8 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
   const [vfsFolderId, setVfsFolderId] = useState('')
   const [vfsSearch, setVfsSearch] = useState('')
   const [vfsSelectedFiles, setVfsSelectedFiles] = useState([])
+  const [analytics, setAnalytics] = useState(null)
+  const [subsonic, setSubsonic] = useState(null)
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' })
 
   const flash = useCallback((msg, kind = 'ok') => {
@@ -193,6 +197,15 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
   useEffect(() => {
     loadAll()
   }, [loadAll])
+
+  useEffect(() => {
+    if (tab === 'analytics') {
+      adminApi.analytics(30).then(setAnalytics).catch((e) => flash(e.message || 'Ошибка аналитики', 'err'))
+    }
+    if (tab === 'settings') {
+      adminApi.subsonicCredentials().then(setSubsonic).catch(() => setSubsonic(null))
+    }
+  }, [tab, flash])
 
   useEffect(() => {
     if (tab !== 'db') return
@@ -544,6 +557,47 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
         </Panel>
       )}
 
+      {tab === 'analytics' && analytics && (
+        <>
+          <Panel title="Аналитика прослушиваний за 30 дней">
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: 8 }}>
+              {[
+                ['Прослушиваний', analytics.totals?.plays],
+                ['Слушателей', analytics.totals?.listeners],
+                ['Треков', analytics.totals?.tracks],
+                ['Завершено', analytics.totals?.completed],
+                ['Время', `${Math.round((analytics.totals?.seconds || 0) / 60)} мин`],
+              ].map(([label, value]) => (
+                <div key={label} className="tmusic-profile-stat-card">
+                  <div className="stat-val">{value ?? '—'}</div>
+                  <div className="stat-lbl">{label}</div>
+                </div>
+              ))}
+            </div>
+          </Panel>
+          <Panel title="Популярные треки">
+            {(analytics.top_tracks || []).map((track) => (
+              <div key={track.id} style={{ display: 'flex', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--line)', fontSize: 12 }}>
+                <span style={{ flex: 1 }}>{track.name}</span>
+                <span style={{ color: 'var(--accent)' }}>{track.plays} прослушиваний</span>
+                <span style={{ color: 'var(--dim)' }}>{Math.round(track.seconds / 60)} мин</span>
+              </div>
+            ))}
+            {!analytics.top_tracks?.length && <div style={{ color: 'var(--dim)', fontSize: 12 }}>Данных пока нет</div>}
+          </Panel>
+          <Panel title="Активность пользователей">
+            {(analytics.top_users || []).map((row) => (
+              <div key={row.id} style={{ display: 'flex', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--line)', fontSize: 12 }}>
+                <span style={{ flex: 1 }}>{row.username}</span>
+                <span style={{ color: 'var(--accent)' }}>{row.plays} прослушиваний</span>
+                <span style={{ color: 'var(--dim)' }}>{Math.round(row.seconds / 60)} мин</span>
+              </div>
+            ))}
+            {!analytics.top_users?.length && <div style={{ color: 'var(--dim)', fontSize: 12 }}>Данных пока нет</div>}
+          </Panel>
+        </>
+      )}
+
       {tab === 'vfs' && (
         <>
           <Panel
@@ -710,6 +764,35 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
                 Сохранить настройки
               </Btn>
             </div>
+            {subsonic && (
+              <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--line)', display: 'grid', gap: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 800 }}>OpenSubsonic / Subsonic</div>
+                <div style={{ fontSize: 11, color: 'var(--dim)' }}>Сервер: {subsonic.server_path} · API {subsonic.api_version}</div>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <code style={{ color: 'var(--accent)', wordBreak: 'break-all' }}>{subsonic.token}</code>
+                  <Btn onClick={() => navigator.clipboard?.writeText(subsonic.token)}>Копировать</Btn>
+                  <Btn
+                    variant="danger"
+                    disabled={busy}
+                    onClick={async () => {
+                      if (!window.confirm('Ротировать токен? Старый токен перестанет работать.')) return
+                      setBusy(true)
+                      try {
+                        setSubsonic(await adminApi.rotateSubsonicCredentials())
+                        flash('Subsonic-токен обновлён')
+                      } catch (e) {
+                        flash(e.message || 'Ошибка ротации', 'err')
+                      } finally {
+                        setBusy(false)
+                      }
+                    }}
+                  >
+                    Ротировать
+                  </Btn>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--dim)' }}>{subsonic.example_ping}</div>
+              </div>
+            )}
           </div>
         </Panel>
       )}

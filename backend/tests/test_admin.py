@@ -54,6 +54,33 @@ def test_role_permissions():
     assert user_has_permission(user, "admin.access") is False
 
 
+def test_admin_analytics_shape():
+    username = "analytics_admin_test"
+    password = "AnalyticsAdmin!1"
+    with SessionLocal() as db:
+        existing = db.scalar(select(AppUser).where(AppUser.username == username))
+        if existing:
+            db.delete(existing)
+            db.commit()
+        db.add(AppUser(username=username, password_hash=hash_password(password), role="admin", is_active=True))
+        db.commit()
+    try:
+        login = client.post("/api/auth/login", json={"username": username, "password": password})
+        assert login.status_code == 200
+        token = login.json()["access_token"]
+        response = client.get("/api/admin/analytics?days=30", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 200
+        data = response.json()
+        assert "totals" in data
+        assert "top_tracks" in data
+    finally:
+        with SessionLocal() as db:
+            user = db.scalar(select(AppUser).where(AppUser.username == username))
+            if user:
+                db.delete(user)
+                db.commit()
+
+
 def test_maintenance_mode_blocks_public_api(monkeypatch):
     from app.services import admin_service
 
