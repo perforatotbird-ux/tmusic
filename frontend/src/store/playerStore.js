@@ -2,6 +2,9 @@ import { create } from 'zustand'
 import { streamApi } from '../api/stream'
 import { setMediaPlaybackState } from '../services/mediaSession'
 import { IS_NATIVE } from '../services/nativeBridge'
+import { createLogger } from '../utils/logger'
+
+const log = createLogger('player')
 
 const precachedTracks = new Set()
 // In-flight prefetch aborters, keyed by track id: a new playQueue aborts
@@ -168,6 +171,7 @@ export const usePlayerStore = create((set, get) => {
           currentTime: 0,
         })
       }
+      log.info('playTrack', { id: track.id, title: track.title, artist: track.artist, fresh_queue: idx === -1 })
       startAudio(track.id)
       ensureWatchdog()
     },
@@ -188,6 +192,7 @@ export const usePlayerStore = create((set, get) => {
         isPlaying: true,
         currentTime: 0,
       })
+      log.info('playQueue', { count: tracks.length, start_index: startIndex, id: current?.id, title: current?.title })
       startAudio(current.id, { forceLoad: true })
       ensureWatchdog()
       get().precacheNextTracks()
@@ -200,8 +205,10 @@ export const usePlayerStore = create((set, get) => {
         audioElement.pause()
         set({ isPlaying: false })
         setMediaPlaybackState('paused')
+        log.debug('pause', { id: currentTrack.id })
       } else {
         set({ isPlaying: true })
+        log.debug('resume', { id: currentTrack.id })
         // Resume existing buffer or re-bind src
         if (!audioElement.getAttribute('data-track-id')) {
           startAudio(currentTrack.id)
@@ -219,6 +226,7 @@ export const usePlayerStore = create((set, get) => {
       if (queue.length === 0) return
 
       if (repeat === 'one') {
+        log.debug('nextTrack → repeat=one restart', { id: queue[queueIndex]?.id })
         if (audioElement) {
           audioElement.currentTime = 0
           set({ isPlaying: true, currentTime: 0 })
@@ -253,6 +261,7 @@ export const usePlayerStore = create((set, get) => {
       }
 
       // Update state + start audio SYNCHRONOUSLY (critical for Android lockscreen).
+      const advancedEnd = nextIdx <= queueIndex && !shuffle
       set({
         queueIndex: nextIdx,
         currentTrack: next,
@@ -260,6 +269,7 @@ export const usePlayerStore = create((set, get) => {
         currentTime: 0,
         duration: 0,
       })
+      log.debug('nextTrack', { id: next.id, title: next.title, index: nextIdx, queue_wrapped: advancedEnd })
       startAudio(next.id, { forceLoad: true })
       ensureWatchdog()
       get().precacheNextTracks()
@@ -272,12 +282,14 @@ export const usePlayerStore = create((set, get) => {
       if (currentTime > 3 && audioElement) {
         audioElement.currentTime = 0
         set({ currentTime: 0 })
+        log.debug('prevTrack → restart current', { id: queue[queueIndex]?.id })
         return
       }
 
       const prevIdx = queueIndex - 1 < 0 ? queue.length - 1 : queueIndex - 1
       const prev = queue[prevIdx]
       if (!prev) return
+      log.debug('prevTrack', { id: prev.id, title: prev.title, index: prevIdx })
       set({ queueIndex: prevIdx, currentTrack: prev, isPlaying: true, currentTime: 0 })
       startAudio(prev.id, { forceLoad: true })
       ensureWatchdog()
@@ -288,6 +300,7 @@ export const usePlayerStore = create((set, get) => {
       if (audioElement) {
         audioElement.currentTime = seconds
         set({ currentTime: seconds })
+        log.debug('seek', { to: Math.round(seconds) })
       }
     },
 

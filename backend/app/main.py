@@ -12,6 +12,8 @@ Hardening (2026-09 security audit):
   loudly when REQUIRE_AUTH is disabled.
 """
 import logging
+import time
+import uuid
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -21,6 +23,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 
 from app.core.config import settings
+from app.core.logging_config import (
+    setup_logging, set_request_id, reset_request_id,
+)
+
+# Logging MUST be configured before any request is served (and before the
+# lifespan logger emits): JSONL file + human console + encrypted rotation.
+setup_logging()
+
 from app.core.csrf import csrf_check_failed
 from app.core.database import (
     wait_for_database,
@@ -53,11 +63,8 @@ from app.api.admin_router import router as admin_router
 from app.api.admin_catalog_router import router as admin_catalog_router
 from app.services.backup_scheduler import start_backup_scheduler, stop_backup_scheduler
 from app.services.discovery_service import discovery_service
+from app.api.logs_router import router as logs_router
 
-logging.basicConfig(
-    level=logging.INFO if not settings.DEBUG else logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-)
 logger = logging.getLogger("tmusic.main")
 
 # ─── Rate-limit policy (requests per minute per client IP) ────────────────────
@@ -141,6 +148,23 @@ app = FastAPI(
     redoc_url=None
 )
 
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Last-resort handler: full traceback to ERROR log, generic 500 to client."""
+    rid = request.headers.get("X-Request-ID") or "-"
+    logger.exception(
+        "unhandled_exception",
+        extra={
+            "method": request.method,
+            "path": request.url.path,
+            "request_id": rid,
+            "client_ip": request.client.host if request.client else None,
+            "exc_type": type(exc).__name__,
+        },
+    )
+    return JSONResponse(status_code=500, content={"detail": "Internal server error."})
+
 # ─── CSRF Double-Submit Enforcement ──────────────────────────────────────────
 @app.middleware("http")
 async def csrf_protect_middleware(request: Request, call_next):
@@ -150,6 +174,15 @@ async def csrf_protect_middleware(request: Request, call_next):
     login/logout endpoints are exempt (see app.core.csrf).
     """
     if csrf_check_failed(request):
+        ACCESS_LOG.warning(
+            "csrf_rejected",
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                "status": 403,
+                "client_ip": request.client.host if request.client else None,
+            },
+        )
         return JSONResponse(
             status_code=403,
             content={"detail": "CSRF validation failed."},
@@ -169,6 +202,16 @@ async def api_rate_limit_middleware(request: Request, call_next):
         else:
             limited = limiter.is_rate_limited(f"api:{client_ip}", API_RATE_LIMIT_PER_MIN, 60)
         if limited:
+            ACCESS_LOG.warning(
+                "rate_limited",
+                extra={
+                    "method": request.method,
+                    "path": path,
+                    "status": 429,
+                    "client_ip": client_ip,
+                    "budget_per_min": AUTH_RATE_LIMIT_PER_MIN if path in AUTH_SENSITIVE_PATHS else API_RATE_LIMIT_PER_MIN,
+                },
+            )
             return JSONResponse(
                 status_code=429,
                 content={"detail": "Too many requests. Slow down."},
@@ -217,6 +260,66 @@ async def security_headers_middleware(request: Request, call_next):
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
+# ─── Access Log + Request-ID Middleware (outermost: added last) ───────────────
+ACCESS_LOG = logging.getLogger("tmusic.access")
+
+@app.middleware("http")
+async def access_log_middleware(request: Request, call_next):
+    """Structured HTTP access log: method, path, status, duration, request_id.
+
+    Runs first (outermost) so it also observes CSRF/rate-limit short-circuits.
+    Static asset noise (no /api|/rest|/health prefix, GET) is logged at DEBUG.
+    """
+    if not settings.LOG_ACCESS_ENABLED:
+        return await call_next(request)
+
+    rid = uuid.uuid4().hex[:12]
+    token = set_request_id(rid)
+    started = time.perf_counter()
+    try:
+        try:
+            response = await call_next(request)
+            status = response.status_code
+        except Exception:
+            duration_ms = round((time.perf_counter() - started) * 1000, 2)
+            ACCESS_LOG.exception(
+                "request_failed",
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status": 500,
+                    "duration_ms": duration_ms,
+                    "client_ip": request.client.host if request.client else None,
+                },
+            )
+            raise
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        path = request.url.path
+        quiet = (
+            status < 400
+            and request.method == "GET"
+            and not (path.startswith(("/api/", "/rest/", "/health")))
+        )
+        level = logging.DEBUG if quiet else (logging.WARNING if status >= 400 else logging.INFO)
+        ACCESS_LOG.log(
+            level,
+            "%s %s -> %s (%.2fms)",
+            request.method, path, status, duration_ms,
+            extra={
+                "method": request.method,
+                "path": path,
+                "status": status,
+                "duration_ms": duration_ms,
+                "client_ip": request.client.host if request.client else None,
+                "query": str(request.url.query) or None,
+            },
+        )
+        response.headers["X-Request-ID"] = rid
+        return response
+    finally:
+        reset_request_id(token)
+
+
 # ─── CORS Middleware ─────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
@@ -242,6 +345,7 @@ app.include_router(subsonic_admin_router)
 app.include_router(vfs_router)
 app.include_router(admin_router)
 app.include_router(admin_catalog_router)
+app.include_router(logs_router)
 
 
 @app.get("/health", tags=["system"])

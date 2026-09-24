@@ -81,6 +81,18 @@ class Settings(BaseSettings):
     # Telegram transport
     TG_MAX_CONCURRENT_TRANSMISSIONS: int = 3
 
+    # ─── Logging ────────────────────────────────────────────────────────────
+    # File sink is JSONL; console is human-readable. Rotated archives are
+    # AES-256 ZIPs (pyzipper) protected by LOG_ARCHIVE_PASSWORD; only
+    # LOG_ARCHIVE_KEEP copies are retained.
+    LOG_LEVEL: str = "INFO"            # file + root level: DEBUG/INFO/WARNING/ERROR
+    LOG_CONSOLE_LEVEL: str = "INFO"    # console verbosity (raise to DEBUG for dev)
+    LOG_DIR: Path = BASE_DIR / "backend" / "storage" / "log"
+    LOG_MAX_BYTES: int = 5 * 1024 * 1024   # rotate each stream at 5 MB
+    LOG_ARCHIVE_KEEP: int = 3               # keep no more than 3 compressed copies
+    LOG_ARCHIVE_PASSWORD: str = ""
+    LOG_ACCESS_ENABLED: bool = True         # HTTP access-log middleware
+
     # Cover proxy: fetch timeouts and max accepted image size.
     COVER_HTTP_TIMEOUT_SEC: int = 20
     COVER_HTTP_CONNECT_TIMEOUT_SEC: int = 8
@@ -175,6 +187,11 @@ if not settings.DATABASE_URL:
     raise RuntimeError(
         "DATABASE_URL is not configured. Copy music.env.example to music.env "
         "and set an explicit PostgreSQL connection URL."
+    )
+
+if not settings.LOG_ARCHIVE_PASSWORD:
+    raise RuntimeError(
+        "LOG_ARCHIVE_PASSWORD is not configured. Set an explicit password in music.env."
     )
 
 # REQUIRE_AUTH=false silently impersonates the admin account for every request

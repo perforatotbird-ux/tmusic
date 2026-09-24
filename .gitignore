@@ -11,9 +11,10 @@ music.env
 
 # Logs
 *.log
-backend/*.log
 backend/_server.log
 backend/_server_err.log
+backend/storage/
+*.zip
 
 # IDE & Editor caches
 .mimocode/

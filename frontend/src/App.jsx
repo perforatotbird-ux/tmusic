@@ -14,6 +14,9 @@ import { AuthModal } from './components/AuthModal'
 import { MusicLibrary } from './components/MusicLibrary'
 import { MusicLibraryPlayer } from './components/MusicLibraryPlayer'
 import { CoverPicker } from './components/CoverPicker'
+import { createLogger } from './utils/logger'
+
+const log = createLogger('app')
 
 export function App() {
   const audioRef = useRef(null)
@@ -30,10 +33,14 @@ export function App() {
   } = usePlayerStore()
 
   useEffect(() => {
+    log.info('App mounted, checking session')
     checkAuth()
     setupMediaSession(usePlayerStore)
 
-    const handleUnauthorized = () => setAuthModalOpen(true)
+    const handleUnauthorized = () => {
+      log.warn('received tmusic:unauthorized → opening auth modal')
+      setAuthModalOpen(true)
+    }
     window.addEventListener('tmusic:unauthorized', handleUnauthorized)
 
     // Android lockscreen / tab throttle: resume if we believe playback continues.
@@ -56,6 +63,7 @@ export function App() {
     }
 
     return () => {
+      log.info('App unmounted')
       window.removeEventListener('tmusic:unauthorized', handleUnauthorized)
       if (onVis) document.removeEventListener('visibilitychange', onVis)
       if (resumeIfNeeded) window.removeEventListener('focus', resumeIfNeeded)
@@ -87,6 +95,7 @@ export function App() {
         const audio = s.audioElement
         if (s.isPlaying && audio?.paused) s.forceResume()
         else s.togglePlay()
+        log.debug('hotkey', { key: 'space' })
         return
       }
       if (key === 'ArrowLeft') {
@@ -96,6 +105,7 @@ export function App() {
           const audio = s.audioElement
           if (audio) s.seek(Math.max(0, audio.currentTime - 5))
         }
+        log.debug('hotkey', { key: 'arrowleft', shift: e.shiftKey })
         return
       }
       if (key === 'ArrowRight') {

@@ -2,6 +2,9 @@
  * T-Music API Client
  * Auth relies on HttpOnly session cookie (same-origin). No JWT in localStorage.
  */
+import { createLogger } from '../utils/logger'
+
+const log = createLogger('api')
 
 const BASE_URL = ''
 
@@ -39,7 +42,23 @@ export async function request(endpoint, options = {}) {
   }
 
   const url = endpoint.startsWith('http') ? endpoint : `${BASE_URL}${endpoint}`
-  const response = await fetch(url, config)
+  const started = performance.now()
+  let response
+  try {
+    response = await fetch(url, config)
+  } catch (networkErr) {
+    log.error(`${method} ${endpoint} network error`, {
+      error: networkErr,
+      duration_ms: Math.round(performance.now() - started),
+    })
+    throw networkErr
+  }
+  const durationMs = Math.round(performance.now() - started)
+
+  const logLine = { method, endpoint, status: response.status, duration_ms: durationMs }
+  if (response.status >= 500) log.error(`${method} ${endpoint} -> ${response.status}`, logLine)
+  else if (response.status >= 400) log.warn(`${method} ${endpoint} -> ${response.status}`, logLine)
+  else log.debug(`${method} ${endpoint} -> ${response.status}`, logLine)
 
   if (response.status === 401) {
     window.dispatchEvent(new CustomEvent('tmusic:unauthorized'))
