@@ -42,6 +42,18 @@ class CollectionCreate(BaseModel):
     bio: Optional[str] = Field(default=None, max_length=5000)
 
 
+class ArtistBatchUpdate(BaseModel):
+    artist_ids: List[int] = Field(min_length=1, max_length=500)
+    kind: Optional[str] = None
+    locked: Optional[bool] = None
+
+
+class AlbumBatchUpdate(BaseModel):
+    album_ids: List[int] = Field(min_length=1, max_length=1000)
+    artist_id: Optional[int] = None
+    year: Optional[int] = Field(default=None, ge=0, le=2100)
+
+
 class AlbumUpdate(BaseModel):
     title: Optional[str] = Field(default=None, max_length=300)
     year: Optional[int] = None
@@ -213,3 +225,39 @@ async def catalog_update_album(
         is_tracks=False,
         enriched_at=album.enriched_at,
     )
+
+
+@router.post("/artists/batch")
+async def catalog_batch_update_artists(
+    body: ArtistBatchUpdate,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_catalog_user),
+):
+    updated = 0
+    for artist_id in body.artist_ids:
+        CatalogAdminService.update_artist(
+            db,
+            artist_id,
+            kind=body.kind,
+            locked=body.locked,
+        )
+        updated += 1
+    return {"ok": True, "updated": updated}
+
+
+@router.post("/albums/batch")
+async def catalog_batch_update_albums(
+    body: AlbumBatchUpdate,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_catalog_user),
+):
+    updated = 0
+    for album_id in body.album_ids:
+        CatalogAdminService.update_album(
+            db,
+            album_id,
+            year=body.year,
+            artist_id=body.artist_id,
+        )
+        updated += 1
+    return {"ok": True, "updated": updated}

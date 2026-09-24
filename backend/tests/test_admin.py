@@ -26,6 +26,9 @@ def test_admin_endpoints_auth_guard():
         "/api/admin/backups",
         "/api/admin/settings",
         "/api/admin/users",
+        "/api/admin/audit",
+        "/api/admin/vfs/folders",
+        "/api/admin/vfs/files",
     ):
         resp = client.get(path)
         assert resp.status_code in (200, 401, 403), f"{path} -> {resp.status_code}"

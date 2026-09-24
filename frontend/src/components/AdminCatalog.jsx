@@ -90,6 +90,7 @@ export function AdminCatalog({ onOpenCoverPicker }) {
   const [newName, setNewName] = useState('')
   const [newKind, setNewKind] = useState('genre_collection')
   const [creating, setCreating] = useState(false)
+  const [selectedArtists, setSelectedArtists] = useState([])
   const loadSeq = useRef(0)
 
   const loadArtists = useCallback(async () => {
@@ -121,6 +122,7 @@ export function AdminCatalog({ onOpenCoverPicker }) {
   const refresh = async () => {
     bustCatalogCache()
     setAlbumsByArtist({})
+    setSelectedArtists([])
     await loadArtists()
   }
 
@@ -349,6 +351,23 @@ export function AdminCatalog({ onOpenCoverPicker }) {
         </select>
       </div>
 
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+        <button
+          type="button"
+          onClick={() => setSelectedArtists((prev) => prev.length === artists.length ? [] : artists.map((item) => item.id))}
+          style={{ ...iconBtn, minHeight: 36, padding: '0 10px', fontSize: 12 }}
+        >
+          {selectedArtists.length === artists.length && artists.length ? 'Снять выбор' : 'Выбрать видимые'}
+        </button>
+        <span style={{ fontSize: 12, color: 'var(--dim)' }}>Выбрано: {selectedArtists.length}</span>
+        <button type="button" disabled={!selectedArtists.length || busyId === 'bulk'} onClick={() => updateSelectedArtists(true)} style={{ ...iconBtn, minHeight: 36, padding: '0 10px', fontSize: 12 }}>
+          Закрепить
+        </button>
+        <button type="button" disabled={!selectedArtists.length || busyId === 'bulk'} onClick={() => updateSelectedArtists(false)} style={{ ...iconBtn, minHeight: 36, padding: '0 10px', fontSize: 12 }}>
+          Разблокировать
+        </button>
+      </div>
+
       {loading && (
         <div style={{ padding: 20, textAlign: 'center', color: 'var(--dim)', fontSize: 13 }}>
           <Loader2 size={20} className="animate-spin" /> Загрузка…
@@ -387,6 +406,12 @@ export function AdminCatalog({ onOpenCoverPicker }) {
               }}
             >
               <Row dropHl={false}>
+                <input
+                  type="checkbox"
+                  checked={selectedArtists.includes(artist.id)}
+                  onChange={(e) => setSelectedArtists((prev) => e.target.checked ? [...prev, artist.id] : prev.filter((id) => id !== artist.id))}
+                  aria-label={`Выбрать ${artist.display_name}`}
+                />
                 <button
                   type="button"
                   onClick={() => toggleExpand(artist)}
@@ -480,7 +505,21 @@ export function AdminCatalog({ onOpenCoverPicker }) {
                   {albums.map((album) => {
                     const albEditing = editingAlbum?.id === album.id
                     const albBusy = busyId === `b${album.id}`
-                    return (
+  const updateSelectedArtists = async (locked) => {
+    if (!selectedArtists.length) return
+    setBusyId('bulk')
+    setError(null)
+    try {
+      await adminApi.batchArtists({ artist_ids: selectedArtists, locked })
+      await refresh()
+    } catch (e) {
+      setError(e.message || 'Не удалось изменить выбранные записи')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  return (
                       <div
                         key={album.id}
                         draggable

@@ -58,13 +58,49 @@ export const adminApi = {
     }),
 
   tgCluster: () => request('/api/admin/tg/cluster'),
-
+  vfsFolders: (params = {}) => {
+    const qs = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== '')
+    ).toString()
+    return request(qs ? `/api/admin/vfs/folders?${qs}` : '/api/admin/vfs/folders')
+  },
+  patchVfsFolder: (id, body) =>
+    request(`/api/admin/vfs/folders/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  vfsFiles: (params = {}) => {
+    const qs = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== '')
+    ).toString()
+    return request(qs ? `/api/admin/vfs/files?${qs}` : '/api/admin/vfs/files')
+  },
+  patchVfsFile: (id, body) =>
+    request(`/api/admin/vfs/files/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  moveVfsFiles: (fileIds, folderId) =>
+    request('/api/admin/vfs/files/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_ids: fileIds, folder_id: folderId }),
+    }),
+  rebuildVfsClosures: () => request('/api/admin/vfs/folders/rebuild-closures', { method: 'POST' }),
   catalogArtists: (params = {}) => {
     const qs = new URLSearchParams(
       Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== '')
     ).toString()
     return request(qs ? `/api/admin/catalog/artists?${qs}` : '/api/admin/catalog/artists')
   },
+  batchArtists: (body) =>
+    request('/api/admin/catalog/artists/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
   patchArtist: (id, body) =>
     request(`/api/admin/catalog/artists/${id}`, {
       method: 'PATCH',
@@ -85,6 +121,12 @@ export const adminApi = {
     ).toString()
     return request(qs ? `/api/admin/catalog/albums?${qs}` : '/api/admin/catalog/albums')
   },
+  batchAlbums: (body) =>
+    request('/api/admin/catalog/albums/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
   patchAlbum: (id, body) =>
     request(`/api/admin/catalog/albums/${id}`, {
       method: 'PATCH',

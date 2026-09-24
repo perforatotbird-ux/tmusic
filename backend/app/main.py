@@ -61,6 +61,7 @@ from app.api.subsonic_admin_router import router as subsonic_admin_router
 from app.api.vfs_router import router as vfs_router
 from app.api.admin_router import router as admin_router
 from app.api.admin_catalog_router import router as admin_catalog_router
+from app.api.admin_vfs_router import router as admin_vfs_router
 from app.services.backup_scheduler import start_backup_scheduler, stop_backup_scheduler
 from app.services.discovery_service import discovery_service
 from app.api.logs_router import router as logs_router
@@ -372,6 +373,7 @@ app.include_router(subsonic_admin_router)
 app.include_router(vfs_router)
 app.include_router(admin_router)
 app.include_router(admin_catalog_router)
+app.include_router(admin_vfs_router)
 app.include_router(logs_router)
 
 
