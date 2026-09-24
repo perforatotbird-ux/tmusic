@@ -263,6 +263,11 @@ class TelegramManager:
             self._is_started = False
             logger.info("All Telegram cluster clients disconnected.")
 
+    async def reconnect(self) -> dict:
+        await self.stop()
+        await self.start()
+        return self.cluster_status()
+
     def is_healthy(self, account_id: int) -> bool:
         """Returns True if the account client exists, is connected, and not in FloodWait."""
         client = self.clients.get(account_id)

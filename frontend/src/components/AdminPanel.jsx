@@ -130,6 +130,7 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
   const [settings, setSettings] = useState(null)
   const [users, setUsers] = useState(null)
   const [audit, setAudit] = useState(null)
+  const [health, setHealth] = useState(null)
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' })
 
   const flash = (msg, kind = 'ok') => {
@@ -144,14 +145,16 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
       const ov = await adminApi.overview()
       setOverview(ov)
       setSettings(ov.settings)
-      const [bk, us, au] = await Promise.all([
+      const [bk, us, au, hl] = await Promise.all([
         adminApi.listBackups().catch(() => null),
         adminApi.listUsers().catch(() => null),
         adminApi.listAudit().catch(() => null),
+        adminApi.systemHealth().catch(() => null),
       ])
       if (bk) setBackups(bk)
       if (us) setUsers(us)
       if (au) setAudit(au)
+      if (hl) setHealth(hl)
     } catch (e) {
       setError(e.message || 'Нет доступа к админке')
     } finally {
@@ -291,10 +294,18 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
               ))}
             </div>
           </Panel>
-          <Panel title="Система">
+          <Panel
+            title="Система"
+            right={
+              <Btn disabled={busy} onClick={() => runAction(() => adminApi.reconnectTelegram(), 'Telegram-кластер переподключён')}>
+                <RefreshCw size={12} /> Переподключить Telegram
+              </Btn>
+            }
+          >
             <div style={{ fontSize: 12.5, color: 'var(--ink)', display: 'grid', gap: 6 }}>
               <div>Окружение: <b>{overview.environment}</b></div>
-              <div>БД: {overview.database?.reachable ? overview.database.db_size : 'недоступна'}</div>
+               <div>БД: {overview.database?.reachable ? overview.database.db_size : 'недоступна'}</div>
+               <div>Health endpoint: {health?.database?.reachable ? 'готов' : 'недоступен'}</div>
               <div>
                 Подключения: {overview.database?.connections} / {overview.database?.max_connections}
               </div>
@@ -441,6 +452,31 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
                 >
                   Скачать
                 </a>
+                {b.name.endsWith('.dump') && (
+                  <>
+                    <Btn
+                      disabled={busy}
+                      onClick={() => runAction(() => adminApi.restoreBackup(b.name, { dry_run: true }), 'Архив проверен')}
+                    >
+                      Проверить
+                    </Btn>
+                    <Btn
+                      variant="danger"
+                      disabled={busy}
+                      onClick={() => {
+                        const confirmation = window.prompt(`Для восстановления введите имя файла: ${b.name}`)
+                        if (confirmation === b.name && window.confirm('Восстановить базу данных из этого бэкапа?')) {
+                          runAction(
+                            () => adminApi.restoreBackup(b.name, { dry_run: false, confirm: confirmation }),
+                            'База восстановлена'
+                          )
+                        }
+                      }}
+                    >
+                      Восстановить
+                    </Btn>
+                  </>
+                )}
                 <Btn
                   variant="danger"
                   disabled={busy}
@@ -451,6 +487,19 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
               </div>
             ))}
           </div>
+          {backups?.runs?.length > 0 && (
+            <div style={{ marginTop: 14, borderTop: '1px solid var(--line)', paddingTop: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>История операций</div>
+              {(backups.runs || []).map((run) => (
+                <div key={run.id} style={{ display: 'flex', gap: 8, fontSize: 11, color: 'var(--dim)', padding: '4px 0' }}>
+                  <span>{run.kind}</span>
+                  <span style={{ color: run.status === 'failed' ? 'var(--danger)' : 'var(--accent)' }}>{run.status}</span>
+                  <span>{run.name || '—'}</span>
+                  <span>{run.started_at}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </Panel>
       )}
 

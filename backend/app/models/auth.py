@@ -5,7 +5,7 @@ Designed for Internet-facing security with brute-force defense and session lifec
 from typing import Optional
 from datetime import datetime
 from sqlalchemy import (
-    String, Boolean, DateTime, Integer, Text, ForeignKey
+    String, Boolean, DateTime, Integer, BigInteger, Text, ForeignKey
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -62,6 +62,21 @@ class AdminAuditEvent(Base):
     metadata_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     ip_address: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class BackupRun(Base):
+    __tablename__ = "backup_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    kind: Mapped[str] = mapped_column(String(16), default="dump", index=True)
+    name: Mapped[Optional[str]] = mapped_column(String(160), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="running", index=True)
+    reason: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    size_bytes: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    actor_id: Mapped[Optional[int]] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class RevokedToken(Base):

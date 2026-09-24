@@ -33,6 +33,15 @@ export function App() {
   } = usePlayerStore()
 
   useEffect(() => {
+    fetch('/api/system/config')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((config) => {
+        if (config?.site_title) document.title = config.site_title
+      })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
     log.info('App mounted, checking session')
     checkAuth()
     setupMediaSession(usePlayerStore)

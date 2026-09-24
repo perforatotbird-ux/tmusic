@@ -14,6 +14,14 @@ export const adminApi = {
   purgeTokens: () => request('/api/admin/db/purge-tokens', { method: 'POST' }),
 
   listBackups: () => request('/api/admin/backups'),
+  systemHealth: () => request('/api/admin/system/health'),
+  reconnectTelegram: () => request('/api/admin/tg/reconnect', { method: 'POST' }),
+  restoreBackup: (name, body) =>
+    request(`/api/admin/backups/${encodeURIComponent(name)}/restore`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
   runBackup: () => request('/api/admin/backups/run', { method: 'POST' }),
   deleteBackup: (name) => request(`/api/admin/backups/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   backupDownloadUrl: (name) => `/api/admin/backups/${encodeURIComponent(name)}/download`,

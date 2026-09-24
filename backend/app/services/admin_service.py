@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import engine
-from app.models.auth import AppSetting
+from app.models.auth import AppSetting, BackupRun
 from app.utils.time import utcnow
 
 logger = logging.getLogger("tmusic.admin.backup")
@@ -143,17 +143,67 @@ def _prune_old_backups(bdir: Path, retention: int) -> int:
     return removed
 
 
-def run_pg_dump(db: Session, reason: str = "manual") -> Dict[str, Any]:
-    """Create a custom-format pg_dump in the configured backup directory."""
+def _start_backup_run(
+    db: Session,
+    kind: str,
+    reason: str,
+    name: Optional[str] = None,
+    actor_id: Optional[int] = None,
+) -> BackupRun:
+    run = BackupRun(kind=kind, name=name, reason=reason, actor_id=actor_id, status="running")
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def _finish_backup_run(
+    db: Session,
+    run: BackupRun,
+    status: str,
+    size_bytes: Optional[int] = None,
+    error: Optional[str] = None,
+) -> None:
+    run.status = status
+    run.size_bytes = size_bytes
+    run.error = error[:1000] if error else None
+    run.finished_at = utcnow()
+    db.commit()
+
+
+def list_backup_runs(db: Session, limit: int = 50) -> List[Dict[str, Any]]:
+    rows = db.scalars(select(BackupRun).order_by(BackupRun.started_at.desc()).limit(limit)).all()
+    return [
+        {
+            "id": row.id,
+            "kind": row.kind,
+            "name": row.name,
+            "status": row.status,
+            "reason": row.reason,
+            "size_bytes": row.size_bytes,
+            "error": row.error,
+            "started_at": row.started_at.isoformat() if row.started_at else None,
+            "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+        }
+        for row in rows
+    ]
+
+
+def run_pg_dump(db: Session, reason: str = "manual", actor_id: Optional[int] = None) -> Dict[str, Any]:
     cfg = get_all_settings(db)
     bdir = ensure_backup_dir(Path(cfg["backup_dir"]))
+    run = _start_backup_run(db, "dump", reason, actor_id=actor_id)
     info = parse_database_url(settings.DATABASE_URL)
     if not info:
-        return {"ok": False, "error": "DATABASE_URL is not a parseable PostgreSQL URL"}
+        error = "DATABASE_URL is not a parseable PostgreSQL URL"
+        _finish_backup_run(db, run, "failed", error=error)
+        return {"ok": False, "error": error}
 
     stamp = utcnow().strftime("%Y%m%d-%H%M%S")
     dump_name = f"tgmusic-{stamp}.dump"
     dump_path = bdir / dump_name
+    run.name = dump_name
+    db.commit()
     env = os.environ.copy()
     env["PGPASSWORD"] = info["password"]
 
@@ -178,16 +228,22 @@ def run_pg_dump(db: Session, reason: str = "manual") -> Dict[str, Any]:
             timeout=30 * 60,
         )
     except FileNotFoundError:
-        return {"ok": False, "error": "pg_dump not found in PATH on this host"}
+        error = "pg_dump not found in PATH on this host"
+        _finish_backup_run(db, run, "failed", error=error)
+        return {"ok": False, "error": error}
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "pg_dump timed out after 30 minutes"}
+        error = "pg_dump timed out after 30 minutes"
+        _finish_backup_run(db, run, "failed", error=error)
+        return {"ok": False, "error": error}
 
     if proc.returncode != 0 or not dump_path.exists():
-        err = (proc.stderr or proc.stdout or "").strip()[:500]
-        return {"ok": False, "error": f"pg_dump failed ({proc.returncode}): {err}"}
+        error = f"pg_dump failed ({proc.returncode}): {(proc.stderr or proc.stdout or '').strip()[:500]}"
+        _finish_backup_run(db, run, "failed", error=error)
+        return {"ok": False, "error": error}
 
     removed = _prune_old_backups(bdir, int(cfg["backup_retention"]))
     size = dump_path.stat().st_size
+    _finish_backup_run(db, run, "success", size_bytes=size)
     logger.info("Backup created: %s (%s bytes) reason=%s pruned=%s", dump_name, size, reason, removed)
     return {
         "ok": True,
@@ -223,6 +279,86 @@ def download_backup_path(db: Session, name: str) -> Path:
     if not str(path).startswith(str(bdir.resolve())) or not path.is_file():
         raise FileNotFoundError(name)
     return path
+
+
+def inspect_backup(db: Session, name: str) -> Dict[str, Any]:
+    path = download_backup_path(db, name)
+    if path.suffix.lower() != ".dump":
+        return {"ok": False, "error": "Only custom-format .dump files can be inspected"}
+    info = parse_database_url(settings.DATABASE_URL)
+    if not info:
+        return {"ok": False, "error": "DATABASE_URL is not a parseable PostgreSQL URL"}
+    env = os.environ.copy()
+    env["PGPASSWORD"] = info["password"]
+    try:
+        proc = subprocess.run(
+            ["pg_restore", "--list", str(path)],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except FileNotFoundError:
+        return {"ok": False, "error": "pg_restore not found in PATH on this host"}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "pg_restore inspection timed out"}
+    output = (proc.stdout or "").strip().splitlines()
+    if proc.returncode != 0:
+        error = (proc.stderr or proc.stdout or "Invalid backup").strip()[:500]
+        return {"ok": False, "error": error}
+    return {"ok": True, "name": name, "entries": len(output), "size_bytes": path.stat().st_size}
+
+
+def restore_backup(
+    db: Session,
+    name: str,
+    confirm: Optional[str],
+    dry_run: bool = True,
+    actor_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    path = download_backup_path(db, name)
+    if path.suffix.lower() != ".dump":
+        raise ValueError("Only custom-format .dump files can be restored")
+    if not dry_run and confirm != name:
+        raise PermissionError("Confirmation must exactly match the backup name")
+    if dry_run:
+        result = inspect_backup(db, name)
+        run = _start_backup_run(db, "restore", "dry-run", name, actor_id)
+        _finish_backup_run(db, run, "success" if result.get("ok") else "failed", size_bytes=result.get("size_bytes"), error=result.get("error"))
+        return {**result, "dry_run": True}
+    info = parse_database_url(settings.DATABASE_URL)
+    if not info:
+        raise RuntimeError("DATABASE_URL is not a parseable PostgreSQL URL")
+    run = _start_backup_run(db, "restore", "admin", name, actor_id)
+    env = os.environ.copy()
+    env["PGPASSWORD"] = info["password"]
+    cmd = [
+        "pg_restore",
+        "-h", info["host"],
+        "-p", info["port"],
+        "-U", info["user"],
+        "-d", info["dbname"],
+        "--clean",
+        "--if-exists",
+        "--no-owner",
+        "--single-transaction",
+        "--exit-on-error",
+        str(path),
+    ]
+    try:
+        proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60 * 60)
+    except FileNotFoundError as exc:
+        _finish_backup_run(db, run, "failed", error=str(exc))
+        raise RuntimeError("pg_restore not found in PATH on this host")
+    except subprocess.TimeoutExpired:
+        _finish_backup_run(db, run, "failed", error="pg_restore timed out")
+        raise RuntimeError("pg_restore timed out")
+    if proc.returncode != 0:
+        error = (proc.stderr or proc.stdout or "Restore failed").strip()[:1000]
+        _finish_backup_run(db, run, "failed", error=error)
+        raise RuntimeError(error)
+    _finish_backup_run(db, run, "success", size_bytes=path.stat().st_size)
+    return {"ok": True, "name": name, "dry_run": False, "size_bytes": path.stat().st_size}
 
 
 # ─── DB maintenance ──────────────────────────────────────────────────────────

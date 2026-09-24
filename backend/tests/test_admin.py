@@ -51,6 +51,15 @@ def test_role_permissions():
     assert user_has_permission(user, "admin.access") is False
 
 
+def test_maintenance_mode_blocks_public_api(monkeypatch):
+    from app.services import admin_service
+
+    monkeypatch.setattr(admin_service, "get_setting", lambda db, key, default=None: "true")
+    resp = client.get("/api/library/artists")
+    assert resp.status_code == 503
+    assert resp.headers.get("X-Maintenance-Mode") == "1"
+
+
 def test_settings_roundtrip_key_guard():
     from app.services import admin_service
 

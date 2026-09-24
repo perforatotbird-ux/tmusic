@@ -64,6 +64,7 @@ from app.api.admin_catalog_router import router as admin_catalog_router
 from app.services.backup_scheduler import start_backup_scheduler, stop_backup_scheduler
 from app.services.discovery_service import discovery_service
 from app.api.logs_router import router as logs_router
+from app.services import admin_service
 
 logger = logging.getLogger("tmusic.main")
 
@@ -330,6 +331,32 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Content-Range", "Accept-Ranges", "Content-Length", "Content-Disposition"]
 )
+
+
+@app.middleware("http")
+async def maintenance_middleware(request: Request, call_next):
+    path = request.url.path
+    allowed = (
+        request.method == "OPTIONS"
+        or path == "/health"
+        or path.startswith("/api/auth/")
+        or path.startswith("/api/admin/")
+        or path == "/api/system/config"
+    )
+    if not allowed:
+        try:
+            with SessionLocal() as db:
+                enabled = str(admin_service.get_setting(db, "maintenance_mode", "false")).lower() in ("1", "true", "yes", "on")
+        except Exception:
+            enabled = False
+        if enabled and (path.startswith("/api/") or path.startswith("/rest/")):
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Service is temporarily unavailable for maintenance."},
+                headers={"Retry-After": "300", "X-Maintenance-Mode": "1"},
+            )
+    return await call_next(request)
+
 
 # ─── Include API Routers ──────────────────────────────────────────────────────
 app.include_router(auth_router)

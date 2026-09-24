@@ -44,6 +44,11 @@ class SettingsUpdate(BaseModel):
     maintenance_mode: Optional[bool] = None
 
 
+class RestoreRequest(BaseModel):
+    confirm: Optional[str] = Field(default=None, max_length=160)
+    dry_run: bool = True
+
+
 class UserPatch(BaseModel):
     role: Optional[str] = Field(default=None, pattern="^(admin|editor|user)$")
     is_active: Optional[bool] = None
@@ -214,7 +219,11 @@ async def admin_list_backups(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
-    return {"items": admin_service.list_backups(db), "settings": admin_service.get_all_settings(db)}
+    return {
+        "items": admin_service.list_backups(db),
+        "runs": admin_service.list_backup_runs(db),
+        "settings": admin_service.get_all_settings(db),
+    }
 
 
 @router.post("/backups/run")
@@ -222,7 +231,7 @@ async def admin_run_backup(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
-    result = admin_service.run_pg_dump(db, reason=f"manual:{user.username}")
+    result = admin_service.run_pg_dump(db, reason=f"manual:{user.username}", actor_id=user.id)
     logger.info("Admin %s backup: %s", user.username, result)
     return result
 
@@ -240,6 +249,35 @@ async def admin_download_backup(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid backup name")
     return FileResponse(path, filename=path.name, media_type="application/octet-stream")
+
+
+@router.post("/backups/{name}/restore")
+async def admin_restore_backup(
+    name: str,
+    body: RestoreRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_admin_user),
+):
+    try:
+        result = admin_service.restore_backup(
+            db,
+            name,
+            confirm=body.confirm,
+            dry_run=body.dry_run,
+            actor_id=user.id,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Backup not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except PermissionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    _audit(db, request, user, "backup.restore_preview" if body.dry_run else "backup.restored", "backup", name, result)
+    db.commit()
+    return result
 
 
 @router.delete("/backups/{name}")
@@ -474,6 +512,36 @@ async def admin_delete_user(
     db.commit()
     invalidate_user(target.username)
     return {"ok": True}
+
+
+@router.get("/system/health")
+async def admin_system_health(
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_admin_user),
+):
+    try:
+        database = admin_service.db_overview(db)
+    except Exception as exc:
+        database = {"reachable": False, "error": str(exc)}
+    return {
+        "database": database,
+        "telegram": tg_manager.cluster_status(),
+        "ram_cache": ram_cache.stats(),
+        "backup_runs": admin_service.list_backup_runs(db, limit=10),
+        "settings": admin_service.get_all_settings(db),
+    }
+
+
+@router.post("/tg/reconnect")
+async def admin_tg_reconnect(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_admin_user),
+):
+    result = await tg_manager.reconnect()
+    _audit(db, request, user, "telegram.reconnected", "telegram", None, result)
+    db.commit()
+    return result
 
 
 @router.get("/tg/cluster")
