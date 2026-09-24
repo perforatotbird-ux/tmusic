@@ -5,7 +5,7 @@ create/delete collections, move albums between collections.
 """
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -13,7 +13,10 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_catalog_user
 from app.core.database import get_db
 from app.models.auth import AppUser
-from app.models.music import MusicArtist
+from app.models.music import MusicAlbum, MusicArtist
+from app.models.vfs import VFile
+from app.services import lastfm_service
+from app.utils.time import utcnow
 from app.repositories.album_repository import AlbumRepository
 from app.repositories.artist_repository import ArtistRepository
 from app.schemas.library import MusicAlbumCard, MusicArtistCard
@@ -46,6 +49,7 @@ class ArtistBatchUpdate(BaseModel):
     artist_ids: List[int] = Field(min_length=1, max_length=500)
     kind: Optional[str] = None
     locked: Optional[bool] = None
+    parent_id: Optional[int] = None
 
 
 class AlbumBatchUpdate(BaseModel):
@@ -124,6 +128,31 @@ async def catalog_update_artist(
         children_count=children_count,
         enriched_at=artist.enriched_at,
     )
+
+
+@router.post("/artists/{artist_id}/scan")
+async def catalog_scan_artist(
+    artist_id: int,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_catalog_user),
+):
+    if not lastfm_service.metadata_ready():
+        raise HTTPException(status_code=503, detail="Last.fm metadata is not configured.")
+    artist = db.get(MusicArtist, artist_id)
+    if not artist:
+        raise HTTPException(status_code=404, detail="Artist not found.")
+    info = lastfm_service.get_artist_info(artist.display_name)
+    if not info:
+        raise HTTPException(status_code=404, detail="Artist was not found on Last.fm.")
+    artist.bio = info.get("summary") or artist.bio
+    artist.mbid = info.get("mbid") or artist.mbid
+    if info.get("image_url"):
+        artist.image_url = info["image_url"]
+    artist.enriched_at = utcnow()
+    artist.locked = True
+    artist.updated_at = utcnow()
+    db.commit()
+    return {"ok": True, "id": artist.id, "updated": True, "mbid": artist.mbid}
 
 
 @router.post("/artists", response_model=MusicArtistCard)
@@ -227,6 +256,46 @@ async def catalog_update_album(
     )
 
 
+@router.post("/albums/{album_id}/scan")
+async def catalog_scan_album(
+    album_id: int,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_catalog_user),
+):
+    if not lastfm_service.metadata_ready():
+        raise HTTPException(status_code=503, detail="Last.fm metadata is not configured.")
+    album = db.get(MusicAlbum, album_id)
+    if not album:
+        raise HTTPException(status_code=404, detail="Album not found.")
+    artist = db.get(MusicArtist, album.artist_id)
+    if not artist:
+        raise HTTPException(status_code=404, detail="Album artist not found.")
+    file = db.scalar(
+        select(VFile).where(
+            VFile.folder_id == album.folder_id,
+            VFile.is_trash.is_(False),
+            VFile.mime_type.like("audio/%"),
+        ).limit(1)
+    )
+    if not file:
+        raise HTTPException(status_code=404, detail="Album has no playable track for enrichment.")
+    track_artist, track_title, _ = lastfm_service.parse_track_meta(
+        file.name,
+        artist_hint=artist.display_name,
+        album_hint=album.title,
+    )
+    info = lastfm_service.get_track_info(track_artist, track_title, album.title)
+    if not info:
+        raise HTTPException(status_code=404, detail="Album track was not found on Last.fm.")
+    album.mbid = info.get("mbid") or album.mbid
+    if info.get("image_url"):
+        album.cover_url = info["image_url"]
+    album.enriched_at = utcnow()
+    album.updated_at = utcnow()
+    db.commit()
+    return {"ok": True, "id": album.id, "updated": True, "mbid": album.mbid}
+
+
 @router.post("/artists/batch")
 async def catalog_batch_update_artists(
     body: ArtistBatchUpdate,
@@ -240,6 +309,8 @@ async def catalog_batch_update_artists(
             artist_id,
             kind=body.kind,
             locked=body.locked,
+            parent_id=body.parent_id,
+            set_parent="parent_id" in body.model_fields_set,
         )
         updated += 1
     return {"ok": True, "updated": updated}

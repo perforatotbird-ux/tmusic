@@ -1,7 +1,9 @@
 """Admin catalog curation tests (rename / collections / moves / cover gate)."""
+import asyncio
 import sys
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -13,7 +15,9 @@ from app.main import app
 from app.core.database import SessionLocal
 from app.repositories.album_repository import AlbumRepository
 from app.repositories.artist_repository import ArtistRepository
+from app.services import lastfm_service
 from app.services.music_library_service import CatalogAdminService, library_service
+from app.api.admin_catalog_router import catalog_scan_artist
 
 client = TestClient(app)
 
@@ -23,6 +27,8 @@ def test_catalog_endpoints_require_admin():
         ("get", "/api/admin/catalog/artists"),
         ("get", "/api/admin/catalog/albums"),
         ("patch", "/api/admin/catalog/artists/1"),
+        ("post", "/api/admin/catalog/artists/1/scan"),
+        ("post", "/api/admin/catalog/albums/1/scan"),
         ("post", "/api/admin/catalog/artists"),
         ("delete", "/api/admin/catalog/artists/1"),
         ("patch", "/api/admin/catalog/albums/1"),
@@ -76,6 +82,36 @@ def test_collection_lifecycle_rename_delete():
         assert result["ok"] is True
         artist = None
         assert ArtistRepository.get_by_id(db, renamed.id) is None
+    finally:
+        try:
+            if artist is not None:
+                CatalogAdminService.delete_artist(db, artist.id)
+        except Exception:
+            pass
+        db.close()
+
+
+def test_admin_scan_artist_refreshes_metadata(monkeypatch):
+    db = SessionLocal()
+    artist = None
+    try:
+        artist = CatalogAdminService.create_collection(db, f"T_SCAN_{uuid.uuid4().hex[:8]}", "artist")
+        monkeypatch.setattr(lastfm_service, "metadata_ready", lambda: True)
+        monkeypatch.setattr(lastfm_service, "get_artist_info", lambda name: {
+            "summary": "Updated biography",
+            "mbid": "scan-mbid",
+            "image_url": "https://example.test/cover.jpg",
+        })
+        result = asyncio.run(catalog_scan_artist(
+            artist.id,
+            db=db,
+            user=SimpleNamespace(id=1, username="admin"),
+        ))
+        db.refresh(artist)
+        assert result["updated"] is True
+        assert artist.bio == "Updated biography"
+        assert artist.mbid == "scan-mbid"
+        assert artist.enriched_at is not None
     finally:
         try:
             if artist is not None:

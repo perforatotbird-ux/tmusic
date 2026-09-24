@@ -104,6 +104,8 @@ export const adminApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }),
+  scanArtist: (id) => request(`/api/admin/catalog/artists/${id}/scan`, { method: 'POST' }),
+  scanAlbum: (id) => request(`/api/admin/catalog/albums/${id}/scan`, { method: 'POST' }),
   patchArtist: (id, body) =>
     request(`/api/admin/catalog/artists/${id}`, {
       method: 'PATCH',
