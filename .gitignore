@@ -11,6 +11,7 @@ music.env
 
 # Logs
 *.log
+*.sql
 backend/_server.log
 backend/_server_err.log
 backend/storage/

@@ -40,7 +40,7 @@ Prefix: `/api/stream` · Router: `backend/app/api/stream_router.py` · Service: 
 
 | Аспект | Поведение |
 |--------|-----------|
-| Auth | session JWT **или** `?token=` (scope=stream) |
+| Auth | session JWT в cookie/header **или** `?token=` со `scope=stream` |
 | Range | RFC 7233 → **206 Partial Content** |
 | Decrypt | on-the-fly AES-256-GCM если `vfile.is_encrypted` |
 | Cache | RAM-cache hit → без похода в Telegram |

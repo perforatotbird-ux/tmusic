@@ -1,15 +1,27 @@
 import json
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_admin_user
+from app.api.dependencies import get_admin_user, get_backup_admin
 from app.core.database import get_db
 from app.models.auth import AdminAuditEvent, AppUser
 from app.models.vfs import Folder, FolderClosure, VFile
+from app.services.vfs_import_service import (
+    MAX_IMPORT_BYTES,
+    VfsImportError,
+    get_vfs_import,
+    preview_vfs_import,
+    run_vfs_import,
+    stage_vfs_upload,
+    get_staged_children,
+    preview_tree_import,
+    run_tree_import,
+    get_import_status,
+)
 from app.utils.client_ip import get_client_ip
 from app.utils.time import utcnow
 
@@ -38,6 +50,27 @@ class FileUpdate(BaseModel):
 class FileMove(BaseModel):
     file_ids: List[int] = Field(min_length=1, max_length=1000)
     folder_id: int
+
+
+class VfsImportRunRequest(BaseModel):
+    confirm: bool = False
+
+
+class VfsTreePreviewRequest(BaseModel):
+    selected_folder_ids: List[int] = Field(default_factory=list)
+    selected_file_ids: List[int] = Field(default_factory=list)
+    target_root_id: Optional[int] = None
+    preserve_parent_path: bool = True
+    catalog_kind: str = "compilation"
+
+
+class VfsTreeRunRequest(BaseModel):
+    selected_folder_ids: List[int] = Field(default_factory=list)
+    selected_file_ids: List[int] = Field(default_factory=list)
+    target_root_id: Optional[int] = None
+    confirm: bool = True
+    preserve_parent_path: bool = True
+    catalog_kind: str = "compilation"
 
 
 def _audit(db: Session, request: Request, user: AppUser, action: str, target_type: str, target_id: Any, metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -103,6 +136,217 @@ def _file_payload(file: VFile) -> Dict[str, Any]:
         "note": file.note,
         "updated_at": file.updated_at.isoformat() if file.updated_at else None,
     }
+
+
+@router.post("/import/preview")
+def preview_vfs_sql_import(
+    request: Request,
+    file: UploadFile = File(...),
+    source_folder_path: str = Form("Music"),
+    source_folder_id: Optional[int] = Form(None),
+    target_root_id: Optional[int] = Form(None),
+    include_non_audio: bool = Form(False),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_backup_admin),
+):
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_IMPORT_BYTES + 1024 * 1024:
+                raise HTTPException(status_code=413, detail="SQL-файл превышает допустимый размер 256 МБ")
+        except ValueError:
+            pass
+    try:
+        result = preview_vfs_import(
+            db,
+            file,
+            source_folder_path,
+            source_folder_id,
+            target_root_id,
+            include_non_audio,
+            user.id,
+        )
+    except VfsImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+    _audit(
+        db,
+        request,
+        user,
+        "vfs.import_previewed",
+        "vfs_import",
+        result["import_id"],
+        {
+            "size_bytes": result["file"]["size_bytes"],
+            "source_folder": result["source"]["folder_path"],
+            "summary": result["summary"],
+        },
+    )
+    db.commit()
+    return result
+
+
+@router.post("/import/{import_id}/run")
+def run_vfs_sql_import(
+    import_id: str,
+    body: VfsImportRunRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_backup_admin),
+):
+    try:
+        result = run_vfs_import(db, import_id, user.id, body.confirm)
+    except VfsImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+    _audit(
+        db,
+        request,
+        user,
+        "vfs.import_completed",
+        "vfs_import",
+        import_id,
+        {
+            "source_folder": result["source_folder_path"],
+            "folders_created": result["folders_created"],
+            "folders_reused": result["folders_reused"],
+            "files_imported": result["files_imported"],
+            "files_conflicts": result["files_conflicts"],
+        },
+    )
+    db.commit()
+    return result
+
+
+@router.get("/import/{import_id}")
+def get_vfs_sql_import(
+    import_id: str,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_backup_admin),
+):
+    try:
+        return get_vfs_import(import_id, user.id)
+    except VfsImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+
+
+@router.post("/import/upload")
+def upload_vfs_backup(
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_backup_admin),
+):
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_IMPORT_BYTES + 1024 * 1024:
+                raise HTTPException(status_code=413, detail="Файл превышает допустимый размер 256 МБ")
+        except ValueError:
+            pass
+    try:
+        result = stage_vfs_upload(file, user.id)
+    except VfsImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+    _audit(
+        db,
+        request,
+        user,
+        "vfs.backup_uploaded",
+        "vfs_import",
+        result["import_id"],
+        {
+            "filename": result["filename"],
+            "size_bytes": result["size_bytes"],
+            "total_folders": result["total_folders"],
+            "total_files": result["total_files"],
+        },
+    )
+    db.commit()
+    return result
+
+
+@router.get("/import/{import_id}/children")
+def get_vfs_import_children_route(
+    import_id: str,
+    parent_id: Optional[int] = Query(None),
+    user: AppUser = Depends(get_backup_admin),
+):
+    try:
+        return get_staged_children(import_id, user.id, parent_id)
+    except VfsImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+
+
+@router.post("/import/{import_id}/tree-preview")
+def preview_vfs_tree_import_route(
+    import_id: str,
+    body: VfsTreePreviewRequest,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_backup_admin),
+):
+    try:
+        return preview_tree_import(
+            db,
+            import_id,
+            user.id,
+            body.selected_folder_ids,
+            body.selected_file_ids,
+            body.target_root_id,
+            preserve_parent_path=body.preserve_parent_path,
+            catalog_kind=body.catalog_kind,
+        )
+    except VfsImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+
+
+@router.post("/import/{import_id}/tree-run")
+def run_vfs_tree_import_route(
+    import_id: str,
+    body: VfsTreeRunRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_backup_admin),
+):
+    try:
+        result = run_tree_import(
+            db,
+            import_id,
+            user.id,
+            body.selected_folder_ids,
+            body.selected_file_ids,
+            body.target_root_id,
+            body.confirm,
+            preserve_parent_path=body.preserve_parent_path,
+            catalog_kind=body.catalog_kind,
+        )
+    except VfsImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+    _audit(
+        db,
+        request,
+        user,
+        "vfs.tree_import_completed",
+        "vfs_import",
+        import_id,
+        {
+            "folders_created": result["folders_created"],
+            "folders_reused": result["folders_reused"],
+            "files_imported": result["files_imported"],
+            "files_skipped": result["files_skipped"],
+        },
+    )
+    db.commit()
+    return result
+
+
+@router.get("/import/{import_id}/status")
+def get_vfs_import_status_route(
+    import_id: str,
+    user: AppUser = Depends(get_backup_admin),
+):
+    try:
+        return get_import_status(import_id, user.id)
+    except VfsImportError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
 
 
 @router.get("/folders")

@@ -17,6 +17,7 @@
 - **Постоянный кэш обложек (TTL=0):** Перманентное хранение графических обложек на диске без риска их потери после перезагрузки.
 - **Изолированная инфраструктура:** Собственная база данных PostgreSQL (`tgmusic`), независимый кластер MTProto-сессий Telegram, собственный конфиг `music.env`.
 - **PWA & Media Session API:** Нативное отображение обложки, исполнителя и кнопок управления на экране блокировки смартфона, планшета и автомобильной мультимедиа.
+- **VFS Import из Replit:** загрузка plain PostgreSQL SQL backup, preview выбранной папки и безопасное слияние VFS-метаданных/Telegram-ссылок без исполнения SQL.
 
 ---
 
@@ -27,12 +28,12 @@
 tmusic/
 ├── backend/
 │   ├── app/
-│   │   ├── api/             # HTTP Routers (auth, library, stream)
-│   │   ├── core/            # Config, Security, Database, RateLimiter
-│   │   ├── models/          # SQLAlchemy Models (VFS, TGAccount, Music, Auth)
+│   │   ├── api/             # HTTP Routers (auth, library, stream, admin, VFS, Subsonic)
+│   │   ├── core/            # Config, Security, Database, RateLimiter, CSRF
+│   │   ├── models/          # SQLAlchemy: VFS, catalog, auth, playback, playlists, shares
 │   │   ├── repositories/    # Data Access Layer (Artist, Album, File)
 │   │   ├── schemas/         # Pydantic Schemas (V2)
-│   │   ├── services/        # Business Logic (Auth, Stream, Library, CoverCache, RamCache)
+│   │   ├── services/        # Business Logic (Auth, Stream, Library, CoverCache, VFS Import)
 │   │   └── tg/              # Telegram Transport (Multi-Account Manager, FastStreamer, Failover)
 │   └── tests/               # Unit & Integration Pytest Suite
 ├── frontend/
@@ -72,6 +73,12 @@ start_tmusic.bat
 ### 3. Telegram Кластер и Сессии
 При миграции (`python scripts/migrate_data.py`) все активные аккаунты кластера Telegram автоматически переносятся в таблицу `tg_accounts` базы данных `tgmusic`. **Ключи (`session_string`, `api_hash`) хранятся в базе в зашифрованном виде (Fernet, ключ — `SESSION_SECRET`).** При запуске сервер расшифровывает сессии и инициализирует всех клиентов параллельно в оперативной памяти; незашифрованные записи автоматически перешифровываются при старте (или вручную: `python scripts/secure_tg_accounts.py`).
 
+### Импорт музыки из SQL-бэкапа Replit
+
+В админ-панели откройте **VFS → Импорт из резервной копии Replit**, загрузите plain PostgreSQL SQL dump, выберите исходную папку (обычно `Music`) и сначала получите preview. Импортируются только `folders`, `folder_closures` и `vfiles`; SQL не исполняется, существующие конфликты пропускаются. Backup содержит Telegram-ссылки, а не аудиобайты — для playback нужны совместимые TG-аккаунты и encryption keys.
+
+Подробный runbook: `obsidian/02-Backend/Импорт VFS из SQL.md`.
+
 ---
 
 ## 📱 Мобильное приложение (Android 14+)
@@ -97,3 +104,5 @@ adb install -r mobile/app-debug.apk
 ## 🔒 Безопасность
 
 Подробное описание мер безопасности и защиты интернет-доступа приведено в файле [SECURITY.md](SECURITY.md).
+
+SQL backup нельзя отправлять в `psql -f` или выполнять вручную на production DB. Для импорта используйте только VFS preview/merge из админ-панели.

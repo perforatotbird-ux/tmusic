@@ -70,6 +70,7 @@ def _authenticate_request(
     inactive_detail: str = "User account is inactive.",
     query_scope: Optional[str] = None,
     required_scope: Optional[str] = None,
+    allow_scoped_token: bool = False,
 ) -> AppUser:
     if not settings.REQUIRE_AUTH:
         user = get_user_by_username(db, "admin")
@@ -88,7 +89,7 @@ def _authenticate_request(
     token_scope = payload.get("scope")
     if required_scope is not None and token_scope != required_scope:
         raise HTTPException(status_code=401, detail=invalid_token_detail)
-    if required_scope is None and token_scope is not None:
+    if required_scope is None and token_scope is not None and not allow_scoped_token:
         raise HTTPException(status_code=401, detail=invalid_token_detail)
     if token_source == "query" and query_scope is not None and token_scope != query_scope:
         raise HTTPException(status_code=401, detail=invalid_token_detail)
@@ -132,11 +133,11 @@ async def get_stream_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_bearer),
     db: Session = Depends(get_db)
 ) -> AppUser:
-    """Validate user for audio streaming: supports Authorization header, cookie, or ?token= parameter for native HTML5 <audio>.
+    """Validate user for audio streaming with header, cookie, or scoped query auth.
 
-    The ?token= path accepts ONLY short-lived scope="stream" tokens minted via
-    POST /api/stream/token — a full session JWT in the URL is rejected because
-    URLs leak into proxy logs, browser history, and Referer headers.
+    Query authentication accepts only short-lived scope="stream" tokens minted via
+    POST /api/stream/token. Header and cookie authentication may use a normal
+    session JWT or a scoped stream token.
     """
     return _authenticate_request(
         request,
@@ -144,7 +145,8 @@ async def get_stream_user(
         db,
         query_token=token,
         query_scope="stream",
-        required_scope="stream",
+        required_scope=None,
+        allow_scoped_token=True,
         missing_detail="Authentication required for stream playback.",
         invalid_token_detail="Invalid or expired stream token.",
         inactive_detail="User account inactive.",
@@ -172,4 +174,12 @@ async def get_admin_user(
 ) -> AppUser:
     if not user_has_permission(user, "admin.access"):
         raise HTTPException(status_code=403, detail="Administrator role required.")
+    return user
+
+
+async def get_backup_admin(
+    user: AppUser = Depends(get_current_user),
+) -> AppUser:
+    if not user_has_permission(user, "admin.backups.manage"):
+        raise HTTPException(status_code=403, detail="Backup management permission required.")
     return user

@@ -25,6 +25,7 @@ import {
 } from 'lucide-react'
 import { adminApi } from '../api/admin'
 import { AdminCatalog } from './AdminCatalog'
+import { AdminVfsImport } from './AdminVfsImport'
 
 const TABS = [
   { id: 'overview', label: 'Обзор', icon: Activity },
@@ -136,10 +137,6 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
   const [audit, setAudit] = useState(null)
   const [health, setHealth] = useState(null)
   const [vfsFolders, setVfsFolders] = useState([])
-  const [vfsFiles, setVfsFiles] = useState([])
-  const [vfsFolderId, setVfsFolderId] = useState('')
-  const [vfsSearch, setVfsSearch] = useState('')
-  const [vfsSelectedFiles, setVfsSelectedFiles] = useState([])
   const [analytics, setAnalytics] = useState(null)
   const [subsonic, setSubsonic] = useState(null)
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' })
@@ -176,19 +173,14 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
   const refreshVfs = useCallback(async () => {
     setBusy(true)
     try {
-      const [folders, files] = await Promise.all([
-        adminApi.vfsFolders({ search: vfsSearch.trim(), include_trash: true }),
-        adminApi.vfsFiles({ search: vfsSearch.trim(), folder_id: vfsFolderId || undefined, include_trash: true }),
-      ])
+      const folders = await adminApi.vfsFolders({ include_trash: false })
       setVfsFolders(folders?.items || [])
-      setVfsFiles(files?.items || [])
-      setVfsSelectedFiles([])
     } catch (e) {
-      flash(e.message || 'Ошибка загрузки VFS', 'err')
+      flash(e.message || 'Ошибка загрузки папок VFS', 'err')
     } finally {
       setBusy(false)
     }
-  }, [flash, vfsFolderId, vfsSearch])
+  }, [flash])
 
   useEffect(() => {
     if (tab === 'vfs') refreshVfs()
@@ -599,96 +591,14 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
       )}
 
       {tab === 'vfs' && (
-        <>
-          <Panel
-            title="VFS: папки и треки"
-            right={
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                <Btn disabled={busy} onClick={refreshVfs}><RefreshCw size={12} /> Обновить</Btn>
-                <Btn disabled={busy} onClick={() => runVfsAction(() => adminApi.rebuildVfsClosures(), 'Дерево VFS перестроено')}>
-                  Перестроить дерево
-                </Btn>
-              </div>
-            }
-          >
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-              <input
-                value={vfsSearch}
-                onChange={(e) => setVfsSearch(e.target.value)}
-                placeholder="Поиск папки или трека…"
-                style={{ background: 'var(--bg)', border: '1px solid var(--line)', color: 'var(--ink)', borderRadius: 8, padding: '8px 10px', minHeight: 40, flex: 1, minWidth: 180 }}
-              />
-              <select
-                value={vfsFolderId}
-                onChange={(e) => setVfsFolderId(e.target.value)}
-                style={{ background: 'var(--bg)', border: '1px solid var(--line)', color: 'var(--ink)', borderRadius: 8, padding: '0 8px', minHeight: 40 }}
-              >
-                <option value="">Все треки</option>
-                {vfsFolders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
-              </select>
-              {vfsSelectedFiles.length > 0 && vfsFolderId && (
-                <Btn
-                  variant="primary"
-                  disabled={busy}
-                  onClick={() => runVfsAction(() => adminApi.moveVfsFiles(vfsSelectedFiles, Number(vfsFolderId)), 'Треки перемещены')}
-                >
-                  Переместить выбранные
-                </Btn>
-              )}
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(240px, 1fr) minmax(300px, 1.5fr)', gap: 14 }}>
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>Папки ({vfsFolders.length})</div>
-                <div style={{ maxHeight: 420, overflow: 'auto' }}>
-                  {vfsFolders.map((folder) => (
-                    <div key={folder.id} style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--line)', flexWrap: 'wrap' }}>
-                      <button
-                        type="button"
-                        onClick={() => setVfsFolderId(String(folder.id))}
-                        style={{ border: 'none', background: 'transparent', color: 'var(--ink)', cursor: 'pointer', textAlign: 'left', flex: 1, minWidth: 120, fontSize: 12 }}
-                      >
-                        {folder.is_trash ? '[корзина] ' : ''}{folder.is_starred ? '[избранное] ' : ''}{folder.name}
-                        <span style={{ color: 'var(--dim)' }}> · {folder.track_count} треков</span>
-                      </button>
-                      <select
-                        value={folder.parent_id || ''}
-                        disabled={busy}
-                        onChange={(e) => runVfsAction(() => adminApi.patchVfsFolder(folder.id, { set_parent: true, parent_id: e.target.value ? Number(e.target.value) : null }), 'Папка перемещена')}
-                        style={{ maxWidth: 120, background: 'var(--bg)', color: 'var(--ink)', border: '1px solid var(--line)', borderRadius: 6, minHeight: 30, fontSize: 11 }}
-                      >
-                        <option value="">Корень</option>
-                        {vfsFolders.filter((item) => item.id !== folder.id).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-                      </select>
-                      <Btn disabled={busy} title="В корзину/восстановить" onClick={() => runVfsAction(() => adminApi.patchVfsFolder(folder.id, { is_trash: !folder.is_trash }), folder.is_trash ? 'Папка восстановлена' : 'Папка перемещена в корзину')}>
-                        <Trash2 size={12} />
-                      </Btn>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>Треки ({vfsFiles.length})</div>
-                <div style={{ maxHeight: 420, overflow: 'auto' }}>
-                  {vfsFiles.map((file) => (
-                    <div key={file.id} style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '6px 0', borderBottom: '1px solid var(--line)', fontSize: 12 }}>
-                      <input
-                        type="checkbox"
-                        checked={vfsSelectedFiles.includes(file.id)}
-                        onChange={(e) => setVfsSelectedFiles((prev) => e.target.checked ? [...prev, file.id] : prev.filter((id) => id !== file.id))}
-                      />
-                      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {file.is_trash ? '[корзина] ' : ''}{file.is_starred ? '[избранное] ' : ''}{file.name}
-                      </span>
-                      <Btn disabled={busy} title="В корзину/восстановить" onClick={() => runVfsAction(() => adminApi.patchVfsFile(file.id, { is_trash: !file.is_trash }), file.is_trash ? 'Трек восстановлен' : 'Трек перемещён в корзину')}>
-                        <Trash2 size={12} />
-                      </Btn>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </Panel>
-        </>
+        <AdminVfsImport
+          targetFolders={vfsFolders}
+          onImported={() => {
+            refreshVfs()
+            window.dispatchEvent(new CustomEvent('tmusic:vfs-imported'))
+          }}
+          disabled={busy}
+        />
       )}
 
       {tab === 'settings' && settings && (

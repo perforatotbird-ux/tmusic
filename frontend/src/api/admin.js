@@ -92,6 +92,46 @@ export const adminApi = {
       body: JSON.stringify({ file_ids: fileIds, folder_id: folderId }),
     }),
   rebuildVfsClosures: () => request('/api/admin/vfs/folders/rebuild-closures', { method: 'POST' }),
+  uploadVfsBackup: (file) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request('/api/admin/vfs/import/upload', { method: 'POST', body: form })
+  },
+  getVfsImportChildren: (importId, parentId) => {
+    const qs = parentId !== undefined && parentId !== null ? `?parent_id=${encodeURIComponent(parentId)}` : ''
+    return request(`/api/admin/vfs/import/${encodeURIComponent(importId)}/children${qs}`)
+  },
+  previewTreeImport: (importId, body = {}) =>
+    request(`/api/admin/vfs/import/${encodeURIComponent(importId)}/tree-preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  runTreeImport: (importId, body = {}) =>
+    request(`/api/admin/vfs/import/${encodeURIComponent(importId)}/tree-run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  getVfsImportStatus: (importId) =>
+    request(`/api/admin/vfs/import/${encodeURIComponent(importId)}/status`),
+  previewVfsImport: (file, options = {}) => {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('source_folder_path', options.sourceFolderPath || 'Music')
+    if (options.sourceFolderId) form.append('source_folder_id', String(options.sourceFolderId))
+    if (options.targetRootId) form.append('target_root_id', String(options.targetRootId))
+    form.append('include_non_audio', options.includeNonAudio ? 'true' : 'false')
+    return request('/api/admin/vfs/import/preview', { method: 'POST', body: form })
+  },
+  runVfsImport: (importId, body = { confirm: true }) =>
+    request(`/api/admin/vfs/import/${encodeURIComponent(importId)}/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  getVfsImport: (importId) =>
+    request(`/api/admin/vfs/import/${encodeURIComponent(importId)}`),
   catalogArtists: (params = {}) => {
     const qs = new URLSearchParams(
       Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== '')

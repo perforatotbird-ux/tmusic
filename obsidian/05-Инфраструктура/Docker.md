@@ -13,7 +13,7 @@
 FROM node:20-alpine
 WORKDIR /app/frontend
 COPY frontend/package.json ./
-RUN npm install
+RUN npm ci
 COPY frontend ./
 RUN npm run build
 ```
@@ -21,7 +21,7 @@ RUN npm run build
 ### Stage 2 — runtime
 ```
 FROM python:3.13-slim
-apt: gcc, libpq-dev, curl
+apt: gcc, libpq-dev, curl, postgresql-client
 pip install -r backend/requirements.txt
 COPY backend + frontend/dist
 groupadd/useradd tmusic → USER tmusic
@@ -45,15 +45,15 @@ Security:
 | service | `tmusic-app` |
 | container_name | `tmusic-server` |
 | restart | `unless-stopped` |
-| ports | `8005:8005` |
-| volumes | `./music.env:/app/music.env`, `./cache:/app/cache`, `./data:/app/data` |
+| ports | `8005:8005`, `8211:8211/udp` (LAN discovery) |
+| volumes | `./music.env:/app/music.env:ro`, `./cache:/app/cache`, `./data:/app/data` |
 | extra_hosts | `host.docker.internal:host-gateway` |
 | security_opt | `no-new-privileges:true` |
 | cap_drop | `ALL` |
 | cap_add | `NET_BIND_SERVICE` |
 | read_only | `false` (cache/data writable) |
 
-PostgreSQL **не** в compose — ожидается внешний (localhost / host-gateway).
+PostgreSQL доступен в optional profile `db` (`docker compose --profile db up -d`); для production обычно используй внешний managed/host PostgreSQL.
 
 ---
 
@@ -88,7 +88,9 @@ docker run --rm -p 8005:8005 --env-file music.env tmusic:local
 - `DATABASE_URL` внутри контейнера: `localhost` — это **контейнер**, не хост. Используй `host.docker.internal` или сеть compose.
 - Секреты не запекать в image — только volume/env-file
 - Кэш обложек переживает пересоздание контейнера (volume)
-- HEALTHCHECK проверяет HTTP `/` — SPA-index, не API
+- HEALTHCHECK проверяет HTTP `/health`; `/` отдаёт SPA shell
+- `.dockerignore` исключает локальные secrets, SQL dumps, node_modules и build-артефакты
+- `data/vfs_imports` находится под writable `/app/data` и очищается по TTL
 
 ---
 

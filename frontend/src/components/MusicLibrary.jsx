@@ -222,6 +222,18 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     if (isAuthenticated) loadStats()
   }, [isAuthenticated])
 
+  useEffect(() => {
+    const handleVfsImported = () => {
+      bustCatalogCache()
+      if (isAuthenticated) {
+        loadStats()
+        loadData()
+      }
+    }
+    window.addEventListener('tmusic:vfs-imported', handleVfsImported)
+    return () => window.removeEventListener('tmusic:vfs-imported', handleVfsImported)
+  }, [isAuthenticated, viewKind, debouncedSearch])
+
   // Prefetch cover existence for the current grid: images proven missing render
   // the fallback badge without firing a GET (+retries). Fire-and-forget — any
   // failure leaves the registry empty, i.e. previous behavior.

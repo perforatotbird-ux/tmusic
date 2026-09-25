@@ -212,28 +212,34 @@ export function FolderBrowser() {
   const { isAuthenticated } = useAuthStore()
   const reqSeq = useRef(0)
 
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      setRootsLoading(true)
-      setError(null)
-      try {
-        const list = await vfsApi.roots()
-        if (!cancelled) setRoots((list || []).map((f) => ({ type: 'folder', folder: f })))
-      } catch (e) {
-        console.error(e)
-        if (!cancelled) {
-          setError('Не удалось загрузить папки')
-          setRoots([])
-        }
-      } finally {
-        if (!cancelled) setRootsLoading(false)
-      }
-    })()
-    return () => {
-      cancelled = true
+  const loadRoots = useCallback(async () => {
+    setRootsLoading(true)
+    setError(null)
+    try {
+      const list = await vfsApi.roots()
+      setRoots((list || []).map((f) => ({ type: 'folder', folder: f })))
+    } catch (e) {
+      console.error(e)
+      setError('Не удалось загрузить папки')
+      setRoots([])
+    } finally {
+      setRootsLoading(false)
     }
   }, [])
+
+  useEffect(() => {
+    loadRoots()
+  }, [loadRoots])
+
+  useEffect(() => {
+    const handleVfsImported = () => {
+      setExpandedIds(new Set())
+      setChildrenMap({})
+      loadRoots()
+    }
+    window.addEventListener('tmusic:vfs-imported', handleVfsImported)
+    return () => window.removeEventListener('tmusic:vfs-imported', handleVfsImported)
+  }, [loadRoots])
 
   const loadChildren = useCallback(async (folderId, nodeId) => {
     const data = await vfsApi.children(folderId)

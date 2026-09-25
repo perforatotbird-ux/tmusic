@@ -2,7 +2,7 @@
 
 > Приложение T-Music спроектировано с учетом прямого доступа из публичного Интернета (Internet-facing deployment). В архитектуру заложен принцип нулевого доверия (Zero-Trust) к входящим запросам.
 >
-> **Обновлено 2026-09-15** по результатам полного аудита OWASP Top 10 (см. `.sec_audit/SECURITY_AUDIT.md`). Дефолтные учётные данные (`admin/admin123`, PIN `1234`) и хэши SHA-256 без соли **удалены и более не поддерживаются**.
+> **Обновлено 2026-09-24** по текущему hardening-коду и результатам полного аудита OWASP Top 10 (см. `.sec_audit/SECURITY_AUDIT.md`). Дефолтные учётные данные (`admin/admin123`, PIN `1234`) и хэши SHA-256 без соли **удалены и более не поддерживаются**.
 
 ---
 
@@ -92,3 +92,18 @@
 - **Зависимости:** `requirements.txt` зафиксирован на проверенных версиях (без `>=`), уязвимые/неподдерживаемые пакеты исключены.
 - **Конфигурация:** `DATABASE_URL` обязателен — приложение падает на старте при его отсутствии (никаких неявных учётных данных в коде).
 - **RAM-кэш:** ограничен и по числу треков, и по суммарному объёму (`RAM_CACHE_MAX_BYTES`, по умолчанию 512 МБ) — защита от DoS через память.
+
+---
+
+## 8. Безопасный импорт VFS из Replit SQL backup
+
+- Endpoint доступен только admin-пользователю с permission `admin.backups.manage`; cookie mutations защищены CSRF.
+- Файл принимается multipart upload, проверяется как UTF-8 plain PostgreSQL dump и ограничен 256 МБ.
+- Staging использует UUID-имя в `data/vfs_imports/`, TTL 1 час; клиентский filename не используется как filesystem path.
+- SQL никогда не исполняется через `psql`, `sqlalchemy.text()` или shell. Разрешённый parser извлекает только `folders`, `folder_closures`, `vfiles` и безопасные metadata `tg_accounts` для сопоставления аккаунтов.
+- `COPY FROM PROGRAM`, бинарный формат, NUL/invalid UTF-8 и неподтверждённые структуры отклоняются.
+- Preview не возвращает raw SQL, `session_string`, `api_hash`, `account_map`, `msg_ids` или encryption headers.
+- Импорт reuses existing folders, пропускает конфликты файлов, выполняет одну DB-транзакцию и перестраивает `folder_closures`.
+- Backup содержит только ссылки на Telegram-сообщения; совместимость TG accounts и encryption keys проверяется предупреждениями preview.
+
+Runbook: `obsidian/02-Backend/Импорт VFS из SQL.md`.

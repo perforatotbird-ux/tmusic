@@ -32,10 +32,12 @@ CREATE DATABASE tgmusic OWNER tgvfs;
 
 Создание таблиц — через SQLAlchemy `Base.metadata` / миграционные скрипты CloudByte (`scripts/migrate_data.py`).
 
-Основные таблицы:
+Основные группы таблиц:
 - VFS: `folders`, `folder_closures`, `vfiles`, `tg_accounts`
 - Catalog: `music_artists`, `music_albums`
-- Auth: `app_users`, `revoked_tokens`
+- Auth/admin: `app_users`, `revoked_tokens`, `app_settings`, `admin_audit_events`, `backup_runs`
+- Playback: `playback_positions`, `listening_history`, `user_favorites`
+- Playlists/shares: `playlists`, `playlist_items`, `share_links`
 
 См. [[Модели БД]]
 
@@ -48,9 +50,11 @@ CREATE DATABASE tgmusic OWNER tgvfs;
 2. `ensure_performance_indexes()`
 3. `ensure_auth_schema()`
 4. `ensure_trigram_indexes()`
-5. `purge_expired_revocations()`
-6. `ensure_admin_bootstrap()`
-7. TG self-heal encryption
+5. `ensure_feature_tables()`
+6. `ensure_catalog_schema()`
+7. `purge_expired_revocations()`
+8. `ensure_admin_bootstrap()`
+9. TG self-heal encryption
 
 Если БД недоступна — SPA может стартовать, стриминг деградирует (manager.start в try/except).
 
