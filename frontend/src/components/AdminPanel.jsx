@@ -22,6 +22,7 @@ import {
   UnlockKeyhole,
   FolderOpen,
   BarChart3,
+  ArrowLeft,
 } from 'lucide-react'
 import { adminApi } from '../api/admin'
 import { AdminCatalog } from './AdminCatalog'
@@ -270,6 +271,9 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
           marginBottom: 14,
         }}
       >
+        <Btn onClick={onBack} title="Вернуться в медиатеку">
+          <ArrowLeft size={14} /> На главную
+        </Btn>
         <div style={{ fontWeight: 900, fontSize: 16 }} className="title-zine">
           АДМИНКА
         </div>
@@ -280,7 +284,6 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
           <Btn onClick={loadAll} title="Обновить">
             <RefreshCw size={14} /> Обновить
           </Btn>
-          {onBack && <Btn onClick={onBack}>К профилю</Btn>}
         </div>
       </div>
 

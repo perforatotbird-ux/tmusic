@@ -132,20 +132,7 @@ async def folder_children(
     tracks_vf = FileRepository.list_tracks_in_folder(db, folder_id, limit=500)
     from app.services.stream_service import stream_service
 
-    tracks = []
-    for vf in tracks_vf:
-        plain = stream_service.get_track_size(vf)
-        tracks.append(
-            TrackResponse(
-                id=vf.id,
-                name=vf.name,
-                size=plain,
-                mime_type=vf.mime_type or "audio/mpeg",
-                folder_id=vf.folder_id,
-                stream_url=f"/api/stream/{vf.id}",
-                created_at=vf.created_at,
-            )
-        )
+    tracks = stream_service.build_track_responses(db, tracks_vf)
     return {
         "folder": _folder_payload(db, folder, folder.parent_id),
         "subfolders": [_folder_payload(db, f, folder_id) for f in subfolders],
@@ -170,18 +157,4 @@ async def folder_tracks_recursive(
         vfiles = FileRepository.list_tracks_in_folder(db, folder_id, limit=2000)
     from app.services.stream_service import stream_service
 
-    out = []
-    for vf in vfiles:
-        plain = stream_service.get_track_size(vf)
-        out.append(
-            TrackResponse(
-                id=vf.id,
-                name=vf.name,
-                size=plain,
-                mime_type=vf.mime_type or "audio/mpeg",
-                folder_id=vf.folder_id,
-                stream_url=f"/api/stream/{vf.id}",
-                created_at=vf.created_at,
-            )
-        )
-    return out
+    return stream_service.build_track_responses(db, vfiles)

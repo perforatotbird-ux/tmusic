@@ -45,6 +45,8 @@ export const useAuthStore = create((set, get) => ({
       const me = await authApi.getMe()
       log.debug('session valid', { username: me?.username, role: me?.role })
       set({ user: me, isAuthenticated: true, isAuthModalOpen: false })
+      // Hydrate yesterday's queue (paused) so F5 / app relaunch does not wipe it.
+      usePlayerStore.getState().hydrate()
     } catch {
       log.debug('no active session')
       get().clearLocalSession()

@@ -61,19 +61,7 @@ async def get_folder_tracks(
     else:
         vfiles = FileRepository.list_tracks_in_folder(db, folder_id, limit=limit, offset=offset)
 
-    tracks = []
-    for vf in vfiles:
-        plain_size = stream_service.get_track_size(vf)
-        tracks.append(TrackResponse(
-            id=vf.id,
-            name=vf.name,
-            size=plain_size,
-            mime_type=vf.mime_type or "audio/mpeg",
-            folder_id=vf.folder_id,
-            stream_url=f"/api/stream/{vf.id}",
-            created_at=vf.created_at
-        ))
-    return tracks
+    return stream_service.build_track_responses(db, vfiles)
 
 
 @router.get("/{file_id}")

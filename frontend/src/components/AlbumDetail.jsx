@@ -13,8 +13,11 @@ import {
   ListMusic,
   Image as ImageIcon,
   ListPlus,
+  ListStart,
+  ListEnd,
   Check,
   Star,
+  MoreVertical,
 } from 'lucide-react'
 import { useFavoritesStore } from '../store/favoritesStore'
 
@@ -26,6 +29,12 @@ function formatSizeHint(track) {
   return ''
 }
 
+function formatTime(sec) {
+  if (!sec || isNaN(sec)) return ''
+  const s = Math.max(0, Math.floor(sec))
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
 function stripExt(name) {
   return (name || 'Без названия').replace(/\.[^/.]+$/, '')
 }
@@ -35,13 +44,14 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState(null)
   const [playlistTarget, setPlaylistTarget] = useState(null) // track being added
+  const [trackMenu, setTrackMenu] = useState(null) // { track, x, y, flip } — ⋯ menu anchored to its button
   const [playlists, setPlaylists] = useState([])
   const [playlistsLoading, setPlaylistsLoading] = useState(false)
   const [newPlName, setNewPlName] = useState('')
   const [addedFlash, setAddedFlash] = useState(null)
   const loadSeq = useRef(0)
 
-  const { playQueue, queue, queueIndex, isPlaying, togglePlay } = usePlayerStore()
+  const { playQueue, queue, queueIndex, isPlaying, togglePlay, playNext, addToQueue, setNotice, durations } = usePlayerStore()
   const { isAuthenticated } = useAuthStore()
   const favIds = useFavoritesStore((s) => s.ids)
   const loadFavorites = useFavoritesStore((s) => s.load)
@@ -66,13 +76,14 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === 'Escape') {
-        if (playlistTarget) setPlaylistTarget(null)
+        if (trackMenu) setTrackMenu(null)
+        else if (playlistTarget) setPlaylistTarget(null)
         else onClose?.()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose, playlistTarget])
+  }, [onClose, playlistTarget, trackMenu])
 
   useEffect(() => {
     let cancelled = false
@@ -102,6 +113,7 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
   }, [album?.folder_id, album?.is_tracks])
 
   const openPlaylistPicker = async (track) => {
+    setTrackMenu(null)
     setPlaylistTarget(track)
     if (!isAuthenticated) return
     setPlaylistsLoading(true)
@@ -162,10 +174,25 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
 
   const isThisQueue = queue.length > 0 && tracks.length > 0 && queue[0]?.id === tracks[0]?.id
 
+  const playNextWithToast = (track) => {
+    playNext(track)
+    setTrackMenu(null)
+    setNotice({ kind: 'info', text: `«${stripExt(track.name)}» — следующим` })
+  }
+  const addToQueueWithToast = (track) => {
+    addToQueue(track)
+    setTrackMenu(null)
+    setNotice({ kind: 'info', text: `«${stripExt(track.name)}» — добавлен в очередь` })
+  }
+
   return (
     <div
       className="tmusic-album-overlay"
-      onClick={() => (playlistTarget ? setPlaylistTarget(null) : onClose?.())}
+      onClick={() => {
+        if (trackMenu) setTrackMenu(null)
+        else if (playlistTarget) setPlaylistTarget(null)
+        else onClose?.()
+      }}
       role="dialog"
       aria-modal="true"
       aria-label={albumTitle}
@@ -316,7 +343,7 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
           {isLoading && (
             <div className="tmusic-album-state">
               <Loader2 size={18} className="tmusic-spin" />
-              Загрузка треков…
+              Загрузка треков...
             </div>
           )}
 
@@ -335,6 +362,7 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
             tracks.map((t, idx) => {
               const isCurrent = isThisQueue && queue[queueIndex]?.id === t.id
               const playing = isCurrent && isPlaying
+              const dur = formatTime(t.duration || durations[t.id] || 0)
               return (
                 <div
                   key={t.id || idx}
@@ -348,6 +376,7 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
                     borderRadius: '10px',
                     cursor: 'pointer',
                     backgroundColor: isCurrent ? 'var(--accent-muted)' : 'transparent',
+                    position: 'relative',
                   }}
                 >
                   <span
@@ -382,11 +411,9 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
                   >
                     {stripExt(t.name)}
                   </div>
-                  {formatSizeHint(t) && (
-                    <span style={{ fontSize: '11px', color: 'var(--dim)', flexShrink: 0 }}>
-                      {formatSizeHint(t)}
-                    </span>
-                  )}
+                  <span style={{ fontSize: '11px', color: 'var(--dim)', flexShrink: 0, minWidth: '38px', textAlign: 'right' }}>
+                    {dur || formatSizeHint(t)}
+                  </span>
                   {isAuthenticated && (
                     <button
                       onClick={(e) => {
@@ -435,6 +462,43 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
                   >
                     <ListPlus size={15} />
                   </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      if (trackMenu?.track?.id === t.id) {
+                        setTrackMenu(null)
+                        return
+                      }
+                      const rect = e.currentTarget.getBoundingClientRect()
+                      // Anchor bottom-left of the ⋮ button; flip above when the
+                      // sheet's scroll region would clip the menu at the bottom.
+                      const fitsBelow = window.innerHeight - rect.bottom > 120
+                      setTrackMenu({
+                        track: t,
+                        x: Math.min(rect.left, window.innerWidth - 226),
+                        y: fitsBelow ? rect.bottom + 4 : rect.top - 4,
+                        flip: !fitsBelow,
+                      })
+                    }}
+                    title="Очередь"
+                    aria-label={`Действия очереди для ${stripExt(t.name)}`}
+                    aria-expanded={!!trackMenu && trackMenu.track?.id === t.id}
+                    style={{
+                      flexShrink: 0,
+                      width: '32px',
+                      height: '32px',
+                      borderRadius: '8px',
+                      border: '1px solid var(--line, #333)',
+                      background: trackMenu?.track?.id === t.id ? 'var(--accent-muted)' : 'transparent',
+                      color: trackMenu?.track?.id === t.id ? 'var(--accent)' : 'var(--dim)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <MoreVertical size={15} />
+                  </button>
                 </div>
               )
             })}
@@ -443,7 +507,36 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
         {!isLoading && tracks.length > 0 && (
           <div className="tmusic-album-foot">
             <ListMusic size={14} />
-            {tracks.length} {tracks.length === 1 ? 'трек' : 'треков'} • тап — играть • ★ — любимое • + — в плейлист
+            {tracks.length} {tracks.length === 1 ? 'трек' : 'треков'} • тап — играть • ★ — любимое • + — в плейлист • ⋮ — в очередь
+          </div>
+        )}
+
+        {trackMenu && (
+          <div
+            className="tm-track-menu"
+            style={{
+              position: 'fixed',
+              left: trackMenu.x,
+              top: trackMenu.flip ? undefined : trackMenu.y,
+              bottom: trackMenu.flip ? `calc(100vh - ${trackMenu.y}px)` : undefined,
+            }}
+            onClick={(e) => e.stopPropagation()}
+            role="menu"
+          >
+            <button
+              type="button"
+              className="tm-track-menu-item"
+              onClick={() => playNextWithToast(trackMenu.track)}
+            >
+              <ListStart size={14} /> Играть следующим
+            </button>
+            <button
+              type="button"
+              className="tm-track-menu-item"
+              onClick={() => addToQueueWithToast(trackMenu.track)}
+            >
+              <ListEnd size={14} /> Добавить в очередь
+            </button>
           </div>
         )}
 
@@ -492,7 +585,7 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
               {!isAuthenticated ? (
                 <div style={{ fontSize: '13px', color: 'var(--dim)' }}>Войдите, чтобы сохранять плейлисты.</div>
               ) : playlistsLoading ? (
-                <div style={{ fontSize: '13px', color: 'var(--dim)' }}>Загрузка…</div>
+                <div style={{ fontSize: '13px', color: 'var(--dim)' }}>Загрузка...</div>
               ) : (
                 <>
                   {(playlists || []).map((pl) => (

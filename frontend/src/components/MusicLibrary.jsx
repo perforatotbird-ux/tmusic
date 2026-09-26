@@ -3,7 +3,7 @@ import { libraryApi, bustCatalogCache } from '../api/library'
 import { streamApi } from '../api/stream'
 import { adminApi } from '../api/admin'
 import { metadataApi } from '../api/metadata'
-import { missingCoverKeys, parseCoverKey } from '../services/coverMissing'
+import { missingCoverKeys, probedCoverKeys, markCoverProbed, parseCoverKey } from '../services/coverMissing'
 import { resolveCoverUrl } from '../utils/cover'
 import { AlbumDetail } from './AlbumDetail'
 import { LibraryPanel } from './HomeExtraPanels'
@@ -30,13 +30,9 @@ import {
   User,
   FolderTree,
   LayoutGrid,
-  History,
-  ListMusic,
-  Plus,
   Unlink,
-  CornerUpLeft,
+  Plus,
   AlertTriangle,
-  Star,
 } from 'lucide-react'
 
 // Deterministic hue generator based on string hash for generative badges
@@ -181,7 +177,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   // (fast typing fires parallel loadData calls that resolve out of order).
   const loadSeq = useRef(0)
 
-  const { playQueue, currentTrack } = usePlayerStore()
+  const { playQueue, prepareQueue, setPlayerExpanded, currentTrack, currentRelease, isPlaying } = usePlayerStore()
   const { user, isAuthenticated, logout, setAuthModalOpen, checkAuth } = useAuthStore()
 
   // Catalog curation (rename / covers / collections) is admin-only.
@@ -242,9 +238,11 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     for (const it of items) {
       for (const u of [it?.custom_image_url, it?.image_url]) {
         const p = parseCoverKey(u)
-        if (p && !missingCoverKeys.has(`${p.custom ? 1 : 0}:${p.key}`)) {
-          byCustom[p.custom ? 1 : 0].push(p.key)
-        }
+        if (!p) continue
+        const id = `${p.custom ? 1 : 0}:${p.key}`
+        // Already answered by an earlier probe (found or missing): skip it.
+        if (probedCoverKeys.has(id)) continue
+        byCustom[p.custom ? 1 : 0].push(p.key)
       }
     }
     let cancelled = false
@@ -259,6 +257,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
           }
         }
         if (!cancelled) {
+          for (const c of [0, 1]) for (const k of byCustom[c]) markCoverProbed(c, k)
           for (const k of missing) missingCoverKeys.add(k)
           if (missing.length > 0) setManifestTick((t) => t + 1)
         }
@@ -393,9 +392,20 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     }
   }
 
-  // Cover tap → open the tracklist sheet (playback starts from there).
-  const openAlbum = (album, artist = null) => {
-    setSelectedAlbum({ album, artist })
+  // Cover tap → open the fullscreen player with the album loaded but NOT
+  // playing (Spotify-style: the bar's play or the queue's item starts audio).
+  const openAlbum = async (album, artist = null) => {
+    try {
+      const tracks = await streamApi.getFolderTracks(album.folder_id, !album.is_tracks)
+      if (!tracks || tracks.length === 0) return
+      const artistName = (artist && artist.display_name) || album.title || 'Альбом'
+      const coverUrl = resolveCoverUrl(album, artist)
+      prepareQueue(tracks, 0, { title: album.title, artistName, coverUrl })
+      setPlayerExpanded(true)
+    } catch (e) {
+      console.error('Failed to load tracks for album:', e)
+      setSelectedAlbum({ album, artist })
+    }
   }
 
   // ─── Admin card curation: drag-and-drop + create (admin-only) ────────────
@@ -662,6 +672,11 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     const title = album.title || album.display_name
     const isDragging = dragItem?.type === 'album' && dragItem.id === album.id
     const isDropTarget = dropKey === `album:${album.id}`
+    const isNowPlaying =
+      !!currentTrack &&
+      !!currentRelease &&
+      currentRelease.title === title &&
+      (!artist || currentRelease.artistName === artist.display_name)
     return (
       <div
         key={album.id}
@@ -684,6 +699,13 @@ export function MusicLibrary({ onOpenCoverPicker }) {
             size="100%"
             className="tmusic-card-img"
           />
+          {isNowPlaying && (
+            <span className={`tmusic-card-eq ${isPlaying ? '' : 'paused'}`} title="Сейчас играет">
+              <i />
+              <i />
+              <i />
+            </span>
+          )}
           <button
             className="tmusic-card-play-btn"
             onClick={(e) => {
@@ -824,11 +846,20 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                 isAdmin={isAdmin}
                 onLogout={logout}
                 onLogin={() => setAuthModalOpen(true)}
-                onOpenAdmin={() => {
-                  setMobileTab('profile')
-                  setShowAdmin(true)
-                }}
+                onOpenAdmin={() => setShowAdmin(true)}
                 onProfileChanged={checkAuth}
+                libSection={libSection}
+                onSelectSection={(id) => {
+                  setLibSection(id)
+                  setMobileTab('library')
+                  setSelectedArtist(null)
+                }}
+                onCreateCard={() => {
+                  setViewMode('covers')
+                  setMobileTab('library')
+                  setSelectedArtist(null)
+                  setShowCreate(true)
+                }}
               />
             ) : (
               <button
@@ -849,7 +880,19 @@ export function MusicLibrary({ onOpenCoverPicker }) {
             )}
           </div>
 
-          {/* Covers ↔ Folders switch — under SSL / account row */}
+          {/* Covers ↔ Folders switch — centered in the page body below */}
+        </div>
+      </header>
+
+      {/* ─── Main Content Body ────────────────────────────────────────────────── */}
+      <main className="tmusic-main">
+        {/* Admin is a full-page view from anywhere: search, artist, folder mode. */}
+        {showAdmin ? (
+          <AdminPanel onBack={() => setShowAdmin(false)} onOpenCoverPicker={onOpenCoverPicker} />
+        ) : (
+        <>
+        {/* Centered catalog view switch (works in every tab, incl. search) */}
+        <div className="tmusic-view-row">
           <div className="tmusic-view-toggle" role="group" aria-label="Вид каталога">
             <button
               type="button"
@@ -869,10 +912,14 @@ export function MusicLibrary({ onOpenCoverPicker }) {
             </button>
           </div>
         </div>
-      </header>
 
-      {/* ─── Main Content Body ────────────────────────────────────────────────── */}
-      <main className="tmusic-main">
+        {/* Library panels (opened from the avatar menu): recent / playlists / favorites */}
+        {!showAdmin && libSection && !selectedArtist && mobileTab !== 'search' && (
+          <div className="tmusic-lib-section-wrap">
+            <LibraryPanel section={libSection} />
+          </div>
+        )}
+
         {selectedArtist ? (
           /* ─── Artist Detail View ─────────────────────────────────────────── */
           <div>
@@ -1042,9 +1089,6 @@ export function MusicLibrary({ onOpenCoverPicker }) {
           </div>
         ) : mobileTab === 'profile' ? (
           /* ─── Mobile Profile Screen ───────────────────────────────────────── */
-          showAdmin ? (
-            <AdminPanel onBack={() => setShowAdmin(false)} onOpenCoverPicker={onOpenCoverPicker} />
-          ) : (
           <div className="tmusic-profile-screen">
             <div className="tmusic-profile-header">
               <div className="tmusic-profile-avatar" style={{ overflow: 'hidden', padding: 0 }}>
@@ -1107,7 +1151,6 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               )}
             </div>
           </div>
-          )
         ) : mobileTab === 'search' ? (
           /* ─── Mobile Search Screen ─────────────────────────────────────────── */
           <div className="tmusic-search-screen">
@@ -1178,66 +1221,38 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                 <div style={{ fontSize: '15px', fontWeight: '700', color: 'var(--ink)' }}>Ничего не найдено</div>
                 <div style={{ fontSize: '13px' }}>Попробуйте изменить запрос</div>
               </div>
-            ) : isAlbumSection ? (
-              <div className="tmusic-grid-albums">
-                {items.map((album) => renderAlbumCard(album))}
-              </div>
-            ) : (
-              <div className="tmusic-grid-artists">
-                {items.map((artist) => renderArtistCard(artist))}
-              </div>
-            )}
-          </div>
-        ) : (
-          /* ─── Catalog: Медиатека (category strip) / Артисты / Альбомы ──────── */
-          <div>
-            {/* Top bar: Недавнее | Плейлисты | Любимые */}
-            <div className="tmusic-library-bar">
-              <button
-                type="button"
-                className={`tmusic-library-bar-btn ${libSection === 'recent' ? 'active' : ''}`}
-                onClick={() => setLibSection(libSection === 'recent' ? null : 'recent')}
-              >
-                <History size={15} /> Недавнее
-              </button>
-              <button
-                type="button"
-                className={`tmusic-library-bar-btn ${libSection === 'playlists' ? 'active' : ''}`}
-                onClick={() => setLibSection(libSection === 'playlists' ? null : 'playlists')}
-              >
-                <ListMusic size={15} /> Плейлисты
-              </button>
-              <button
-                type="button"
-                className={`tmusic-library-bar-btn ${libSection === 'favorites' ? 'active' : ''}`}
-                onClick={() => setLibSection(libSection === 'favorites' ? null : 'favorites')}
-              >
-                <Star size={15} /> Любимые
-              </button>
-              <div className="tmusic-library-bar-hint-wrap" style={{ marginLeft: 'auto' }}>
-                {(libSection || folderMode) && (
-                  <span
-                    className="tmusic-library-bar-hint"
-                    style={{
-                      fontSize: '11px',
-                      color: 'var(--dim)',
-                      maxWidth: '42%',
-                      textAlign: 'right',
-                      display: 'inline-block',
-                    }}
-                  >
-                    {libSection === 'recent' && 'История и продолжение прослушивания'}
-                    {libSection === 'playlists' && 'Порядок треков: DnD или ↑↓'}
-                    {libSection === 'favorites' && 'Звёздочки из альбомов и плеера'}
-                    {!libSection && folderMode && 'Клик по папке → плейлист + play'}
-                  </span>
-                )}
-              </div>
+             ) : folderMode ? (
+               <FolderBrowser />
+             ) : items.length === 0 ? (
+               <div
+                 style={{
+                   display: 'flex',
+                   flexDirection: 'column',
+                   alignItems: 'center',
+                   justifyContent: 'center',
+                   padding: '60px 20px',
+                   gap: '12px',
+                   color: 'var(--dim)',
+                 }}
+               >
+                 <Music size={40} style={{ opacity: 0.3 }} />
+                 <div style={{ fontSize: '15px', fontWeight: '700', color: 'var(--ink)' }}>Ничего не найдено</div>
+                 <div style={{ fontSize: '13px' }}>Попробуйте изменить запрос</div>
+               </div>
+             ) : isAlbumSection ? (
+               <div className="tmusic-grid-albums">
+                 {items.map((album) => renderAlbumCard(album))}
+               </div>
+             ) : (
+               <div className="tmusic-grid-artists">
+                 {items.map((artist) => renderArtistCard(artist))}
+               </div>
+             )}
             </div>
-
-            <LibraryPanel section={libSection} />
-
-            {/* Admin: create catalog cards (artist / compilation / release / collection) */}
+          ) : (
+            /* ─── Catalog: Медиатека (category strip) / Артисты / Альбомы ──────── */
+            <div>
+              {/* Admin: create catalog cards (opened from the avatar menu) */}
             {isAdmin && !folderMode && (
               <div style={{ marginBottom: 14 }}>
                 {showCreate ? (
@@ -1354,22 +1369,13 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                         <X size={14} />
                       </button>
                     </div>
-                    <div style={{ fontSize: 11.5, color: 'var(--dim)', marginTop: 8 }}>
-                      После создания перетаскивайте карточки артистов, сборники и релизы прямо на эту карточку в сетке.
-                    </div>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    className="tmusic-library-bar-btn"
-                    onClick={() => setShowCreate(true)}
-                    title="Создать карточку (админ)"
-                  >
-                    <Plus size={15} /> Создать карточку
-                  </button>
-                )}
-              </div>
-            )}
+                     <div style={{ fontSize: 11.5, color: 'var(--dim)', marginTop: 8 }}>
+                       После создания перетаскивайте карточки артистов, сборники и релизы прямо на эту карточку в сетке.
+                     </div>
+                   </div>
+                 ) : null}
+               </div>
+             )}
 
             {folderMode ? (
               <FolderBrowser />
@@ -1443,6 +1449,8 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               </div>
             ))}
           </div>
+        )}
+        </>
         )}
       </main>
 

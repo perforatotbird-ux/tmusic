@@ -1,5 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, GripVertical, History, ListMusic, Play, Plus, Star, Trash2 } from 'lucide-react'
+import {
+  ArrowDown,
+  ArrowUp,
+  GripVertical,
+  History,
+  ListMusic,
+  Play,
+  Plus,
+  Star,
+  Trash2,
+  ListStart,
+  ListEnd,
+} from 'lucide-react'
 import { playbackApi } from '../api/playback'
 import { playlistsApi } from '../api/playlists'
 import { usePlayerStore } from '../store/playerStore'
@@ -9,6 +21,15 @@ function formatTime(sec) {
   const s = Math.max(0, Math.floor(Number(sec) || 0))
   const m = Math.floor(s / 60)
   return `${m}:${String(s % 60).padStart(2, '0')}`
+}
+
+function fmtDur(sec) {
+  if (!sec || isNaN(sec)) return ''
+  return formatTime(sec)
+}
+
+function stripExt(name) {
+  return (name || '').replace(/\.[^/.]+$/, '')
 }
 
 const chipBtn = {
@@ -45,7 +66,7 @@ const iconBtn = {
  */
 export function LibraryPanel({ section, onRefreshKey }) {
   const { isAuthenticated } = useAuthStore()
-  const { playQueue } = usePlayerStore()
+  const { playQueue, playNext, addToQueue, setNotice } = usePlayerStore()
   const [continueItems, setContinueItems] = useState([])
   const [recentItems, setRecentItems] = useState([])
   const [playlists, setPlaylists] = useState([])
@@ -132,6 +153,16 @@ export function LibraryPanel({ section, onRefreshKey }) {
       title: track.name,
       artistName: 'Недавнее',
       coverUrl: null,
+    })
+  }
+
+  const queueRow = (row, mode) => {
+    const track = asTrack(row)
+    if (mode === 'next') playNext(track)
+    else addToQueue(track)
+    setNotice({
+      kind: 'info',
+      text: `«${stripExt(track.name)}» — ${mode === 'next' ? 'следующим' : 'в конец очереди'}`,
     })
   }
 
@@ -293,6 +324,26 @@ export function LibraryPanel({ section, onRefreshKey }) {
                           : 'недавно'}
                       </div>
                     </div>
+                    <span className="tm-queue-actions" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        className="tm-queue-mini"
+                        onClick={() => queueRow(row, 'next')}
+                        aria-label="Играть следующим"
+                        title="Играть следующим"
+                      >
+                        <ListStart size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        className="tm-queue-mini"
+                        onClick={() => queueRow(row, 'queue')}
+                        aria-label="Добавить в очередь"
+                        title="Добавить в очередь"
+                      >
+                        <ListEnd size={13} />
+                      </button>
+                    </span>
                   </div>
                 )
               })}
@@ -328,8 +379,30 @@ export function LibraryPanel({ section, onRefreshKey }) {
                   <Star size={13} fill="var(--accent)" />
                   <div className="tmusic-panel-row-main">
                     <div className="tmusic-panel-row-title">{row.file_name || `Трек ${row.file_id}`}</div>
-                    <div className="tmusic-panel-row-sub">избранное</div>
+                    <div className="tmusic-panel-row-sub">
+                      {fmtDur(row.duration) ? `${fmtDur(row.duration)} · ` : ''}избранное
+                    </div>
                   </div>
+                  <span className="tm-queue-actions" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      type="button"
+                      className="tm-queue-mini"
+                      onClick={() => queueRow({ file_id: row.file_id, file_name: row.file_name }, 'next')}
+                      aria-label="Играть следующим"
+                      title="Играть следующим"
+                    >
+                      <ListStart size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      className="tm-queue-mini"
+                      onClick={() => queueRow({ file_id: row.file_id, file_name: row.file_name }, 'queue')}
+                      aria-label="Добавить в очередь"
+                      title="Добавить в очередь"
+                    >
+                      <ListEnd size={13} />
+                    </button>
+                  </span>
                 </div>
               ))}
             </div>

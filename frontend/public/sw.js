@@ -11,6 +11,9 @@
 const CACHE = 'tmusic-shell-v1'
 const COVER_CACHE = 'tmusic-covers-v1'
 const MAX_COVERS = 120
+// Hashed asset filenames change every build; without a cap the shell cache
+// accumulates a new copy of the whole bundle with each deploy.
+const MAX_SHELL = 24
 
 const SHELL_URLS = ['/', '/manifest.json', '/icon.svg']
 
@@ -105,11 +108,29 @@ async function cacheFirstStatic(request) {
   if (response && response.ok && sameOrigin(new URL(request.url))) {
     try {
       await cache.put(request, response.clone())
+      await trimShellCache()
     } catch {
       /* ignore */
     }
   }
   return response
+}
+
+/** Drop oldest shell/asset entries so repeated deploys don't pile up bundles. */
+async function trimShellCache() {
+  const cache = await caches.open(CACHE)
+  const keys = await cache.keys()
+  if (keys.length <= MAX_SHELL) return
+  const excess = keys.length - MAX_SHELL
+  for (let i = 0; i < excess; i++) {
+    // Never evict the navigation shell itself — offline launch depends on it.
+    if (keys[i].url.endsWith('/sw.js')) continue
+    try {
+      await cache.delete(keys[i])
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 async function networkFirstNavigation(request) {

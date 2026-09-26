@@ -46,6 +46,34 @@ class StreamService:
         return track.size
 
     @staticmethod
+    def build_track_responses(db: Session, vfiles: list) -> list:
+        """TrackResponse list with plaintext size + best-known duration.
+
+        VFS stores no probe metadata; duration comes from playback history
+        (playback_positions), so freshly imported tracks show no length until
+        they have been streamed once.
+        """
+        from app.schemas.stream import TrackResponse
+        from app.services.playback_service import playback_service
+
+        durations = playback_service.durations_map(db, [vf.id for vf in vfiles])
+        out = []
+        for vf in vfiles:
+            out.append(
+                TrackResponse(
+                    id=vf.id,
+                    name=vf.name,
+                    size=StreamService.get_track_size(vf),
+                    mime_type=vf.mime_type or "audio/mpeg",
+                    folder_id=vf.folder_id,
+                    stream_url=f"/api/stream/{vf.id}",
+                    created_at=vf.created_at,
+                    duration=durations.get(vf.id),
+                )
+            )
+        return out
+
+    @staticmethod
     def parse_range_header(range_header: Optional[str], total_size: int) -> Tuple[int, int, int]:
         if total_size <= 0:
             return 0, -1, 0

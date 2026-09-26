@@ -1,18 +1,6 @@
 import { request } from './client'
-
-const cache = new Map()
-const CACHE_TTL = 5 * 60 * 1000
-
-function memoize(key, fetcher) {
-  const cached = cache.get(key)
-  if (cached && Date.now() - cached.ts < CACHE_TTL) {
-    return Promise.resolve(cached.data)
-  }
-  return fetcher().then(data => {
-    cache.set(key, { data, ts: Date.now() })
-    return data
-  })
-}
+import { memoize, bustMediaCaches, cacheTtl } from './cache'
+import { resetCoverProbes } from '../services/coverMissing'
 
 /** Drop null/undefined/'' so URLSearchParams never emits the string "null". */
 function toQuery(params = {}) {
@@ -24,43 +12,32 @@ function toQuery(params = {}) {
   return q.toString()
 }
 
-function invalidateCatalogCache() {
-  for (const key of [...cache.keys()]) {
-    if (key.startsWith('/api/library/artists') || key.startsWith('/api/library/albums')) {
-      cache.delete(key)
-    }
-  }
-}
-
-export function bustCatalogCache() {
-  invalidateCatalogCache()
-}
-
 export const libraryApi = {
   getArtists: (params = {}) => {
     const qs = toQuery(params)
     const key = `/api/library/artists?${qs}`
-    return memoize(key, () => request(qs ? `/api/library/artists?${qs}` : '/api/library/artists'))
+    return memoize(key, cacheTtl.catalog, () =>
+      request(qs ? `/api/library/artists?${qs}` : '/api/library/artists')
+    )
   },
 
   getAlbums: (params = {}) => {
     const qs = toQuery(params)
     const key = `/api/library/albums?${qs}`
-    return memoize(key, () => request(qs ? `/api/library/albums?${qs}` : '/api/library/albums'))
+    return memoize(key, cacheTtl.catalog, () =>
+      request(qs ? `/api/library/albums?${qs}` : '/api/library/albums')
+    )
   },
 
   getArtistDetail: (artistId) => {
     const key = `/api/library/artists/${artistId}`
-    return memoize(key, () => request(key))
+    return memoize(key, cacheTtl.detail, () => request(key))
   },
 
-  getStats: () => {
-    const key = '/api/library/stats'
-    return memoize(key, () => request(key))
-  },
+  getStats: () => memoize('/api/library/stats', cacheTtl.stats, () => request('/api/library/stats')),
 
   setCoverUrl: (targetType, targetId, imageUrl) => {
-    invalidateCatalogCache()
+    bustCatalogCache()
     const formData = new FormData()
     formData.append('target_type', targetType)
     formData.append('target_id', targetId)
@@ -72,7 +49,7 @@ export const libraryApi = {
   },
 
   uploadCoverFile: (targetType, targetId, file) => {
-    invalidateCatalogCache()
+    bustCatalogCache()
     const formData = new FormData()
     formData.append('target_type', targetType)
     formData.append('target_id', targetId)
@@ -84,7 +61,7 @@ export const libraryApi = {
   },
 
   resetCover: (targetType, targetId) => {
-    invalidateCatalogCache()
+    bustCatalogCache()
     return request(`/api/library/cover?target_type=${targetType}&target_id=${targetId}`, {
       method: 'DELETE',
     })
@@ -98,4 +75,14 @@ export const libraryApi = {
     })
     return request(`/api/library/covers/manifest?${qs.toString()}`)
   },
+}
+
+/**
+ * Kept as a named export: MusicLibrary and AdminCatalog call it after
+ * mutations. One contract for everything derived from the data model:
+ * catalog lists, tracklists, the VFS tree and cover-existence probes.
+ */
+export function bustCatalogCache() {
+  bustMediaCaches()
+  resetCoverProbes()
 }

@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from app.core.config import settings
+from app.core.disk_cache import external_cache
 from app.services.lastfm_service import parse_track_meta
 
 logger = logging.getLogger("tmusic.lyrics")
@@ -60,29 +61,15 @@ def _normalize(node: Dict[str, Any]) -> Optional[dict]:
     }
 
 
-def get_lyrics(
-    artist: Optional[str] = None,
-    track: Optional[str] = None,
-    album: Optional[str] = None,
-    duration_sec: Optional[float] = None,
-    file_name: Optional[str] = None,
+def _lookup_upstream(
+    artist: str,
+    track: str,
+    album: Optional[str],
+    parsed_album: Optional[str],
+    duration: Optional[int],
+    timeout: float,
 ) -> Optional[dict]:
-    """Best-effort lyrics lookup: exact /api/get then /api/search."""
-    if not lyrics_enabled():
-        return None
-    parsed_artist, parsed_track, parsed_album = parse_track_meta(
-        file_name, artist, track, album
-    )
-    artist = (artist or parsed_artist or "").strip()
-    track = (track or parsed_track or "").strip()
-    if not track or artist == "Unknown" and not track:
-        return None
-    if not track:
-        return None
-
-    timeout = float(getattr(settings, "LYRICS_HTTP_TIMEOUT_SEC", 8) or 8)
-    duration = int(duration_sec) if duration_sec and duration_sec > 0 else None
-
+    """Exact /api/get then /api/search against LRCLIB. No caching here."""
     if artist and artist != "Unknown":
         data = _get(
             "get",
@@ -119,3 +106,59 @@ def get_lyrics(
             if normalized:
                 return normalized
     return None
+
+
+def get_lyrics(
+    artist: Optional[str] = None,
+    track: Optional[str] = None,
+    album: Optional[str] = None,
+    duration_sec: Optional[float] = None,
+    file_name: Optional[str] = None,
+) -> Optional[dict]:
+    """Cached best-effort lyrics lookup.
+
+    The disk cache keys on the RESOLVED (post parse_track_meta) identity of
+    the request, so "Artist - Track.mp3" and an explicit artist+track lookup
+    for the same song share one entry. A `None` result is also cached (short
+    TTL) so tracks without lyrics stop re-probing LRCLIB on every open.
+    """
+    if not lyrics_enabled():
+        return None
+    parsed_artist, parsed_track, parsed_album = parse_track_meta(
+        file_name, artist, track, album
+    )
+    artist = (artist or parsed_artist or "").strip()
+    track = (track or parsed_track or "").strip()
+    if not track or artist == "Unknown" and not track:
+        return None
+    if not track:
+        return None
+
+    timeout = float(getattr(settings, "LYRICS_HTTP_TIMEOUT_SEC", 8) or 8)
+    duration = int(duration_sec) if duration_sec and duration_sec > 0 else None
+
+    cache_parts = {
+        "artist": artist,
+        "track": track,
+        "album": (album or "").strip(),
+        "duration": duration,
+    }
+    hit, cached = external_cache.get("lyrics", cache_parts)
+    if hit:
+        return cached
+
+    result = _lookup_upstream(
+        artist=artist,
+        track=track,
+        album=album,
+        parsed_album=parsed_album,
+        duration=duration,
+        timeout=timeout,
+    )
+    external_cache.put(
+        "lyrics",
+        cache_parts,
+        result,
+        ttl_sec=int(getattr(settings, "LYRICS_CACHE_TTL_SEC", 90 * 24 * 3600)),
+    )
+    return result

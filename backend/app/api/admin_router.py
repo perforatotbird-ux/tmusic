@@ -25,6 +25,7 @@ from app.models.share import ShareLink
 from app.models.vfs import TGAccount, VFile
 from app.services import admin_service
 from app.services.ram_cache_service import ram_cache
+from app.core.disk_cache import external_cache
 from app.tg.manager import tg_manager
 from app.utils.time import utcnow
 from app.api.dependencies import user_is_admin
@@ -140,6 +141,7 @@ async def admin_overview(
         "database": db_info,
         "telegram": tg_manager.cluster_status(),
         "ram_cache": cache_info,
+        "external_cache": external_cache.stats(),
         "settings": cfg,
         "backups": {
             "count": len(backups),
@@ -584,6 +586,48 @@ async def admin_analytics(
     }
 
 
+@router.get("/cache/stats")
+async def admin_cache_stats(
+    user: AppUser = Depends(get_admin_user),
+):
+    """Size snapshot of the caches the admin panel can act on."""
+    return {
+        "ram_cache": ram_cache.stats(),
+        "external_cache": external_cache.stats(),
+    }
+
+
+@router.post("/cache/flush")
+async def admin_cache_flush(
+    request: Request,
+    kind: str = Query("external", description="external | ram | all"),
+    namespace: Optional[str] = Query(None, description="External cache namespace: lyrics | lastfm"),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_admin_user),
+):
+    """Drop external provider cache and/or the RAM audio buffer.
+
+    `namespace` limits an external flush to one provider (e.g. only lyrics).
+    Cover disk cache is permanent by design and is not flushable here.
+    """
+    kind = (kind or "external").lower()
+    if kind not in ("external", "ram", "all"):
+        raise HTTPException(status_code=400, detail="kind must be external | ram | all.")
+    if namespace and namespace not in ("lyrics", "lastfm"):
+        raise HTTPException(status_code=400, detail="namespace must be lyrics | lastfm.")
+
+    result: Dict[str, Any] = {}
+    if kind in ("external", "all"):
+        result["external_removed"] = external_cache.clear(namespace)
+    if kind in ("ram", "all"):
+        ram_cache._cache.clear()
+        ram_cache._current_bytes = 0
+        result["ram_removed"] = True
+    _audit(db, request, user, "cache.flushed", "cache", kind, result)
+    db.commit()
+    return {"status": "ok", **result}
+
+
 @router.get("/system/health")
 async def admin_system_health(
     db: Session = Depends(get_db),
@@ -597,6 +641,7 @@ async def admin_system_health(
         "database": database,
         "telegram": tg_manager.cluster_status(),
         "ram_cache": ram_cache.stats(),
+        "external_cache": external_cache.stats(),
         "backup_runs": admin_service.list_backup_runs(db, limit=10),
         "settings": admin_service.get_all_settings(db),
     }

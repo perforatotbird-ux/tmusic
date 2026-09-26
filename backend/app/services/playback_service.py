@@ -55,6 +55,27 @@ class PlaybackService:
         return row
 
     @staticmethod
+    def durations_map(db: Session, file_ids: List[int]) -> dict:
+        """Best-known duration per file (max over all users' saved positions).
+
+        VFS keeps no probe metadata, so the only trustworthy duration is what
+        the player reported back via playback_positions. Returns {} for empty
+        input; file ids never played keep an absent key (frontend falls back).
+        """
+        if not file_ids:
+            return {}
+        rows = db.execute(
+            select(PlaybackPosition.file_id, func.max(PlaybackPosition.duration_sec))
+            .where(
+                PlaybackPosition.file_id.in_(file_ids),
+                PlaybackPosition.duration_sec.isnot(None),
+                PlaybackPosition.duration_sec > 0,
+            )
+            .group_by(PlaybackPosition.file_id)
+        ).all()
+        return {int(fid): float(dur) for fid, dur in rows if dur}
+
+    @staticmethod
     def list_positions(db: Session, user_id: int, limit: int = 30) -> List[Tuple[PlaybackPosition, Optional[str]]]:
         stmt: Select = (
             select(PlaybackPosition, VFile.name)

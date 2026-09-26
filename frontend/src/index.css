@@ -81,6 +81,92 @@ input[type="range"]:hover::-webkit-slider-thumb {
   transform: scale(1.3);
 }
 
+/* ─── Scrubber (drag-to-preview, seek committed on release) ────────────────
+   The native input is transparent and sits on top of a 3-layer rail:
+   base line → buffered (how far you can scrub freely) → progress.       */
+.tm-scrub {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  height: 22px;
+}
+.tm-scrub-track {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--line-bright);
+  overflow: hidden;
+}
+.tm-scrub-buffer {
+  position: absolute;
+  inset: 0;
+  width: 0;
+  background: rgba(236, 231, 221, 0.18);
+  transition: width 0.3s ease;
+}
+.tm-scrub-fill {
+  position: absolute;
+  inset: 0;
+  width: 0;
+  background: var(--accent);
+}
+.tm-scrub:hover .tm-scrub-track,
+.tm-scrub:focus-within .tm-scrub-track {
+  height: 7px;
+}
+/* The transparent native input sits on top of the custom rail. Note the
+   input[type="range"] compound selector: the global element rule (0,1,1)
+   would otherwise win over a bare class (0,1,0) and paint its own gray
+   4px bar behind the rail — the "double progress bar" bug. */
+input[type="range"].tm-scrub-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  border-radius: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+  touch-action: none;
+}
+.tm-scrub input[type="range"].tm-scrub-input::-webkit-slider-runnable-track {
+  background: transparent;
+  height: 100%;
+}
+.tm-scrub input[type="range"].tm-scrub-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 0 var(--accent-muted);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.tm-scrub input[type="range"].tm-scrub-input::-moz-range-track {
+  background: transparent;
+}
+.tm-scrub input[type="range"].tm-scrub-input::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.tm-scrub:hover input[type="range"].tm-scrub-input::-webkit-slider-thumb,
+.tm-scrub input[type="range"].tm-scrub-input:focus-visible::-webkit-slider-thumb {
+  transform: scale(1.35);
+  box-shadow: 0 0 0 6px var(--accent-muted);
+}
+.tm-scrub input[type="range"].tm-scrub-input:disabled {
+  cursor: default;
+}
+
 /* Typography Helpers */
 .title-zine {
   font-family: "Arial Narrow", "Oswald", -apple-system, sans-serif;
@@ -315,6 +401,18 @@ input[type="range"]:hover::-webkit-slider-thumb {
   border-bottom: 1px solid var(--line);
   flex-wrap: wrap;
 }
+
+/* Centered catalog view switch (Обложки / Папки) at the top of the page body */
+.tmusic-view-row {
+  display: flex;
+  justify-content: center;
+  margin: 4px 0 18px;
+}
+
+/* Library panel (recent / playlists / favorites) opened from the avatar menu */
+.tmusic-lib-section-wrap {
+  margin-bottom: 16px;
+}
 .tmusic-library-bar-btn {
   display: inline-flex;
   align-items: center;
@@ -510,6 +608,12 @@ input[type="range"]:hover::-webkit-slider-thumb {
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
 }
+@media (min-width: 641px) {
+  .tmusic-tabs-nav {
+    justify-content: center;
+    overflow-x: visible;
+  }
+}
 .tmusic-tabs-nav::-webkit-scrollbar {
   display: none;
 }
@@ -538,7 +642,8 @@ input[type="range"]:hover::-webkit-slider-thumb {
   font-weight: 700;
 }
 
-/* Bottom Player Bar */
+/* Bottom Player Bar — full Spotify-style surface (was transparent on
+   desktop, so content bled through: the "stub" the user reported). */
 .tmusic-playerbar {
   position: fixed;
   bottom: 0;
@@ -552,6 +657,12 @@ input[type="range"]:hover::-webkit-slider-thumb {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  background-color: rgba(18, 16, 14, 0.98);
+  background-image: linear-gradient(rgba(236, 231, 221, 0.05), rgba(236, 231, 221, 0)),
+    radial-gradient(60% 140% at 85% 0%, rgba(212, 255, 63, 0.06), transparent 60%);
+  border-top: 1px solid var(--line);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
 }
 .tmusic-player-minibar {
   display: none;
@@ -1440,7 +1551,307 @@ audio {
   z-index: -1;
 }
 
-/* Reduced motion: keep it calm */
+/* Volume control (shared by every player mode) */
+.tm-volume {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tm-volume button {
+  background: none;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  flex-shrink: 0;
+  min-width: 24px;
+  min-height: 24px;
+}
+.tm-volume button:hover {
+  color: var(--ink);
+}
+.tm-volume input[type="range"] {
+  width: 70px;
+}
+/* Compact (mobile mini-bar): a short slider between the transport buttons */
+.tm-compact-volume input[type="range"] {
+  width: 52px;
+}
+/* Now Playing (fullscreen): under the transport, centered, a bit wider */
+.tm-np-volume {
+  margin-top: 18px;
+}
+.tm-np-volume input[type="range"] {
+  width: min(240px, 58vw);
+}
+/* Side panels (queue/lyrics): volume lives in the art column on desktop, so
+   the header slider appears only on mobile where the art column is hidden. */
+.tm-panel-volume {
+  display: none;
+}
+.tm-queue-clear {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 9px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.tm-queue-clear:hover {
+  color: var(--ink);
+  border-color: var(--line-bright);
+}
+@media (max-width: 900px) {
+  .tm-panel-volume {
+    display: flex;
+    margin-left: auto;
+  }
+  .tm-panel-volume + .tm-queue-clear {
+    margin-left: 0;
+  }
+  .tm-panel-volume input[type="range"] {
+    width: 56px;
+  }
+}
+@media (max-width: 900px) {
+  .tm-side-volume {
+    display: flex;
+    margin-left: auto;
+  }
+  .tm-side-volume input[type="range"] {
+    width: 96px;
+  }
+}
+
+/* ─── Now Playing: queue editing + buffering + notices ────────────────────── */
+.tm-eq {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 12px;
+}
+.tm-eq i {
+  width: 3px;
+  height: 30%;
+  border-radius: 1px;
+  background: var(--accent);
+  animation: tm-eq-bounce 0.9s ease-in-out infinite;
+}
+.tm-eq i:nth-child(2) {
+  height: 70%;
+  animation-delay: 0.15s;
+}
+.tm-eq i:nth-child(3) {
+  height: 45%;
+  animation-delay: 0.3s;
+}
+@keyframes tm-eq-bounce {
+  0%, 100% { transform: scaleY(0.5); }
+  50% { transform: scaleY(1.15); }
+}
+
+.tm-buffer-pip {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--bg-card);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tm-buffer-badge {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(20, 18, 16, 0.85);
+  border: 1px solid var(--line-bright);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.tm-queue-row {
+  transition: background-color 0.12s ease;
+}
+.tm-queue-row:hover {
+  background-color: rgba(255, 255, 255, 0.04);
+}
+.tm-queue-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.tm-queue-row:hover .tm-queue-actions,
+.tm-queue-actions:focus-within {
+  opacity: 1;
+}
+.tm-queue-mini {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--dim);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+.tm-queue-mini:hover {
+  color: var(--ink);
+  border-color: var(--line-bright);
+}
+.tm-queue-mini-danger:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.tmusic-toast {
+  position: fixed;
+  bottom: calc(var(--player-bar-h) + 20px + var(--safe-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  background: rgba(28, 25, 22, 0.94);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  max-width: 92vw;
+  animation: tmusic-fade-in 0.15s ease;
+}
+.tmusic-toast-error {
+  background: rgba(255, 107, 107, 0.14);
+  color: var(--danger);
+}
+.tmusic-toast-close {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  opacity: 0.7;
+}
+.tmusic-toast-close:hover {
+  opacity: 1;
+}
+
+/* Text that people may want to copy stays selectable */
+.tmusic-lyrics-scroll,
+.tmusic-panel-row-title,
+.tmusic-card-title,
+.tmusic-album-head h2 {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Now-playing indicator over album card covers (Spotify-style) */
+.tmusic-card-eq {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2.5px;
+  height: 16px;
+  padding: 5px 7px;
+  border-radius: 8px;
+  background: rgba(20, 18, 16, 0.72);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.tmusic-card-eq i {
+  width: 3px;
+  height: 50%;
+  border-radius: 1px;
+  background: var(--accent);
+  animation: tm-eq-bounce 0.9s ease-in-out infinite;
+}
+.tmusic-card-eq i:nth-child(2) {
+  height: 90%;
+  animation-delay: 0.15s;
+}
+.tmusic-card-eq i:nth-child(3) {
+  height: 60%;
+  animation-delay: 0.3s;
+}
+.tmusic-card-eq.paused i {
+  animation: none;
+  height: 30%;
+}
+
+/* Per-track queue menu (⋮) inside album/folder lists */
+.tm-track-menu {
+  z-index: 9650;
+  min-width: 210px;
+  background: var(--bg-surface);
+  border: 1px solid var(--line-bright);
+  border-radius: 12px;
+  padding: 6px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
+  animation: tmusic-fade-in 0.12s ease;
+}
+.tm-track-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: none;
+  background: none;
+  border-radius: 8px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+.tm-track-menu-item:hover {
+  background: var(--accent-muted);
+  color: var(--accent);
+}
+.tm-track-menu-item svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+/* ─── Reduced motion: keep it calm */
 @media (prefers-reduced-motion: reduce) {
   .tmusic-album-overlay,
   .tmusic-album-sheet {
@@ -1448,5 +1859,41 @@ audio {
   }
   .transition-card:hover {
     transform: none;
+  }
+  .tm-eq i {
+    animation: none;
+    height: 60%;
+  }
+  .tm-scrub-input::-webkit-slider-thumb,
+  .tm-scrub-fill,
+  .tm-queue-actions,
+  .tm-queue-row,
+  .tmusic-toast {
+    transition: none;
+  }
+}
+
+/* ─── Keyboard focus: visible on dark surfaces ─────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+input[type="range"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+
+/* Mobile: queue action buttons must be tappable without hover */
+@media (hover: none) {
+  .tm-queue-actions {
+    opacity: 1;
+  }
+}
+
+/* Mobile: toasts sit above the floating mini-player + bottom nav */
+@media (max-width: 640px) {
+  .tmusic-toast {
+    bottom: calc(var(--bottom-nav-h) + 56px + var(--safe-bottom) + 16px);
   }
 }

@@ -17,6 +17,10 @@ import {
   Loader2,
   User as UserIcon,
   Wifi,
+  History,
+  ListMusic,
+  Star,
+  Plus,
 } from 'lucide-react'
 import { authApi } from '../api/auth'
 import { IS_NATIVE, openServerDiscovery } from '../services/nativeBridge'
@@ -85,7 +89,32 @@ const menuBtn = {
   textAlign: 'left',
 }
 
-export function ProfileMenu({ user, isAdmin, onLogin, onLogout, onOpenAdmin, onProfileChanged }) {
+const menuSectionLabel = {
+  fontSize: 10.5,
+  fontWeight: 800,
+  letterSpacing: '0.08em',
+  textTransform: 'uppercase',
+  color: 'var(--dim)',
+  padding: '10px 12px 4px',
+}
+
+const LIB_SECTIONS = [
+  { id: 'recent', label: 'Недавнее', icon: History },
+  { id: 'playlists', label: 'Плейлисты', icon: ListMusic },
+  { id: 'favorites', label: 'Любимые', icon: Star },
+]
+
+export function ProfileMenu({
+  user,
+  isAdmin,
+  onLogin,
+  onLogout,
+  onOpenAdmin,
+  onProfileChanged,
+  libSection = null,
+  onSelectSection,
+  onCreateCard,
+}) {
   const [open, setOpen] = useState(false)
   const [avatarMode, setAvatarMode] = useState(false)
   const [url, setUrl] = useState('')
@@ -231,6 +260,50 @@ export function ProfileMenu({ user, isAdmin, onLogin, onLogout, onOpenAdmin, onP
 
           {!avatarMode ? (
             <>
+              {/* Library sections (recent / playlists / favorites) */}
+              {onSelectSection && (
+                <>
+                  <div style={menuSectionLabel}>Библиотека</div>
+                  {LIB_SECTIONS.map(({ id, label, icon: Icon }) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => {
+                        onSelectSection(libSection === id ? null : id)
+                        close()
+                      }}
+                      style={{
+                        ...menuBtn,
+                        color: libSection === id ? 'var(--accent)' : 'var(--ink)',
+                        background: libSection === id ? 'var(--accent-muted)' : 'transparent',
+                      }}
+                    >
+                      <Icon size={15} style={{ color: libSection === id ? 'var(--accent)' : 'var(--dim)' }} />
+                      {label}
+                    </button>
+                  ))}
+                </>
+              )}
+
+              {/* Admin: catalog-card creation shortcut */}
+              {isAdmin && onCreateCard && (
+                <>
+                  <div style={menuSectionLabel}>Каталог</div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onCreateCard()
+                      close()
+                    }}
+                    style={menuBtn}
+                  >
+                    <Plus size={15} style={{ color: 'var(--accent)' }} /> Создать карточку
+                  </button>
+                </>
+              )}
+
+              <div style={{ height: 1, background: 'var(--line)', margin: '8px 0' }} />
+
               <button type="button" onClick={() => setAvatarMode(true)} style={menuBtn}>
                 <ImageIcon size={15} style={{ color: 'var(--dim)' }} /> Сменить аватар
               </button>

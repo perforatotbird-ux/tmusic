@@ -12,14 +12,24 @@ import {
   Loader2,
   Music,
   Play,
+  Pause,
   Plus,
   Minus,
   HardDrive,
+  ListStart,
+  ListEnd,
 } from 'lucide-react'
 import { vfsApi } from '../api/vfs'
+import { bustMediaCaches } from '../api/cache'
 import { playlistsApi } from '../api/playlists'
 import { usePlayerStore } from '../store/playerStore'
 import { useAuthStore } from '../store/authStore'
+
+function fmtDur(sec) {
+  if (!sec || isNaN(sec)) return ''
+  const s = Math.max(0, Math.floor(sec))
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
 
 function Expander({ expanded, loading, hasChildren, onClick, size = 26 }) {
   return (
@@ -57,7 +67,22 @@ function Expander({ expanded, loading, hasChildren, onClick, size = 26 }) {
   )
 }
 
-function TreeRow({ node, depth, expandedIds, childrenMap, loadingIds, onToggle, onPlayFolder, onPlayTrack, playingId }) {
+function TreeRow({
+  node,
+  depth,
+  expandedIds,
+  childrenMap,
+  loadingIds,
+  onToggle,
+  onPlayFolder,
+  onPlayTrack,
+  onPlayNext,
+  onEnqueue,
+  playingId,
+  currentTrack,
+  isPlaying,
+  onTogglePlayCurrent,
+}) {
   const isFolder = node.type === 'folder'
   const f = isFolder ? node.folder : null
   const t = !isFolder ? node.track : null
@@ -68,6 +93,7 @@ function TreeRow({ node, depth, expandedIds, childrenMap, loadingIds, onToggle, 
   const hasKids = isFolder
     ? (f.subfolder_count || 0) > 0 || (f.recursive_track_count || 0) > 0 || (kids && kids.length > 0)
     : false
+  const isCurrentTrack = !isFolder && currentTrack?.id === t.id
 
   return (
     <>
@@ -79,13 +105,14 @@ function TreeRow({ node, depth, expandedIds, childrenMap, loadingIds, onToggle, 
           gap: '8px',
           padding: '6px 8px',
           borderRadius: '8px',
-          cursor: isFolder ? 'pointer' : 'default',
+          cursor: 'pointer',
           paddingLeft: `calc(6px + ${depth} * var(--tree-indent, 18px))`,
-          background: playingId && isFolder && playingId === f.id ? 'var(--accent-muted)' : 'transparent',
+          background:
+            (isFolder && playingId === f.id) || isCurrentTrack ? 'var(--accent-muted)' : 'transparent',
           minHeight: 44,
         }}
-        onClick={isFolder ? () => onPlayFolder(f) : undefined}
-        title={isFolder ? 'Клик — в плейлист и воспроизведение' : undefined}
+        onClick={isFolder ? () => onPlayFolder(f) : () => (isCurrentTrack ? onTogglePlayCurrent() : onPlayTrack(t))}
+        title={isFolder ? 'Клик — в плейлист и воспроизведение' : 'Играть трек'}
       >
         {isFolder ? (
           <Expander
@@ -98,8 +125,24 @@ function TreeRow({ node, depth, expandedIds, childrenMap, loadingIds, onToggle, 
             }}
           />
         ) : (
-          <span style={{ width: 22, minWidth: 22, display: 'inline-flex', justifyContent: 'center', color: 'var(--dim)' }}>
-            <Music size={14} />
+          <span
+            style={{
+              width: 22,
+              minWidth: 22,
+              display: 'inline-flex',
+              justifyContent: 'center',
+              color: isCurrentTrack ? 'var(--accent)' : 'var(--dim)',
+            }}
+          >
+            {isCurrentTrack ? (
+              isPlaying ? (
+                <Pause size={14} fill="var(--accent)" />
+              ) : (
+                <Play size={14} fill="var(--accent)" />
+              )
+            ) : (
+              <Music size={14} />
+            )}
           </span>
         )}
 
@@ -116,12 +159,12 @@ function TreeRow({ node, depth, expandedIds, childrenMap, loadingIds, onToggle, 
         <div style={{ flex: 1, minWidth: 0 }}>
           <div
             style={{
-              fontWeight: isFolder ? 650 : 500,
+              fontWeight: isFolder ? 650 : isCurrentTrack ? 700 : 500,
               fontSize: 13.5,
               whiteSpace: 'nowrap',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
-              color: 'var(--ink)',
+              color: isCurrentTrack ? 'var(--accent)' : 'var(--ink)',
             }}
           >
             {isFolder ? f.name : (t.name || '').replace(/\.[^/.]+$/, '')}
@@ -134,13 +177,40 @@ function TreeRow({ node, depth, expandedIds, childrenMap, loadingIds, onToggle, 
           )}
         </div>
 
+        {!isFolder && fmtDur(t.duration) && (
+          <span style={{ fontSize: '11px', color: 'var(--dim)', flexShrink: 0 }}>
+            {fmtDur(t.duration)}
+          </span>
+        )}
+        {!isFolder && (
+          <span className="tm-queue-actions" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              className="tm-queue-mini"
+              onClick={() => onPlayNext(t)}
+              aria-label="Играть следующим"
+              title="Играть следующим"
+            >
+              <ListStart size={13} />
+            </button>
+            <button
+              type="button"
+              className="tm-queue-mini"
+              onClick={() => onEnqueue(t)}
+              aria-label="Добавить в очередь"
+              title="Добавить в очередь"
+            >
+              <ListEnd size={13} />
+            </button>
+          </span>
+        )}
+
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation()
             if (isFolder) onPlayFolder(f)
-            else
-              onPlayTrack(t)
+            else onPlayTrack(t)
           }}
           title={isFolder ? 'В плейлист + играть' : 'Играть трек'}
           style={{
@@ -178,7 +248,12 @@ function TreeRow({ node, depth, expandedIds, childrenMap, loadingIds, onToggle, 
               onToggle={onToggle}
               onPlayFolder={onPlayFolder}
               onPlayTrack={onPlayTrack}
+              onPlayNext={onPlayNext}
+              onEnqueue={onEnqueue}
               playingId={playingId}
+              currentTrack={currentTrack}
+              isPlaying={isPlaying}
+              onTogglePlayCurrent={onTogglePlayCurrent}
             />
           ))}
         </div>
@@ -208,7 +283,7 @@ export function FolderBrowser() {
   const [childrenMap, setChildrenMap] = useState({})
   const [loadingIds, setLoadingIds] = useState(() => new Set())
   const [playingId, setPlayingId] = useState(null)
-  const { playQueue } = usePlayerStore()
+  const { playQueue, playNext, addToQueue, setNotice, currentTrack, isPlaying, togglePlay } = usePlayerStore()
   const { isAuthenticated } = useAuthStore()
   const reqSeq = useRef(0)
 
@@ -233,6 +308,9 @@ export function FolderBrowser() {
 
   useEffect(() => {
     const handleVfsImported = () => {
+      // Idempotent: MusicLibrary's own listener busts too, but do not depend
+      // on listener order — the tree must refetch from the network here.
+      bustMediaCaches()
       setExpandedIds(new Set())
       setChildrenMap({})
       loadRoots()
@@ -296,6 +374,19 @@ export function FolderBrowser() {
       artistName: 'Файл',
       coverUrl: null,
     })
+  }
+
+  // Tapping the already-playing row in the tree toggles play/pause.
+  const onTogglePlayCurrent = () => togglePlay()
+
+  const onPlayNext = (t) => {
+    playNext(t)
+    setNotice({ kind: 'info', text: `«${(t.name || '').replace(/\.[^/.]+$/, '')}» — следующим` })
+  }
+
+  const onEnqueue = (t) => {
+    addToQueue(t)
+    setNotice({ kind: 'info', text: `«${(t.name || '').replace(/\.[^/.]+$/, '')}» — добавлен в очередь` })
   }
 
   const onPlayFolder = async (folder) => {
@@ -372,7 +463,7 @@ export function FolderBrowser() {
           }}
         >
           <Loader2 size={28} className="animate-spin" style={{ color: 'var(--accent)' }} />
-          <div style={{ fontSize: '13px' }}>Загрузка дерева…</div>
+          <div style={{ fontSize: '13px' }}>Загрузка дерева...</div>
         </div>
       )}
 
@@ -400,7 +491,12 @@ export function FolderBrowser() {
               onToggle={onToggle}
               onPlayFolder={onPlayFolder}
               onPlayTrack={onPlayTrack}
+              onPlayNext={onPlayNext}
+              onEnqueue={onEnqueue}
               playingId={playingId}
+              currentTrack={currentTrack}
+              isPlaying={isPlaying}
+              onTogglePlayCurrent={onTogglePlayCurrent}
             />
           ))}
         </div>

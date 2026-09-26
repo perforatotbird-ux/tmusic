@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useAuthStore } from './store/authStore'
 import { usePlayerStore } from './store/playerStore'
 import { useFavoritesStore } from './store/favoritesStore'
-import { setupMediaSession, updateMediaSessionMetadata, updateMediaSessionPosition } from './services/mediaSession'
+import { setupMediaSession, updateMediaSessionMetadata, updateMediaSessionPosition, setMediaPlaybackState } from './services/mediaSession'
 import { IS_NATIVE } from './services/nativeBridge'
 import {
   onTrackChanged,
@@ -196,21 +196,56 @@ export function App() {
     const dur = audio.duration
     const trackId = usePlayerStore.getState().currentTrack?.id
 
-    usePlayerStore.setState({ currentTime: cur })
+    usePlayerStore.setState({
+      currentTime: cur,
+      duration: Number.isFinite(dur) && dur > 0 ? dur : usePlayerStore.getState().duration,
+    })
+    // Keep the localStorage session snapshot fresh (internally throttled ~4s).
+    usePlayerStore.getState().persistSession()
+    updateBuffered()
     updateMediaSessionPosition(dur, cur)
-    if (trackId) playbackOnTimeUpdate(audio, trackId, cur, dur)
+    if (trackId) {
+      playbackOnTimeUpdate(audio, trackId, cur, dur)
+      if (Number.isFinite(dur) && dur > 0) usePlayerStore.getState().rememberDuration(trackId, dur)
+    }
 
     if (dur && cur / dur > 0.75) {
       precacheNextTracks()
     }
   }
 
+  /** Highest end of the buffered ranges that covers (or follows) the playhead. */
+  const updateBuffered = () => {
+    const audio = audioRef.current
+    if (!audio) return
+    let upTo = 0
+    const { buffered, currentTime } = audio
+    for (let i = 0; i < buffered.length; i++) {
+      if (buffered.start(i) <= currentTime + 0.5) {
+        upTo = Math.max(upTo, buffered.end(i))
+      }
+    }
+    if (Math.abs(upTo - usePlayerStore.getState().bufferedUpTo) > 0.5) {
+      usePlayerStore.getState().setBufferedUpTo(upTo)
+    }
+  }
+
   const handleDurationChange = () => {
     if (!audioRef.current) return
-    usePlayerStore.setState({ duration: audioRef.current.duration })
+    const dur = audioRef.current.duration
+    if (Number.isFinite(dur) && dur > 0) {
+      usePlayerStore.setState({ duration: dur })
+      const trackId = usePlayerStore.getState().currentTrack?.id
+      if (trackId) usePlayerStore.getState().rememberDuration(trackId, dur)
+    }
+  }
+
+  const handleWaiting = () => {
+    if (usePlayerStore.getState().isPlaying) usePlayerStore.getState().setBuffering(true)
   }
 
   const handlePlaying = () => {
+    usePlayerStore.getState().setBuffering(false)
     errorTrackRef.current = { id: null, count: 0 }
     updateMediaSessionPosition(
       audioRef.current?.duration || 0,
@@ -221,7 +256,9 @@ export function App() {
   const handleError = () => {
     const state = usePlayerStore.getState()
     if (!state.currentTrack) return
+    state.setBuffering(false)
     const trackId = state.currentTrack.id
+    const name = (state.currentTrack.name || 'Трек').replace(/\.[^/.]+$/, '')
     const previous = errorTrackRef.current
     const count = previous.id === trackId ? previous.count + 1 : 1
     errorTrackRef.current = { id: trackId, count }
@@ -229,9 +266,11 @@ export function App() {
       state.audioElement?.pause()
       usePlayerStore.setState({ isPlaying: false })
       setMediaPlaybackState('none')
+      state.setNotice({ kind: 'error', text: `Не удалось воспроизвести «${name}» — поток недоступен` })
       return
     }
     log.warn('Audio stream error, skipping failed track', { id: trackId })
+    state.setNotice({ kind: 'error', text: `Проблемы с потоком «${name}» — пропускаем` })
     boundTrackIdRef.current = null
     state.nextTrack({ skipCurrent: true })
   }

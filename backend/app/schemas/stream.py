@@ -16,6 +16,9 @@ class TrackResponse(BaseModel):
     folder_id: Optional[int] = None
     stream_url: Optional[str] = None
     created_at: Optional[datetime] = None
+    # Real duration learned from playback history (None until the track has
+    # been streamed at least once — VFS stores no probe metadata).
+    duration: Optional[float] = None
 
 
 class StreamTicketResponse(BaseModel):

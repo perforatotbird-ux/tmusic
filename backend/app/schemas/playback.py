@@ -56,6 +56,7 @@ class TrackSearchItem(BaseModel):
     mime_type: Optional[str] = None
     folder_id: Optional[int] = None
     stream_url: str
+    duration: Optional[float] = None
 
 
 class FavoriteToggleResponse(BaseModel):
@@ -71,6 +72,7 @@ class FavoriteItem(BaseModel):
     folder_id: Optional[int] = None
     stream_url: str
     created_at: Optional[datetime] = None
+    duration: Optional[float] = None
 
 
 class FavoriteList(BaseModel):

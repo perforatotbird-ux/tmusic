@@ -21,6 +21,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from app.core.config import settings
+from app.core.disk_cache import external_cache
 
 logger = logging.getLogger("tmusic.scrobble")
 
@@ -117,6 +118,21 @@ def parse_track_meta(
 
 
 def get_artist_info(artist: str) -> Optional[dict]:
+    """artist.getInfo via the external disk cache (misses cached briefly too)."""
+    if not artist or not metadata_ready():
+        return None
+    parts = {"m": "artist", "artist": artist.strip().casefold()}
+    hit, cached = external_cache.get("lastfm", parts)
+    if hit:
+        return cached
+    result = _fetch_artist_info(artist)
+    external_cache.put(
+        "lastfm", parts, result, ttl_sec=int(getattr(settings, "LASTFM_CACHE_TTL_SEC", 14 * 24 * 3600))
+    )
+    return result
+
+
+def _fetch_artist_info(artist: str) -> Optional[dict]:
     """artist.getInfo — bio, similar, tags. Uses api_key only."""
     if not artist or not metadata_ready():
         return None
@@ -161,6 +177,26 @@ def get_artist_info(artist: str) -> Optional[dict]:
 
 
 def get_track_info(artist: str, track: str, album: Optional[str] = None) -> Optional[dict]:
+    """track.getInfo via the external disk cache (misses cached briefly too)."""
+    if not artist or not track or not metadata_ready():
+        return None
+    parts = {
+        "m": "track",
+        "artist": artist.strip().casefold(),
+        "track": track.strip().casefold(),
+        "album": (album or "").strip().casefold(),
+    }
+    hit, cached = external_cache.get("lastfm", parts)
+    if hit:
+        return cached
+    result = _fetch_track_info(artist, track, album)
+    external_cache.put(
+        "lastfm", parts, result, ttl_sec=int(getattr(settings, "LASTFM_CACHE_TTL_SEC", 14 * 24 * 3600))
+    )
+    return result
+
+
+def _fetch_track_info(artist: str, track: str, album: Optional[str] = None) -> Optional[dict]:
     """track.getInfo — duration, album, tags."""
     if not artist or not track or not metadata_ready():
         return None

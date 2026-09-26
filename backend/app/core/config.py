@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     CACHE_DIR: Path = BASE_DIR / "cache"
     IMG_CACHE_DIR: Path = BASE_DIR / "cache" / "music_images"
     COVER_CACHE_DIR: Path = BASE_DIR / "cache" / "music_covers"
+    EXTERNAL_CACHE_DIR: Path = BASE_DIR / "cache" / "external"
+
+    # External provider disk cache (Lyrics LRCLIB + Last.fm metadata).
+    # Values change on the scale of months; negative lookups expire fast to
+    # avoid hammering upstreams after "no match"/outages.
+    LYRICS_CACHE_TTL_SEC: int = 90 * 24 * 3600      # 90 days
+    LASTFM_CACHE_TTL_SEC: int = 14 * 24 * 3600      # 14 days
 
     # Audio Streaming & Cache
     RAM_CACHE_MAX_ITEMS: int = 15  # Keep up to 15 active audio tracks in RAM buffer
@@ -210,3 +217,4 @@ settings.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 settings.CACHE_DIR.mkdir(parents=True, exist_ok=True)
 settings.IMG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 settings.COVER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+settings.EXTERNAL_CACHE_DIR.mkdir(parents=True, exist_ok=True)

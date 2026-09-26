@@ -179,6 +179,7 @@ async def search_tracks(
         stmt = stmt.where(VFile.name.ilike(pattern, escape="\\"))
     stmt = stmt.order_by(VFile.name).limit(limit).offset(offset)
     files = db.scalars(stmt).all()
+    durations = playback_service.durations_map(db, [vf.id for vf in files])
     return [
         TrackSearchItem(
             id=vf.id,
@@ -187,6 +188,7 @@ async def search_tracks(
             mime_type=vf.mime_type,
             folder_id=vf.folder_id,
             stream_url=f"/api/stream/{vf.id}",
+            duration=durations.get(vf.id),
         )
         for vf in files
     ]
@@ -200,6 +202,7 @@ async def list_favorites(
     user: AppUser = Depends(get_current_user),
 ):
     rows, total = playback_service.list_favorites(db, user.id, limit=limit, offset=offset)
+    durations = playback_service.durations_map(db, [fav.file_id for fav, _ in rows])
     items = [
         FavoriteItem(
             file_id=fav.file_id,
@@ -209,6 +212,7 @@ async def list_favorites(
             folder_id=vf.folder_id if vf else None,
             stream_url=f"/api/stream/{fav.file_id}",
             created_at=fav.created_at,
+            duration=durations.get(fav.file_id),
         )
         for fav, vf in rows
     ]

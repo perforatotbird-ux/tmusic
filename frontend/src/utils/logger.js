@@ -83,7 +83,9 @@ function push(level, scope, msg, data) {
 
   buffer.push({
     ts: new Date().toISOString(),
-    level,
+    // Backend ClientEvent.level is a UPPERCASE Literal whitelist — sending the
+    // lowercase internal name fails Pydantic validation with HTTP 422.
+    level: BACKEND_LEVEL[level],
     logger: scope,
     msg: text.slice(0, MAX_MSG),
     data: data !== undefined ? sanitize(data) : undefined,
@@ -106,15 +108,29 @@ function scheduleErrorFlush() {
   errorFlushTimer = setTimeout(() => { errorFlushTimer = null; flush() }, 500)
 }
 
+// The logger cannot import api/client (circular: client imports logger), so
+// it echoes the CSRF cookie itself — same double-submit contract as request().
+function csrfToken() {
+  try {
+    const match = document.cookie.match(/(?:^|; )csrf_token=([^;]*)/)
+    return match ? decodeURIComponent(match[1]) : null
+  } catch {
+    return null
+  }
+}
+
 async function flush() {
   if (shipping || buffer.length === 0) return
   if (shipFailures >= 3) return // circuit breaker: backend down → stop trying this session
   shipping = true
   const events = buffer.splice(0, 50)
   try {
+    const headers = { 'Content-Type': 'application/json' }
+    const csrf = csrfToken()
+    if (csrf) headers['X-CSRF-Token'] = csrf
     const res = await fetch('/api/system/client-logs', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       credentials: 'same-origin',
       keepalive: true,
       body: JSON.stringify({ source: 'web', session_id: sessionId, events }),
