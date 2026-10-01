@@ -8,7 +8,10 @@ import urllib.parse
 import asyncio
 import json
 from datetime import timedelta
-from typing import Optional, List
+from typing import Optional, List, Annotated
+from pydantic import Field
+from sqlalchemy import select
+from app.core.rate_limiter import limiter
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -61,7 +64,10 @@ async def transcode_events(
 ):
     """SSE stream for real-time transcoding notifications.
     Frontend connects with: const evtSource = new EventSource('/api/stream/transcode-events');"""
-    client_queue = transcoding_service.subscribe()
+    try:
+        client_queue = transcoding_service.subscribe(user.id)
+    except ValueError:
+        raise HTTPException(status_code=429, detail="Too many SSE connections.")
 
     async def event_generator():
         try:
@@ -82,7 +88,7 @@ async def transcode_events(
         except Exception:
             pass
         finally:
-            transcoding_service.unsubscribe(client_queue)
+            transcoding_service.unsubscribe(user.id, client_queue)
 
     # Set headers for SSE
     response = StreamingResponse(
@@ -121,7 +127,6 @@ async def get_transcode_status(
     }
     if result and result.get("cached_path"):
         response.update({
-            "cached_path": result["cached_path"],
             "mp3_size": result.get("mp3_size"),
             "duration": result.get("duration"),
         })
@@ -140,27 +145,36 @@ async def trigger_transcode(
     if not needs_transcoding(track.name, track.mime_type):
         return {"status": "not_needed", "file_id": file_id, "message": "Track doesn't need transcoding"}
 
-    status = transcoding_service.request_transcode(track, priority=0)
+    status = transcoding_service.request_transcode(
+        track,
+        priority=0,
+        requester_user_id=user.id,
+    )
     return {"file_id": file_id, "status": status.value, "message": "Transcoding started or already queued"}
 
 
 @router.post("/transcode/prefetch")
 async def prefetch_tracks(
-    track_ids: List[int],
+    track_ids: Annotated[List[Annotated[int, Field(gt=0)]], Field(min_length=1, max_length=50)],
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
     """Enqueue multiple tracks for background prefetch transcoding."""
     from app.utils.ffmpeg_transcoder import needs_transcoding
 
+    if limiter.is_rate_limited(f"transcode:{user.id}", 10, 60):
+        raise HTTPException(status_code=429, detail="Too many transcoding requests.")
+
     enqueued = 0
     already_ready = 0
     not_needed = 0
 
-    for file_id in track_ids:
-        track = FileRepository.get_by_id(db, file_id)
-        if not track:
-            continue
+    tracks = db.scalars(select(VFile).where(
+        VFile.id.in_(set(track_ids)), VFile.is_trash.is_(False),
+        VFile.mime_type.like("audio/%"),
+    )).all()
+    for track in tracks:
+        file_id = track.id
         if not needs_transcoding(track.name, track.mime_type):
             not_needed += 1
             continue
@@ -168,7 +182,11 @@ async def prefetch_tracks(
         if status == TranscodeStatus.READY:
             already_ready += 1
             continue
-        transcoding_service.request_transcode(track, priority=1)
+        transcoding_service.request_transcode(
+            track,
+            priority=1,
+            requester_user_id=user.id,
+        )
         enqueued += 1
 
     return {
@@ -272,7 +290,11 @@ async def stream_audio_file(
     # queue start mass-transcodes the whole upcoming window at PLAYING priority.
     # Only a real playback request may trigger this.
     if needs_transcode and request.headers.get("X-Prefetch") != "1":
-        transcoding_service.request_transcode(track, priority=0)
+        transcoding_service.request_transcode(
+            track,
+            priority=0,
+            requester_user_id=getattr(user, "id", None),
+        )
 
     range_header = request.headers.get("Range")
     start, end, content_length = stream_service.parse_range_header(range_header, total_size)

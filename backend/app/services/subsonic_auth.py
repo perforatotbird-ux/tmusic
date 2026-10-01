@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.security import hash_password, verify_password
+from app.core.user_cache import get_attached_user, invalidate_user
 from app.models.auth import AppUser
 from app.utils.time import utcnow
 
@@ -62,19 +63,22 @@ def generate_subsonic_token() -> str:
     return secrets.token_urlsafe(24)
 
 
-def ensure_subsonic_token(db: Session, user: AppUser) -> str:
+def ensure_subsonic_token(db: Session, user: AppUser, *, rotate: bool = False) -> str:
     """Return existing decrypted token or mint+persist a new one."""
-    existing = decrypt_token(user.subsonic_token_enc)
+    user = get_attached_user(db, user)
+    if user is None:
+        raise ValueError("User not found.")
+    existing = None if rotate else decrypt_token(user.subsonic_token_enc)
     if existing:
         return existing
     token = generate_subsonic_token()
     enc = encrypt_token(token)
     if not enc:
-        # No SESSION_SECRET — still return token but cannot persist securely
-        logger.warning("SESSION_SECRET missing; Subsonic token not persisted.")
-        return token
+        # Never report a successful rotation unless the new secret can persist.
+        raise RuntimeError("Subsonic credentials are unavailable.")
     user.subsonic_token_enc = enc
     db.commit()
+    invalidate_user(user.username)
     return token
 
 

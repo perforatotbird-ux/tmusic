@@ -436,81 +436,9 @@ async def maintenance_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-# ─── Request body size cap (minor 5, hardened 2026-09-29) ───────────────────
-# Global backstop for JSON/Form endpoints: multipart uploads enforce their own
-# tighter caps, but any other POST/PUT/PATCH body is now capped at 1 MB of
-# ACTUAL bytes before parsing. The Content-Length header alone is advisory
-# (absent on chunked transfers, forgeable), so the body is measured while
-# streaming it.
-#
-# Pure-ASGI implementation (not @app.middleware): BaseHTTPMiddleware drives
-# downstream from the original receive channel, so a consumed-and-replayed
-# body would arrive empty there. Here the middleware owns `receive` and
-# replays the bounded snapshot downstream itself.
-MAX_JSON_BODY_BYTES = 1 * 1024 * 1024
-
-
-# Upload endpoints with their own, larger caps — exempt from the generic 1 MB
-# JSON backstop. (VFS import 256 MB, cover/avatar image uploads ~10 MB.)
-_UPLOAD_BODY_PATHS = (
-    "/api/admin/vfs/import",
-    "/api/library/cover",
-    "/api/auth/avatar",
-)
-
-
-class BodySizeLimitMiddleware:
-    """Cap POST/PUT/PATCH bodies on /api/* and /rest/* at 1 MB actual bytes."""
-
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and scope.get("method") in ("POST", "PUT", "PATCH"):
-            # scope["path"] is still percent-encoded — decode before the
-            # prefix check so "/%61pi/..." cannot dodge the cap and still
-            # route to an /api/* endpoint.
-            path = unquote(scope.get("path", ""))
-            if path.startswith(("/api/", "/rest/")) and not path.startswith(_UPLOAD_BODY_PATHS):
-                declared = _header_value(scope, b"content-length")
-                if declared is not None:
-                    try:
-                        if int(declared) > MAX_JSON_BODY_BYTES:
-                            return await _body_too_large(scope, receive, send)
-                    except ValueError:
-                        pass  # malformed header — fall through to measuring
-                body = bytearray()
-                while True:
-                    message = await receive()
-                    if message.get("type") != "http.request":
-                        return  # client went away mid-body; nothing to serve
-                    body += message.get("body", b"")
-                    if len(body) > MAX_JSON_BODY_BYTES:
-                        return await _body_too_large(scope, receive, send)
-                    if not message.get("more_body"):
-                        break
-                snapshot = bytes(body)
-
-                async def _replay():
-                    return {"type": "http.request", "body": snapshot, "more_body": False}
-
-                return await self.app(scope, _replay, send)
-        return await self.app(scope, receive, send)
-
-
-def _header_value(scope, name: bytes):
-    for key, value in scope.get("headers", ()):  # type: ignore[union-attr]
-        if key.lower() == name:
-            try:
-                return value.decode("latin-1")
-            except Exception:
-                return None
-    return None
-
-
-async def _body_too_large(scope, receive, send):
-    response = JSONResponse(status_code=413, content={"detail": "Request body too large."})
-    return await response(scope, receive, send)
+# ─── Actual-byte request body caps, before JSON/multipart parsing ──────────
+# Uploads have explicit larger limits; ordinary API bodies stay capped at 1 MB.
+from app.core.body_limits import BodySizeLimitMiddleware
 
 
 app.add_middleware(BodySizeLimitMiddleware)

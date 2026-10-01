@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_current_user
+from app.api.dependencies import get_current_user, get_catalog_user
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.auth import AppUser
@@ -98,7 +98,7 @@ async def track_lookup(
 async def enrich_artist(
     artist_id: int,
     db: Session = Depends(get_db),
-    user: AppUser = Depends(get_current_user),
+    user: AppUser = Depends(get_catalog_user),
 ):
     """Pull Last.fm bio/tags into music_artists when missing."""
     if not lastfm_service.metadata_ready():

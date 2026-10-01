@@ -14,9 +14,11 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Set
+from fastapi import HTTPException
+from app.core.rate_limiter import limiter
 
 from app.core.config import settings
 from app.utils.ffmpeg_transcoder import (
@@ -37,6 +39,8 @@ logger = logging.getLogger("tmusic.transcoder")
 
 PRIORITY_PLAYING = 0
 PRIORITY_PREFETCH = 1
+MAX_QUEUED_TRANSCODES = 100
+MAX_USER_ACTIVE_TRANSCODES = 50
 
 
 @dataclass
@@ -55,6 +59,7 @@ class TranscodeJob:
     mp3_size: Optional[int] = None
     duration: Optional[float] = None
     error: Optional[str] = None
+    requester_user_ids: Set[int] = field(default_factory=set)
 
 
 _SRC_EXT_RE = re.compile(r"[a-z0-9]{1,10}")
@@ -78,7 +83,9 @@ class TranscodingService:
     def __init__(self):
         self._queue: asyncio.PriorityQueue = None  # (priority, ts, file_id, track_id)
         self._jobs: Dict[int, TranscodeJob] = {}
-        self._sse_clients: List[asyncio.Queue] = []
+        # Queues are isolated by authenticated user. A global queue leaked
+        # filenames, file ids and backend errors between users.
+        self._sse_clients: Dict[int, List[asyncio.Queue]] = {}
         self._workers: List[asyncio.Task] = []
         self._started: bool = False
         self._lock = asyncio.Lock()
@@ -89,7 +96,7 @@ class TranscodingService:
         """Spawn background worker tasks. Called from app lifespan."""
         if self._started:
             return
-        self._queue = asyncio.PriorityQueue()
+        self._queue = asyncio.PriorityQueue(maxsize=MAX_QUEUED_TRANSCODES)
         num_workers = num_workers or settings.TRANSCODE_WORKERS
         self._started = True
         for i in range(num_workers):
@@ -107,19 +114,20 @@ class TranscodingService:
         await asyncio.gather(*self._workers, return_exceptions=True)
         self._workers.clear()
         # Notify clients of shutdown
-        for client_q in self._sse_clients:
-            try:
-                client_q.put_nowait({
-                    "event": "service_shutdown",
-                    "timestamp": time.time(),
-                })
-            except asyncio.QueueFull:
-                pass
+        self._notify({
+            "event": "service_shutdown",
+            "timestamp": time.time(),
+        })
         logger.info("TranscodingService shut down")
 
     # ─── Public API ────────────────────────────────────────────────────────────
 
-    def request_transcode(self, track: VFile, priority: int = PRIORITY_PREFETCH) -> TranscodeStatus:
+    def request_transcode(
+        self,
+        track: VFile,
+        priority: int = PRIORITY_PREFETCH,
+        requester_user_id: Optional[int] = None,
+    ) -> TranscodeStatus:
         """Enqueue a track for transcoding. Returns current status (may already be cached)."""
         status = self.get_status(track.id)
 
@@ -130,14 +138,32 @@ class TranscodingService:
             logger.warning("TranscodingService not started — cannot enqueue file %d", track.id)
             return TranscodeStatus.FAILED
 
-        # Check if already in queue (don't duplicate)
+        active = sum(
+            requester_user_id in job.requester_user_ids
+            and job.status in (TranscodeStatus.PENDING, TranscodeStatus.PROCESSING)
+            for job in self._jobs.values()
+        ) if requester_user_id is not None else 0
         existing = self._jobs.get(track.id)
+        already_subscribed = existing and requester_user_id in existing.requester_user_ids
+        if active >= MAX_USER_ACTIVE_TRANSCODES and not already_subscribed:
+            raise HTTPException(status_code=429, detail="Transcoding quota exceeded.")
+
+        # Check if already in queue (don't duplicate)
         if existing and existing.status in (TranscodeStatus.PENDING, TranscodeStatus.PROCESSING):
+            if requester_user_id is not None:
+                existing.requester_user_ids.add(requester_user_id)
             # If playing track is requested as prefetch, upgrade priority
             if priority == PRIORITY_PLAYING and existing.priority == PRIORITY_PREFETCH:
                 existing.priority = PRIORITY_PLAYING
                 logger.info("Upgraded priority for file %d (now playing)", track.id)
             return existing.status
+
+        if self._queue.full():
+            raise HTTPException(status_code=429, detail="Transcoding queue is full.")
+        if requester_user_id is not None and limiter.is_rate_limited(
+            f"transcodejobs:{requester_user_id}", 60, 60
+        ):
+            raise HTTPException(status_code=429, detail="Too many transcoding jobs.")
 
         cache_key = make_cache_key(
             file_id=track.id,
@@ -156,6 +182,7 @@ class TranscodingService:
             mime_type=track.mime_type,
             priority=priority,
             cache_key=cache_key,
+            requester_user_ids={requester_user_id} if requester_user_id is not None else set(),
         )
         self._jobs[track.id] = job
 
@@ -175,12 +202,12 @@ class TranscodingService:
             "file_name": track.name,
             "priority": "high" if priority == PRIORITY_PLAYING else "prefetch",
             "timestamp": ts,
-        })
+        }, job.requester_user_ids)
 
         logger.info("Queued file %d for transcoding (priority=%d)", track.id, priority)
         return TranscodeStatus.PENDING
 
-    def prefetch_next(self, track_ids: List[int]) -> int:
+    def prefetch_next(self, track_ids: List[int], requester_user_id: Optional[int] = None) -> int:
         """Enqueue multiple tracks for background prefetch. Returns count enqueued."""
         enqueued = 0
         for file_id in track_ids:
@@ -190,13 +217,15 @@ class TranscodingService:
             ):
                 continue
             # Only prefetch if file needs transcoding (will be checked in worker)
+            if self._queue.full():
+                break
             self._queue.put_nowait((PRIORITY_PREFETCH, time.time(), file_id))
             enqueued += 1
             self._notify({
                 "event": "transcode_prefetch",
                 "file_id": file_id,
                 "timestamp": time.time(),
-            })
+            }, {requester_user_id} if requester_user_id is not None else set())
         if enqueued:
             logger.info("Prefetched %d tracks for transcoding", enqueued)
         return enqueued
@@ -241,22 +270,42 @@ class TranscodingService:
 
     # ─── SSE Notification ──────────────────────────────────────────────────────
 
-    def subscribe(self) -> asyncio.Queue:
-        """Create a new SSE client queue and return it."""
+    def subscribe(self, user_id: int, max_connections: int = 3) -> asyncio.Queue:
+        """Create a user-scoped SSE queue with a per-user connection cap."""
+        user_queues = self._sse_clients.setdefault(user_id, [])
+        if len(user_queues) >= max_connections:
+            raise ValueError("too_many_sse_connections")
         q: asyncio.Queue = asyncio.Queue(maxsize=100)
-        self._sse_clients.append(q)
-        logger.debug("SSE client subscribed (total: %d)", len(self._sse_clients))
+        user_queues.append(q)
+        logger.debug(
+            "SSE client subscribed (user=%d, user_total=%d, total=%d)",
+            user_id,
+            len(user_queues),
+            sum(len(queues) for queues in self._sse_clients.values()),
+        )
         return q
 
-    def unsubscribe(self, q: asyncio.Queue):
-        """Remove an SSE client."""
-        if q in self._sse_clients:
-            self._sse_clients.remove(q)
-        logger.debug("SSE client unsubscribed (total: %d)", len(self._sse_clients))
+    def unsubscribe(self, user_id: int, q: asyncio.Queue):
+        """Remove a user-scoped SSE client."""
+        user_queues = self._sse_clients.get(user_id, [])
+        if q in user_queues:
+            user_queues.remove(q)
+        if not user_queues:
+            self._sse_clients.pop(user_id, None)
+        logger.debug(
+            "SSE client unsubscribed (user=%d, total=%d)",
+            user_id,
+            sum(len(queues) for queues in self._sse_clients.values()),
+        )
 
-    def _notify(self, event: Dict[str, Any]):
-        """Broadcast an event to all SSE clients."""
-        for client_q in self._sse_clients:
+    def _notify(self, event: Dict[str, Any], user_ids: Optional[Set[int]] = None):
+        """Send an event only to its requesters; None is an explicit broadcast."""
+        queues = (
+            [q for qs in self._sse_clients.values() for q in qs]
+            if user_ids is None
+            else [q for user_id in user_ids for q in self._sse_clients.get(user_id, [])]
+        )
+        for client_q in queues:
             try:
                 client_q.put_nowait(event)
             except asyncio.QueueFull:
@@ -323,7 +372,7 @@ class TranscodingService:
                     "file_id": file_id,
                     "cache_key": job.cache_key,
                     "mp3_size": job.mp3_size,
-                })
+                }, job.requester_user_ids)
                 self._queue.task_done()
                 continue
 
@@ -336,7 +385,7 @@ class TranscodingService:
                 "file_name": job.file_name,
                 "priority": "high" if priority == PRIORITY_PLAYING else "prefetch",
                 "timestamp": time.time(),
-            })
+            }, job.requester_user_ids)
 
             try:
                 await self._transcode_track(job)
@@ -351,9 +400,10 @@ class TranscodingService:
                 self._notify({
                     "event": "transcode_failed",
                     "file_id": file_id,
-                    "error": str(e)[:200],
+                    # Keep internal ffmpeg/filesystem details in server logs.
+                    "error": "transcode_failed",
                     "timestamp": time.time(),
-                })
+                }, job.requester_user_ids)
                 self._queue.task_done()
 
         logger.info("Worker %s stopped", name)
@@ -461,7 +511,7 @@ class TranscodingService:
             "file_id": job.file_id,
             "file_name": job.file_name,
             "timestamp": time.time(),
-        })
+        }, job.requester_user_ids)
 
         raw_bytes = await self._download_track_bytes(job)
         logger.info("Downloaded %d bytes for file %d", len(raw_bytes), job.file_id)
@@ -549,7 +599,7 @@ class TranscodingService:
         # Clean up cache if it's growing too large
         self._cleanup_cache()
 
-        # Notify all clients
+        # Notify only users who requested this job.
         self._notify({
             "event": "transcode_complete",
             "file_id": job.file_id,
@@ -558,7 +608,7 @@ class TranscodingService:
             "mp3_size": mp3_size,
             "duration": duration,
             "timestamp": time.time(),
-        })
+        }, job.requester_user_ids)
 
         logger.info("Transcode complete for file %d: %d bytes MP3 (%.1fs)", job.file_id, mp3_size, duration or 0)
 

@@ -166,7 +166,9 @@ def _finish_backup_run(
 ) -> None:
     run.status = status
     run.size_bytes = size_bytes
-    run.error = error[:1000] if error else None
+    if error:
+        logger.error("Backup operation failed: %s", error)
+    run.error = "Backup operation failed. See server logs." if error else None
     run.finished_at = utcnow()
     db.commit()
 
@@ -181,7 +183,7 @@ def list_backup_runs(db: Session, limit: int = 50) -> List[Dict[str, Any]]:
             "status": row.status,
             "reason": row.reason,
             "size_bytes": row.size_bytes,
-            "error": row.error,
+            "error": "Backup operation failed. See server logs." if row.error else None,
             "started_at": row.started_at.isoformat() if row.started_at else None,
             "finished_at": row.finished_at.isoformat() if row.finished_at else None,
         }
@@ -197,7 +199,7 @@ def run_pg_dump(db: Session, reason: str = "manual", actor_id: Optional[int] = N
     if not info:
         error = "DATABASE_URL is not a parseable PostgreSQL URL"
         _finish_backup_run(db, run, "failed", error=error)
-        return {"ok": False, "error": error}
+        return {"ok": False, "error": "Backup operation failed. See server logs."}
 
     stamp = utcnow().strftime("%Y%m%d-%H%M%S")
     dump_name = f"tgmusic-{stamp}.dump"
@@ -232,16 +234,16 @@ def run_pg_dump(db: Session, reason: str = "manual", actor_id: Optional[int] = N
     except FileNotFoundError:
         error = "pg_dump not found in PATH on this host"
         _finish_backup_run(db, run, "failed", error=error)
-        return {"ok": False, "error": error}
+        return {"ok": False, "error": "Backup operation failed. See server logs."}
     except subprocess.TimeoutExpired:
         error = "pg_dump timed out after 30 minutes"
         _finish_backup_run(db, run, "failed", error=error)
-        return {"ok": False, "error": error}
+        return {"ok": False, "error": "Backup operation failed. See server logs."}
 
     if proc.returncode != 0 or not dump_path.exists():
         error = f"pg_dump failed ({proc.returncode}): {(proc.stderr or proc.stdout or '').strip()[:500]}"
         _finish_backup_run(db, run, "failed", error=error)
-        return {"ok": False, "error": error}
+        return {"ok": False, "error": "Backup operation failed. See server logs."}
 
     removed = _prune_old_backups(bdir, int(cfg["backup_retention"]))
     size = dump_path.stat().st_size
@@ -291,7 +293,7 @@ def inspect_backup(db: Session, name: str) -> Dict[str, Any]:
         return {"ok": False, "error": "Only custom-format .dump files can be inspected"}
     info = parse_database_url(settings.DATABASE_URL)
     if not info:
-        return {"ok": False, "error": "DATABASE_URL is not a parseable PostgreSQL URL"}
+        return {"ok": False, "error": "Backup operation failed. See server logs."}
     env = os.environ.copy()
     env["PGPASSWORD"] = info["password"]
     try:
@@ -305,13 +307,14 @@ def inspect_backup(db: Session, name: str) -> Dict[str, Any]:
             timeout=60,
         )
     except FileNotFoundError:
-        return {"ok": False, "error": "pg_restore not found in PATH on this host"}
+        return {"ok": False, "error": "Backup operation failed. See server logs."}
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "pg_restore inspection timed out"}
+        return {"ok": False, "error": "Backup operation failed. See server logs."}
     output = (proc.stdout or "").strip().splitlines()
     if proc.returncode != 0:
         error = (proc.stderr or proc.stdout or "Invalid backup").strip()[:500]
-        return {"ok": False, "error": error}
+        logger.error("Backup inspection failed: %s", error)
+        return {"ok": False, "error": "Backup operation failed. See server logs."}
     return {"ok": True, "name": name, "entries": len(output), "size_bytes": path.stat().st_size}
 
 

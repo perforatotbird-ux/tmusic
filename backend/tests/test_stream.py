@@ -219,12 +219,19 @@ async def test_stream_get_only_enqueues_transcode_for_playback_requests(monkeypa
     monkeypatch.setattr(
         sr.transcoding_service,
         "request_transcode",
-        lambda t, priority=0: enqueued.append(priority),
+        lambda t, priority=0, requester_user_id=None: enqueued.append(
+            (priority, requester_user_id)
+        ),
     )
 
     # Playback request → exactly one job at PLAYING priority (0)
-    await sr.stream_audio_file(42, SimpleNamespace(headers={}), db=None, user=None)
-    assert enqueued == [0]
+    await sr.stream_audio_file(
+        42,
+        SimpleNamespace(headers={}),
+        db=None,
+        user=SimpleNamespace(id=7),
+    )
+    assert enqueued == [(0, 7)]
     enqueued.clear()
 
     # Buffering/prefetch request → nothing may be enqueued

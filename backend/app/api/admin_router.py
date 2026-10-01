@@ -125,8 +125,9 @@ async def admin_overview(
     cfg = admin_service.get_all_settings(db)
     try:
         db_info = admin_service.db_overview(db)
-    except Exception as e:
-        db_info = {"reachable": False, "error": str(e)}
+    except Exception:
+        logger.exception("Database overview failed")
+        db_info = {"reachable": False, "error": "Database information unavailable."}
     try:
         cache_info = ram_cache.stats()
     except Exception:
@@ -237,7 +238,7 @@ async def admin_run_backup(
     result = admin_service.run_pg_dump(db, reason=f"manual:{user.username}", actor_id=user.id)
     logger.info("Admin %s backup: %s", user.username, result)
     if not result.get("ok"):
-        raise HTTPException(status_code=500, detail=result.get("error") or "Backup failed")
+        raise HTTPException(status_code=500, detail="Backup failed. See server logs.")
     return result
 
 
@@ -278,8 +279,9 @@ async def admin_restore_backup(
         raise HTTPException(status_code=400, detail=str(exc))
     except PermissionError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+    except RuntimeError:
+        logger.exception("Backup restore failed")
+        raise HTTPException(status_code=500, detail="Backup restore failed. See server logs.")
     _audit(db, request, user, "backup.restore_preview" if body.dry_run else "backup.restored", "backup", name, result)
     db.commit()
     return result
@@ -635,8 +637,9 @@ async def admin_system_health(
 ):
     try:
         database = admin_service.db_overview(db)
-    except Exception as exc:
-        database = {"reachable": False, "error": str(exc)}
+    except Exception:
+        logger.exception("Database health check failed")
+        database = {"reachable": False, "error": "Database information unavailable."}
     return {
         "database": database,
         "telegram": tg_manager.cluster_status(),

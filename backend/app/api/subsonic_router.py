@@ -402,11 +402,13 @@ async def _handle(
     if method in ("search2", "search3"):
         query = (params.get("query") or "").strip()
         try:
-            song_count = int(params.get("songCount") or 20)
-            album_count = int(params.get("albumCount") or 10)
-            artist_count = int(params.get("artistCount") or 10)
+            song_count = int(params.get("songCount", 20))
+            album_count = int(params.get("albumCount", 10))
+            artist_count = int(params.get("artistCount", 10))
         except (TypeError, ValueError):
-            song_count, album_count, artist_count = 20, 10, 10
+            return _respond(fail(10, "Invalid search count."), f)
+        if any(n < 0 or n > 500 for n in (song_count, album_count, artist_count)):
+            return _respond(fail(10, "Search counts must be between 0 and 500."), f)
         if not query:
             key = "searchResult3" if method == "search3" else "searchResult2"
             return ok(key, {})

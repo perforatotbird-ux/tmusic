@@ -49,10 +49,10 @@ function initTranscodeSSE() {
   }
 
   transcodeEventSource.onerror = (err) => {
-    log.debug('Transcode SSE error, reconnecting...', err)
-    transcodeEventSource = null
-    // Reconnect after 5s
-    setTimeout(initTranscodeSSE, 5000)
+    // EventSource performs its own bounded browser-managed reconnect. Creating
+    // another instance here would leave the old one alive and multiply SSE
+    // connections and server-side queues after every transient failure.
+    log.debug('Transcode SSE error; browser will reconnect automatically', err)
   }
 }
 

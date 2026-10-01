@@ -32,7 +32,5 @@ async def get_credentials(db: Session = Depends(get_db), user: AppUser = Depends
 @router.post("/credentials/rotate")
 async def rotate_credentials(db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
     """Issue a fresh Subsonic token (invalidates the previous one)."""
-    user.subsonic_token_enc = None
-    db.commit()
-    token = subsonic_auth.ensure_subsonic_token(db, user)
+    token = subsonic_auth.ensure_subsonic_token(db, user, rotate=True)
     return {"username": user.username, "token": token}
