@@ -25,3 +25,7 @@
 ### Этап удаления source branch
 
 Локальная argon2idmigration удалена после fast-forward master; код сохранён в master. На GitHub ветка ещё существует: delete-branch отсутствует в MCP, а shared browser не авторизован (private PR показывает 404/Sign in). Для UI deletion требуется вход пользователя. Слияние уже подтверждено; отсутствие браузерной авторизации не отменяет merge. Source удалять только после подтверждения master=d00be744e0eb10cea6c664204f657dc1ff6e425a или его потомка, без удаления master.
+
+### Завершение текущего запроса
+
+Пользователь решил удалить source branch на GitHub самостоятельно позже. Удаление argon2idmigration на GitHub **не выполняется агентом** и больше не является блокирующим действием этого запроса. PR #1 merged: вся история и код уже в master; локально осталась только master. На GitHub source branch сохранена по последнему указанию пользователя. Для manual cleanup доступна Delete branch в https://github.com/perforatotbird-ux/tmusic/pull/1. Deployment и force-push не выполнялись.
