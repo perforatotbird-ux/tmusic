@@ -378,6 +378,8 @@ class CatalogAdminService:
             db.execute(select(func.count(MusicArtist.id)).where(MusicArtist.folder_id == folder_id)).scalar() or 0
         ) + (
             db.execute(select(func.count(MusicAlbum.id)).where(MusicAlbum.folder_id == folder_id)).scalar() or 0
+        ) + (
+            db.execute(select(func.count(Folder.id)).where(Folder.parent_id == folder_id)).scalar() or 0
         )
         if not still_used:
             db.execute(FolderClosure.__table__.delete().where(

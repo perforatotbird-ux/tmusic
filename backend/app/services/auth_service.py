@@ -4,9 +4,9 @@ Business logic for user login and brute-force protection.
 
 Hardening (2026-09 security audit):
 - All auth events are logged to the "tmusic.auth" logger (no passwords).
-- Unknown usernames burn a dummy bcrypt verify so response time does not
+- Unknown usernames burn a dummy Argon2id verify so response time does not
   reveal whether an account exists (username enumeration via timing).
-- Successful logins auto-upgrade legacy salted SHA-256 hashes to bcrypt.
+- Successful logins migrate unambiguous bcrypt/legacy hashes to Argon2id.
 """
 import logging
 from typing import Optional, Tuple
@@ -17,8 +17,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.security import (
     verify_password, hash_password,
-    create_access_token, is_legacy_hash,
-    timing_equalizer_hash,
+    create_access_token,
+    timing_equalizer_hash, password_needs_rehash, password_change_required,
 )
 from app.core.rate_limiter import limiter
 from app.core.user_cache import get_attached_user, invalidate_user
@@ -79,11 +79,15 @@ class AuthService:
         invalidate_user(user.username)
 
         logger.info("Successful login (%s): ip=%s user=%r", kind, client_ip, user.username)
-        token_str, _, expire_dt = create_access_token(subject=user.username, claims=claims)
+        token_str, _, expire_dt = create_access_token(
+            subject=user.username, claims=claims,
+            expires_delta=timedelta(minutes=10) if claims.get("pwd_reset") else None,
+        )
         return TokenResponse(
             access_token=token_str,
             token_type="bearer",
-            expires_in=int((expire_dt - utcnow()).total_seconds())
+            expires_in=int((expire_dt - utcnow()).total_seconds()),
+            password_change_required=claims.get("pwd_reset", False),
         ), None
 
     @staticmethod
@@ -99,9 +103,9 @@ class AuthService:
             return None, err
 
         # 2. Find user
-        user = db.execute(select(AppUser).where(AppUser.username == username)).scalar_one_or_none()
+        user = db.execute(select(AppUser).where(AppUser.username == username).with_for_update()).scalar_one_or_none()
         if not user or not user.is_active:
-            # Burn a dummy bcrypt verify so timing does not reveal account existence
+            # Burn a dummy Argon2id verify so timing does not reveal account existence
             verify_password(password, timing_equalizer_hash())
             limiter.record_failure(client_ip, settings.MAX_FAILED_LOGIN_ATTEMPTS, settings.LOCKOUT_MINUTES * 60)
             logger.warning("Failed login (unknown/inactive user): ip=%s user=%r", client_ip, username)
@@ -116,17 +120,21 @@ class AuthService:
             AuthService._register_failure(db, user, client_ip, "bad password")
             return None, "Invalid credentials."
 
-        # 5. Success — auto-upgrade legacy password hash to bcrypt
-        if is_legacy_hash(user.password_hash):
+        # Rehash only an unambiguous password. Row lock prevents a concurrent
+        # password reset from being overwritten by opportunistic migration.
+        must_change = password_change_required(password, user.password_hash)
+        if not must_change and password_needs_rehash(user.password_hash):
             user.password_hash = hash_password(password)
-            logger.info("Upgraded legacy password hash to bcrypt: user=%r", username)
+            logger.info("Upgraded password hash to Argon2id: user=%r", username)
 
         claims = {"uid": user.id, "tv": user.token_version or 0}
+        if must_change:
+            claims["pwd_reset"] = True
         return AuthService._finish_success(db, user, client_ip, claims, "password")
 
     @staticmethod
     def change_password(db: Session, user: AppUser, new_password: str):
-        """Set a new bcrypt password and revoke every previously issued token."""
+        """Set a new Argon2id password and revoke every previously issued token."""
         target = get_attached_user(db, user)
         if target is None:
             raise ValueError("User not found.")
@@ -138,3 +146,12 @@ class AuthService:
         db.commit()
         invalidate_user(target.username)
         logger.info("Password changed, sessions revoked: user=%r", target.username)
+
+
+    @staticmethod
+    def change_password_with_current(db: Session, user: AppUser, current_password: str, new_password: str) -> bool:
+        target = db.execute(select(AppUser).where(AppUser.id == user.id).with_for_update()).scalar_one_or_none()
+        if target is None or not target.is_active or not verify_password(current_password, target.password_hash):
+            return False
+        AuthService.change_password(db, target, new_password)
+        return True

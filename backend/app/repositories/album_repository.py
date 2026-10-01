@@ -44,6 +44,7 @@ class AlbumRepository:
         artist_id: int,
         limit: Optional[int] = None,
         offset: int = 0,
+        search: Optional[str] = None,
     ) -> List[MusicAlbum]:
         stmt = (
             select(MusicAlbum)
@@ -51,8 +52,11 @@ class AlbumRepository:
             .where(MusicAlbum.artist_id == artist_id)
             .order_by(MusicAlbum.year.asc().nulls_last(), MusicAlbum.title.asc())
         )
+        if search and search not in ("null", "undefined") and search.strip():
+            stmt = stmt.where(func.lower(MusicAlbum.title).like(like_pattern(search), escape="\\"))
+        stmt = stmt.offset(offset)
         if limit is not None:
-            stmt = stmt.offset(offset).limit(limit)
+            stmt = stmt.limit(limit)
         return list(db.execute(stmt).scalars().all())
 
     @staticmethod

@@ -94,7 +94,7 @@ def _authenticate_request(
     if token_source == "query" and query_scope is not None and token_scope != query_scope:
         raise HTTPException(status_code=401, detail=invalid_token_detail)
 
-    if is_token_revoked(db, payload.get("jti", "")):
+    if is_token_revoked(db, payload["jti"]):
         raise HTTPException(status_code=401, detail=invalid_token_detail)
 
     username = payload["sub"]
@@ -103,11 +103,17 @@ def _authenticate_request(
         raise HTTPException(status_code=401, detail=inactive_detail)
 
     # Global session revocation: password change bumps token_version,
-    # invalidating every token issued before the change (defaults to 0 for
-    # tokens minted before this claim existed).
-    if payload.get("tv", 0) != (user.token_version or 0):
+    # invalidating every token issued before the change. UID is mandatory so
+    # deleting/recreating a username never revives the previous owner's token.
+    if payload["uid"] != user.id or payload["tv"] != (user.token_version or 0):
         raise HTTPException(status_code=401, detail=invalid_token_detail)
 
+    reset_required = payload.get("pwd_reset", False)
+    request.state.password_change_required = reset_required
+    if reset_required and request.url.path.rstrip("/") not in {
+        "/api/auth/me", "/api/auth/change-password", "/api/auth/logout",
+    }:
+        raise HTTPException(status_code=403, detail="Password change required.")
     return user
 
 

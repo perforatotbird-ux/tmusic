@@ -2,7 +2,7 @@
  * T-Music Admin Panel — DB maintenance, backups, settings, users/roles.
  * Access: role=admin or username admin (same password as panel login).
  */
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Database,
   HardDriveDownload,
@@ -137,6 +137,8 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
   const [users, setUsers] = useState(null)
   const [audit, setAudit] = useState(null)
   const [health, setHealth] = useState(null)
+  const [sectionStatus, setSectionStatus] = useState({})
+  const loadSequence = useRef(0)
   const [vfsFolders, setVfsFolders] = useState([])
   const [analytics, setAnalytics] = useState(null)
   const [subsonic, setSubsonic] = useState(null)
@@ -148,26 +150,41 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
   }, [])
 
   const loadAll = useCallback(async () => {
+    const sequence = ++loadSequence.current
+    const sections = [
+      ['backups', 'Бэкапы', () => adminApi.listBackups(), setBackups],
+      ['users', 'Пользователи', () => adminApi.listUsers(), setUsers],
+      ['audit', 'Аудит', () => adminApi.listAudit(), setAudit],
+      ['health', 'Состояние сервера', () => adminApi.systemHealth(), setHealth],
+    ]
     setLoading(true)
     setError(null)
+    setSectionStatus(Object.fromEntries(sections.map(([id, label]) => [id, { label, loading: true, stale: true }])))
     try {
       const ov = await adminApi.overview()
+      if (sequence !== loadSequence.current) return
       setOverview(ov)
       setSettings(ov.settings)
-      const [bk, us, au, hl] = await Promise.all([
-        adminApi.listBackups().catch(() => null),
-        adminApi.listUsers().catch(() => null),
-        adminApi.listAudit().catch(() => null),
-        adminApi.systemHealth().catch(() => null),
-      ])
-      if (bk) setBackups(bk)
-      if (us) setUsers(us)
-      if (au) setAudit(au)
-      if (hl) setHealth(hl)
+      const results = await Promise.allSettled(sections.map(([, , fetchSection]) => fetchSection()))
+      if (sequence !== loadSequence.current) return
+      const statuses = {}
+      results.forEach((result, index) => {
+        const [id, label, , apply] = sections[index]
+        if (result.status === 'fulfilled') {
+          apply(result.value)
+          statuses[id] = { label, loading: false, stale: false }
+        } else {
+          statuses[id] = { label, loading: false, stale: true, error: 'Не удалось обновить. Данные могут быть устаревшими.' }
+        }
+      })
+      setSectionStatus(statuses)
     } catch (e) {
-      setError(e.message || 'Нет доступа к админке')
+      if (sequence !== loadSequence.current) return
+      setError(e?.message || 'Не удалось обновить админку.')
+      setSectionStatus(Object.fromEntries(sections.map(([id, label]) => [id,
+        { label, loading: false, stale: true, error: 'Обновление не выполнено.' }])))
     } finally {
-      setLoading(false)
+      if (sequence === loadSequence.current) setLoading(false)
     }
   }, [])
 
@@ -287,6 +304,12 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
         </div>
       </div>
 
+      {error && <div role="alert" style={{ color: 'var(--danger)', marginBottom: 12 }}>{error}</div>}
+      {Object.entries(sectionStatus).filter(([, state]) => state.loading || state.error).map(([id, state]) => (
+        <div key={id} role={state.error ? 'alert' : 'status'} style={{ marginBottom: 8, color: state.error ? 'var(--danger)' : 'var(--dim)' }}>
+          {state.label}: {state.loading ? 'обновляется; прежние данные ещё не подтверждены' : state.error}
+        </div>
+      ))}
       {toast && (
         <div
           style={{

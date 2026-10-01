@@ -193,26 +193,27 @@ def run_vfs_sql_import(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_backup_admin),
 ):
+    def record_audit(transaction, result):
+        _audit(
+            transaction,
+            request,
+            user,
+            "vfs.import_completed",
+            "vfs_import",
+            import_id,
+            {
+                "source_folder": result["source_folder_path"],
+                "folders_created": result["folders_created"],
+                "folders_reused": result["folders_reused"],
+                "files_imported": result["files_imported"],
+                "files_conflicts": result["files_conflicts"],
+            },
+        )
+
     try:
-        result = run_vfs_import(db, import_id, user.id, body.confirm)
+        result = run_vfs_import(db, import_id, user.id, body.confirm, before_commit=record_audit)
     except VfsImportError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc))
-    _audit(
-        db,
-        request,
-        user,
-        "vfs.import_completed",
-        "vfs_import",
-        import_id,
-        {
-            "source_folder": result["source_folder_path"],
-            "folders_created": result["folders_created"],
-            "folders_reused": result["folders_reused"],
-            "files_imported": result["files_imported"],
-            "files_conflicts": result["files_conflicts"],
-        },
-    )
-    db.commit()
     return result
 
 
@@ -306,6 +307,22 @@ def run_vfs_tree_import_route(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_backup_admin),
 ):
+    def record_audit(transaction, result):
+        _audit(
+            transaction,
+            request,
+            user,
+            "vfs.tree_import_completed",
+            "vfs_import",
+            import_id,
+            {
+                "folders_created": result["folders_created"],
+                "folders_reused": result["folders_reused"],
+                "files_imported": result["files_imported"],
+                "files_skipped": result["files_skipped"],
+            },
+        )
+
     try:
         result = run_tree_import(
             db,
@@ -317,24 +334,10 @@ def run_vfs_tree_import_route(
             body.confirm,
             preserve_parent_path=body.preserve_parent_path,
             catalog_kind=body.catalog_kind,
+            before_commit=record_audit,
         )
     except VfsImportError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc))
-    _audit(
-        db,
-        request,
-        user,
-        "vfs.tree_import_completed",
-        "vfs_import",
-        import_id,
-        {
-            "folders_created": result["folders_created"],
-            "folders_reused": result["folders_reused"],
-            "files_imported": result["files_imported"],
-            "files_skipped": result["files_skipped"],
-        },
-    )
-    db.commit()
     return result
 
 

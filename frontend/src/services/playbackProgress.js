@@ -10,6 +10,7 @@ const SAVE_INTERVAL_MS = 5000
 
 const state = {
   trackId: null,
+  generation: 0,
   lastSavedAt: 0,
   historyPosted: false,
   restoreDone: false,
@@ -42,6 +43,7 @@ function markHistoryStart(fileId, duration, completed = false) {
 }
 
 export function onTrackChanged(fileId) {
+  state.generation += 1
   state.trackId = fileId
   state.lastSavedAt = 0
   state.historyPosted = false
@@ -49,16 +51,20 @@ export function onTrackChanged(fileId) {
 }
 
 export async function tryRestorePosition(audio, fileId) {
-  if (!audio || !fileId || state.restoreDone) return
+  if (!audio || !fileId || state.restoreDone || state.trackId !== fileId) return
+  const generation = state.generation
   state.restoreDone = true
   try {
     const pos = await playbackApi.getPosition(fileId)
+    if (generation !== state.generation || state.trackId !== fileId) return
+    const boundId = audio.getAttribute?.('data-track-id')
+    if (boundId != null && boundId !== String(fileId)) return
     const offset = Number(pos?.position_sec || 0)
     const dur =
       Number.isFinite(audio.duration) && audio.duration > 0
         ? audio.duration
         : Number(pos?.duration_sec || 0)
-    if (offset < RESTORE_MIN_SEC) return
+    if (!Number.isFinite(offset) || offset < RESTORE_MIN_SEC) return
     if (dur > 0 && offset > dur * RESTORE_MAX_RATIO) return
     audio.currentTime = offset
   } catch {

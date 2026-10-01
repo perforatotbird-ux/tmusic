@@ -48,6 +48,10 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
   const [playlists, setPlaylists] = useState([])
   const [playlistsLoading, setPlaylistsLoading] = useState(false)
   const [newPlName, setNewPlName] = useState('')
+  const [playlistError, setPlaylistError] = useState(null)
+  const [playlistBusy, setPlaylistBusy] = useState(false)
+  const playlistMutationRef = useRef(false)
+  const [createUncertain, setCreateUncertain] = useState(false)
   const [addedFlash, setAddedFlash] = useState(null)
   const loadSeq = useRef(0)
 
@@ -117,44 +121,55 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
     setPlaylistTarget(track)
     if (!isAuthenticated) return
     setPlaylistsLoading(true)
+    setPlaylistError(null)
     try {
       const list = await playlistsApi.list()
       setPlaylists(list || [])
+      setCreateUncertain(false)
     } catch {
-      setPlaylists([])
+      setPlaylistError('Не удалось обновить список плейлистов. Попробуйте ещё раз.')
     } finally {
       setPlaylistsLoading(false)
     }
   }
 
   const addToPlaylist = async (playlist) => {
-    if (!playlistTarget || !playlist) return
+    if (!playlistTarget || !playlist || playlistMutationRef.current) return
+    playlistMutationRef.current = true
+    setPlaylistBusy(true)
+    setPlaylistError(null)
     try {
       await playlistsApi.addTrack(playlist.id, playlistTarget.id)
       setAddedFlash(playlist.id)
-      setTimeout(() => {
-        setAddedFlash(null)
-        setPlaylistTarget(null)
-      }, 550)
-    } catch (e) {
-      console.error(e)
+      setTimeout(() => { setAddedFlash(null); setPlaylistTarget(null) }, 550)
+    } catch (error) {
+      setPlaylistError(error?.message || 'Не удалось добавить трек в плейлист.')
+    } finally {
+      playlistMutationRef.current = false
+      setPlaylistBusy(false)
     }
   }
 
   const createAndAdd = async () => {
     const name = newPlName.trim()
-    if (!name || !playlistTarget) return
+    if (!name || !playlistTarget || playlistMutationRef.current || createUncertain) return
+    playlistMutationRef.current = true
+    setPlaylistBusy(true)
+    setPlaylistError(null)
     try {
-      const pl = await playlistsApi.create(name)
+      const pl = await playlistsApi.create(name, playlistTarget.id)
       setNewPlName('')
-      await playlistsApi.addTrack(pl.id, playlistTarget.id)
       setAddedFlash(pl.id)
-      setTimeout(() => {
-        setAddedFlash(null)
-        setPlaylistTarget(null)
-      }, 550)
-    } catch (e) {
-      console.error(e)
+      setTimeout(() => { setAddedFlash(null); setPlaylistTarget(null) }, 550)
+    } catch (error) {
+      const uncertain = !error?.status || error.status >= 500 || error.code === 'invalid_response'
+      setCreateUncertain(uncertain)
+      setPlaylistError(uncertain
+        ? 'Создание не подтверждено. Обновите список и проверьте, появился ли плейлист, перед повтором.'
+        : error?.message || 'Не удалось создать плейлист с треком.')
+    } finally {
+      playlistMutationRef.current = false
+      setPlaylistBusy(false)
     }
   }
 
@@ -582,6 +597,10 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
                 {stripExt(playlistTarget.name)}
               </div>
 
+              {playlistError && <div role="alert" style={{ color: 'var(--danger)', marginBottom: 10 }}>
+                {playlistError}
+                <button type="button" onClick={() => openPlaylistPicker(playlistTarget)} disabled={playlistBusy || playlistsLoading}>Обновить список</button>
+              </div>}
               {!isAuthenticated ? (
                 <div style={{ fontSize: '13px', color: 'var(--dim)' }}>Войдите, чтобы сохранять плейлисты.</div>
               ) : playlistsLoading ? (
@@ -592,6 +611,7 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
                     <button
                       key={pl.id}
                       onClick={() => addToPlaylist(pl)}
+                      disabled={playlistBusy}
                       style={{
                         width: '100%',
                         textAlign: 'left',
@@ -636,7 +656,7 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
                     />
                     <button
                       onClick={createAndAdd}
-                      disabled={!newPlName.trim()}
+                      disabled={!newPlName.trim() || playlistBusy || createUncertain}
                       style={{
                         background: newPlName.trim() ? 'var(--accent)' : 'var(--line-bright)',
                         color: '#141210',

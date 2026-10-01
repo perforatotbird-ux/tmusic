@@ -9,6 +9,7 @@ import logging
 from pathlib import Path
 from typing import List, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,11 @@ class Settings(BaseSettings):
     SECRET_KEY: str = secrets.token_urlsafe(32)
     SESSION_SECRET: Optional[str] = None
     ALGORITHM: str = "HS256"
+    # Explicit Argon2id policy. Bounds prevent accidental unbounded resource use.
+    PASSWORD_ARGON2_MEMORY_KIB: int = Field(65536, ge=19456, le=131072)
+    PASSWORD_ARGON2_TIME_COST: int = Field(3, ge=2, le=6)
+    PASSWORD_ARGON2_PARALLELISM: int = Field(1, ge=1, le=4)
+    PASSWORD_HASH_CONCURRENCY: int = Field(2, ge=1, le=4)
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 12  # 12 hours
     MAX_FAILED_LOGIN_ATTEMPTS: int = 5
     LOCKOUT_MINUTES: int = 15
@@ -44,8 +50,8 @@ class Settings(BaseSettings):
     COOKIE_SECURE: bool = False  # set True when serving HTTPS
     TRUST_PROXY_HEADERS: bool = False  # set True only behind a trusted reverse proxy
 
-    # One-time admin bootstrap: bcrypt hash applied at startup when the admin
-    # account is missing or still carries a legacy (non-bcrypt) hash.
+    # One-time admin bootstrap: Argon2id/bcrypt; each new configured hash
+    # is consumed once so startup never undoes a panel password change.
     ADMIN_PASSWORD_HASH: Optional[str] = None
 
     # End-to-End Encryption (AES-256-GCM Vault)
@@ -119,7 +125,7 @@ class Settings(BaseSettings):
     SUBSONIC_SERVER_NAME: str = "T-Music"
     SUBSONIC_API_VERSION: str = "1.16.1"
     # Auth (2026-09 audit): ONLY the per-user dedicated Subsonic token is
-    # accepted (p=<token> or t=md5(token+salt)). The panel bcrypt password is
+    # accepted (p=<token> or t=md5(token+salt)). The panel password is
     # deliberately NOT accepted in the query string anymore. Tokens are
     # Fernet-encrypted per user and rotate via POST /api/subsonic/credentials/rotate.
     SUBSONIC_API_PASSWORD: Optional[str] = None  # legacy env name, unused, kept to not break parsers

@@ -3,7 +3,10 @@ T-Music Playback Schemas
 """
 from typing import List, Optional
 from datetime import datetime
-from pydantic import BaseModel, ConfigDict, Field
+import math
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, field_validator
+
+MAX_HISTORY_DURATION_SEC = 24 * 3600
 
 
 class PositionResponse(BaseModel):
@@ -22,8 +25,8 @@ class PositionUpdate(BaseModel):
 
 class HistoryCreate(BaseModel):
     file_id: int
-    duration_played_sec: float = Field(default=0.0, ge=0)
-    track_duration_sec: Optional[float] = Field(default=None, ge=0)
+    duration_played_sec: FiniteFloat = Field(default=0.0, ge=0, le=MAX_HISTORY_DURATION_SEC)
+    track_duration_sec: Optional[FiniteFloat] = Field(default=None, ge=0, le=MAX_HISTORY_DURATION_SEC)
     completed: bool = False
     artist: Optional[str] = Field(default=None, max_length=200)
     track: Optional[str] = Field(default=None, max_length=300)
@@ -41,6 +44,18 @@ class HistoryItem(BaseModel):
     track_duration_sec: Optional[float] = None
     completed: bool = False
 
+    @field_validator("duration_played_sec", "track_duration_sec", mode="before")
+    @classmethod
+    def sanitize_legacy_duration(cls, value, info):
+        # Existing invalid rows must not produce null for a required number or
+        # nonfinite JSON. Normalize on read only; never rewrite history here.
+        try:
+            number = float(value)
+            if math.isfinite(number) and 0 <= number <= MAX_HISTORY_DURATION_SEC:
+                return number
+        except (TypeError, ValueError, OverflowError):
+            pass
+        return 0.0 if info.field_name == "duration_played_sec" else None
 
 class HistoryList(BaseModel):
     items: List[HistoryItem]

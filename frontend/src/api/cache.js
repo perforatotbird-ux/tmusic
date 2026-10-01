@@ -14,12 +14,12 @@ export function memoize(key, ttlMs, fetcher) {
   if (hit && Date.now() - hit.ts < hit.ttlMs) return Promise.resolve(hit.data)
   const pending = inflight.get(key)
   if (pending) return pending
-  const p = fetcher()
+  const p = Promise.resolve().then(fetcher)
     .then((data) => {
-      cache.set(key, { data, ts: Date.now(), ttlMs })
+      if (inflight.get(key) === p) cache.set(key, { data, ts: Date.now(), ttlMs })
       return data
     })
-    .finally(() => inflight.delete(key))
+    .finally(() => { if (inflight.get(key) === p) inflight.delete(key) })
   inflight.set(key, p)
   return p
 }
@@ -27,8 +27,8 @@ export function memoize(key, ttlMs, fetcher) {
 /** @param prefix remove all entries whose key starts with prefix ('' = all). */
 export function bustCache(prefix) {
   const p = prefix || ''
-  for (const key of [...cache.keys()]) {
-    if (key.startsWith(p)) cache.delete(key)
+  for (const key of new Set([...cache.keys(), ...inflight.keys()])) {
+    if (key.startsWith(p)) { cache.delete(key); inflight.delete(key) }
   }
 }
 

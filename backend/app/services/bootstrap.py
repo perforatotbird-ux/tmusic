@@ -7,7 +7,7 @@ Historical installs shipped with hardcoded default credentials
 (admin / admin123) stored as unsalted/salted SHA-256.
 This bootstrap guarantees that on startup:
   1. An active "admin" account exists.
-  2. Its password matches the bcrypt hash provided via the
+  2. Its password matches the Argon2id/bcrypt hash provided via the
      ADMIN_PASSWORD_HASH environment variable (if configured).
 
 One-shot semantics (2026-09 audit fix, minor 1):
@@ -26,6 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.security import is_supported_password_hash
 from app.models.auth import AppSetting, AppUser
 from app.utils.time import utcnow
 
@@ -33,10 +34,6 @@ logger = logging.getLogger("tmusic.bootstrap")
 
 ADMIN_USERNAME = "admin"
 _APPLIED_HASH_KEY = "admin_bootstrap_hash"
-
-
-def _is_bcrypt(hash_value: str) -> bool:
-    return bool(hash_value) and hash_value.startswith("$2")
 
 
 def _get_applied_hash(db: Session) -> str:
@@ -58,9 +55,9 @@ def ensure_admin_bootstrap(db: Session) -> None:
     """Create or repair the admin account from ADMIN_PASSWORD_HASH (one-shot)."""
     env_hash = (settings.ADMIN_PASSWORD_HASH or "").strip()
 
-    if env_hash and not _is_bcrypt(env_hash):
+    if env_hash and not is_supported_password_hash(env_hash):
         logger.error(
-            "ADMIN_PASSWORD_HASH is set but is not a bcrypt hash — ignoring it. "
+            "ADMIN_PASSWORD_HASH is not a supported Argon2id/bcrypt hash — ignoring it. "
             "Generate one with: python scripts/init_admin.py --hash-only <password>"
         )
         env_hash = ""
@@ -68,7 +65,7 @@ def ensure_admin_bootstrap(db: Session) -> None:
     applied_hash = _get_applied_hash(db) if env_hash else ""
 
     user = db.execute(
-        select(AppUser).where(AppUser.username == ADMIN_USERNAME)
+        select(AppUser).where(AppUser.username == ADMIN_USERNAME).with_for_update()
     ).scalar_one_or_none()
 
     if user is None:

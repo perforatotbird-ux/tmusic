@@ -209,13 +209,17 @@ async def test_stream_get_only_enqueues_transcode_for_playback_requests(monkeypa
 
     import app.api.stream_router as sr
 
-    track = SimpleNamespace(id=42, name="song.m4a", mime_type="audio/mp4")
+    track = SimpleNamespace(id=42, name="song.m4a", mime_type="audio/mp4", is_encrypted=False, size=1000)
     enqueued = []
 
     monkeypatch.setattr(sr.stream_service, "get_track_or_404", lambda db, file_id: track)
     monkeypatch.setattr(sr, "needs_transcoding", lambda *a, **k: True)
     monkeypatch.setattr(sr.transcoding_service, "get_result", lambda file_id: None)
     monkeypatch.setattr(sr.stream_service, "get_track_size", lambda t: 1000)
+    async def synthetic_audio(source, offset=0, limit=None):
+        yield b'A' * (limit if limit is not None else 1000)
+    monkeypatch.setattr('app.services.stream_service.fast_streamer.stream_file', synthetic_audio)
+
     monkeypatch.setattr(
         sr.transcoding_service,
         "request_transcode",

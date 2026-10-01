@@ -201,7 +201,7 @@ def run_pg_dump(db: Session, reason: str = "manual", actor_id: Optional[int] = N
         _finish_backup_run(db, run, "failed", error=error)
         return {"ok": False, "error": "Backup operation failed. See server logs."}
 
-    stamp = utcnow().strftime("%Y%m%d-%H%M%S")
+    stamp = utcnow().strftime("%Y%m%d-%H%M%S-%f")
     dump_name = f"tgmusic-{stamp}.dump"
     dump_path = bdir / dump_name
     run.name = dump_name

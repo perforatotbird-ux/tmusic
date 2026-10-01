@@ -10,13 +10,14 @@ music.env:
 Read methods (artist.getInfo, track.getInfo) need api_key only.
 Write methods need api_key + secret + session key.
 
-Never logs secrets. Network failures are swallowed.
+Never logs secrets. Write calls return explicit delivery outcomes.
 """
 import hashlib
 import json
 import logging
 import time
 from typing import Any, Dict, Optional
+from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -81,8 +82,8 @@ def _request(params: Dict[str, Any], signed: bool = False, method: str = "GET") 
         with urlopen(req, timeout=8) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
             return json.loads(raw) if raw else None
-    except Exception as e:
-        logger.warning("Last.fm request failed: %s", e)
+    except (URLError, OSError, ValueError) as e:
+        logger.warning("Last.fm request failed (%s)", type(e).__name__)
         return None
 
 
@@ -227,40 +228,58 @@ def _fetch_track_info(artist: str, track: str, album: Optional[str] = None) -> O
     }
 
 
-def update_now_playing(artist: str, track: str, album: Optional[str] = None) -> None:
+def _write_outcome(result, node_name: str) -> dict:
+    if not isinstance(result, dict):
+        return {"ok": False, "code": "provider_unavailable"}
+    if result.get("error") is not None:
+        return {"ok": False, "code": "provider_rejected"}
+    node = result.get(node_name)
+    if not isinstance(node, dict):
+        return {"ok": False, "code": "invalid_response"}
+    entries = node.get("scrobble", []) if node_name == "scrobbles" else [node]
+    if isinstance(entries, dict):
+        entries = [entries]
+    if not isinstance(entries, list) or not entries or not all(isinstance(x, dict) for x in entries):
+        return {"ok": False, "code": "invalid_response"}
+    for entry in entries:
+        ignored = entry.get("ignoredMessage")
+        if not isinstance(ignored, dict) or str(ignored.get("code")) != "0":
+            return {"ok": False, "code": "ignored"}
+    if node_name == "scrobbles":
+        attrs = node.get("@attr") or {}
+        if not isinstance(attrs, dict):
+            return {"ok": False, "code": "invalid_response"}
+        try:
+            if int(attrs.get("accepted", 0)) < 1 or int(attrs.get("ignored", 0)) != 0:
+                return {"ok": False, "code": "ignored"}
+        except (TypeError, ValueError, OverflowError):
+            return {"ok": False, "code": "invalid_response"}
+    return {"ok": True, "code": "accepted"}
+
+
+def update_now_playing(artist: str, track: str, album: Optional[str] = None) -> dict:
     if not artist or not track or not scrobble_ready():
-        return
-    params: Dict[str, Any] = {
-        "method": "track.updateNowPlaying",
-        "artist": artist,
-        "track": track,
-    }
+        return {"ok": False, "code": "skipped"}
+    params = {"method": "track.updateNowPlaying", "artist": artist, "track": track}
     if album:
         params["album"] = album
-    _post(params)
+    outcome = _write_outcome(_post(params), "nowplaying")
+    if not outcome["ok"]:
+        logger.warning("Last.fm now-playing delivery failed: %s", outcome["code"])
+    return outcome
 
 
-def scrobble(
-    artist: str,
-    track: str,
-    album: Optional[str] = None,
-    timestamp: Optional[int] = None,
-) -> None:
-    if not artist or not track:
-        return
-    if not scrobble_ready():
-        logger.debug("Scrobble skipped: LASTFM_SESSION_KEY not configured.")
-        return
-    params: Dict[str, Any] = {
-        "method": "track.scrobble",
-        "artist": artist,
-        "track": track,
-        "timestamp": int(timestamp or time.time()),
-    }
+def scrobble(artist: str, track: str, album: Optional[str] = None,
+             timestamp: Optional[int] = None) -> dict:
+    if not artist or not track or not scrobble_ready():
+        return {"ok": False, "code": "skipped"}
+    params = {"method": "track.scrobble", "artist": artist, "track": track,
+              "timestamp": int(timestamp or time.time())}
     if album:
         params["album"] = album
-    result = _post(params)
-    if result is None:
-        logger.debug("Scrobble failed for %s — %s", artist, track)
-    else:
+    outcome = _write_outcome(_post(params), "scrobbles")
+    if outcome["ok"]:
         logger.info("Scrobbled: %s — %s", artist, track)
+    else:
+        logger.warning("Scrobble delivery failed: %s", outcome["code"])
+    return outcome

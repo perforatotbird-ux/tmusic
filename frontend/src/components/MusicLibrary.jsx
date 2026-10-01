@@ -192,6 +192,10 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   // Which catalog section is on screen: the Артисты/Альбомы tabs are fixed views,
   // everything else follows the category strip picked under Медиатека.
   const viewKind = MOBILE_TAB_KIND[mobileTab] || activeKind
+  const catalogKey = JSON.stringify([viewKind, search, isAuthenticated, user?.id])
+  const catalogKeyRef = useRef(catalogKey)
+  catalogKeyRef.current = catalogKey
+  const moreRequestRef = useRef(null)
   const currentSection = SECTIONS_BY_ID[viewKind] || SECTIONS[0]
   const isAlbumSection = currentSection.isAlbum
   const folderMode = viewMode === 'folders'
@@ -218,7 +222,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     } else {
       setIsLoading(false)
     }
-  }, [viewKind, debouncedSearch, isAuthenticated])
+  }, [viewKind, debouncedSearch, isAuthenticated, user?.id])
 
   useEffect(() => {
     if (isAuthenticated) loadStats()
@@ -254,14 +258,12 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     let cancelled = false
     ;(async () => {
       try {
-        const missing = []
-        for (const c of [0, 1]) {
-          if (byCustom[c].length === 0) continue
+        const batches = await Promise.all([0, 1].map(async (c) => {
+          if (byCustom[c].length === 0) return []
           const res = await libraryApi.coversManifest(byCustom[c], c)
-          if (res && Array.isArray(res.missing)) {
-            for (const k of res.missing) missing.push(`${c}:${k}`)
-          }
-        }
+          return Array.isArray(res?.missing) ? res.missing.map((k) => `${c}:${k}`) : []
+        }))
+        const missing = batches.flat()
         if (!cancelled) {
           for (const c of [0, 1]) for (const k of byCustom[c]) markCoverProbed(c, k)
           for (const k of missing) missingCoverKeys.add(k)
@@ -287,6 +289,9 @@ export function MusicLibrary({ onOpenCoverPicker }) {
 
   const loadData = async () => {
     const mySeq = ++loadSeq.current
+    const key = catalogKeyRef.current
+    moreRequestRef.current = null
+    setLoadingMore(false)
     setIsLoading(true)
     setHasMore(false)
     try {
@@ -298,7 +303,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
           limit: LIB_PAGE_SIZE,
           offset: 0,
         })
-        if (mySeq === loadSeq.current) {
+        if (mySeq === loadSeq.current && key === catalogKeyRef.current) {
           setItems(data || [])
           setHasMore((data || []).length >= LIB_PAGE_SIZE)
         }
@@ -309,25 +314,29 @@ export function MusicLibrary({ onOpenCoverPicker }) {
           limit: LIB_PAGE_SIZE,
           offset: 0,
         })
-        if (mySeq === loadSeq.current) {
+        if (mySeq === loadSeq.current && key === catalogKeyRef.current) {
           setItems(data || [])
           setHasMore((data || []).length >= LIB_PAGE_SIZE)
         }
       }
     } catch (e) {
       console.error('Failed to load library catalog:', e)
-      if (mySeq === loadSeq.current) {
+      if (mySeq === loadSeq.current && key === catalogKeyRef.current) {
         setItems([])
         setHasMore(false)
       }
     } finally {
-      if (mySeq === loadSeq.current) setIsLoading(false)
+      if (mySeq === loadSeq.current && key === catalogKeyRef.current) setIsLoading(false)
     }
   }
 
   // Догрузка следующей страницы каталога (кнопка «Показать ещё»).
   const loadMore = async () => {
-    if (loadingMore || !hasMore) return
+    if (loadingMore || !hasMore || moreRequestRef.current) return
+    const requestId = Symbol()
+    moreRequestRef.current = requestId
+    const sequence = loadSeq.current
+    const key = catalogKeyRef.current
     setLoadingMore(true)
     try {
       const searchVal = (debouncedSearch || search || '').trim()
@@ -347,13 +356,17 @@ export function MusicLibrary({ onOpenCoverPicker }) {
           offset,
         })
       }
+      if (sequence !== loadSeq.current || key !== catalogKeyRef.current) return
       const batch = data || []
       setItems((prev) => [...prev, ...batch])
       setHasMore(batch.length >= LIB_PAGE_SIZE)
     } catch (e) {
       console.error('Failed to load more catalog items:', e)
     } finally {
-      setLoadingMore(false)
+      if (moreRequestRef.current === requestId) {
+        moreRequestRef.current = null
+        setLoadingMore(false)
+      }
     }
   }
 

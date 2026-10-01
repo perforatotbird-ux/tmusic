@@ -62,9 +62,9 @@ def test_utcnow_is_naive_utc():
     assert (datetime.now() - now).total_seconds() < 3600 * 24  # sanity: plausible wall time
 
 
-def test_bcrypt_direct_roundtrip():
+def test_argon2id_direct_roundtrip():
     h = hash_password("some-password-123")
-    assert h.startswith("$2b$")
+    assert h.startswith("$argon2id$")
     assert verify_password("some-password-123", h) is True
     assert verify_password("nope", h) is False
     assert verify_password("x", "garbage") is False

@@ -10,6 +10,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.password_work import run_password_work
 from app.core.csrf import new_csrf_token, csrf_cookie_kwargs, CSRF_COOKIE
 from app.core.database import get_db
 from app.api.dependencies import get_current_user, security_bearer
@@ -58,7 +59,7 @@ def _set_session_cookie(response: Response, token_resp: TokenResponse) -> None:
 async def login(body: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     """Authenticate with username and password."""
     client_ip = get_client_ip(request)
-    token_resp, err = AuthService.authenticate_by_password(db, body.username, body.password, client_ip)
+    token_resp, err = await run_password_work(AuthService.authenticate_by_password, db, body.username, body.password, client_ip)
     if err or not token_resp:
         raise HTTPException(status_code=401, detail=err or "Authentication failed.")
 
@@ -85,7 +86,7 @@ async def refresh_csrf(response: Response):
 
 
 @router.get("/me", response_model=UserResponse)
-async def get_me(user: AppUser = Depends(get_current_user)):
+async def get_me(request: Request, user: AppUser = Depends(get_current_user)):
     """Get currently authenticated user status."""
     return UserResponse(
         id=user.id,
@@ -93,17 +94,17 @@ async def get_me(user: AppUser = Depends(get_current_user)):
         is_active=user.is_active,
         role=getattr(user, "role", "user") or "user",
         avatar_url=_avatar_url(user),
+        password_change_required=getattr(request.state, "password_change_required", False),
     )
 
 
 @router.post("/change-password")
 async def change_password(body: ChangePasswordRequest, user: AppUser = Depends(get_current_user), db: Session = Depends(get_db)):
     """Change account password (requires current password)."""
-    from app.core.security import verify_password
-    if not verify_password(body.current_password, user.password_hash):
+    changed = await run_password_work(AuthService.change_password_with_current, db, user,
+                                      body.current_password, body.new_password)
+    if not changed:
         raise HTTPException(status_code=400, detail="Current password incorrect.")
-
-    AuthService.change_password(db, user, body.new_password)
     return {"status": "ok", "message": "Password updated successfully."}
 
 

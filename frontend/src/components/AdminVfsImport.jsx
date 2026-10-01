@@ -1,3 +1,4 @@
+import { startSerialPolling } from '../utils/serialPolling'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
@@ -71,6 +72,13 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
   const [error, setError] = useState(null)
 
   const pollRef = useRef(null)
+  const importEpoch = useRef(0)
+  const stopPolling = useCallback(() => {
+    importEpoch.current += 1
+    pollRef.current?.stop()
+    pollRef.current = null
+  }, [])
+  useEffect(() => () => stopPolling(), [stopPolling])
 
   // Загрузка корней live-БД приёмника
   const loadTargetRoots = useCallback(async () => {
@@ -116,7 +124,7 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
   }
 
   const resetAll = () => {
-    if (pollRef.current) clearInterval(pollRef.current)
+    stopPolling()
     setFile(null)
     setStaged(null)
     setExpanded(new Set())
@@ -333,7 +341,7 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
 
   // Run import
   const handleRunImport = async () => {
-    if (!staged?.import_id) return
+    if (!staged?.import_id || pollRef.current) return
     const summary = preview?.summary || {}
     const confirmed = window.confirm(
       `Импортировать ${formatNumber(summary.files_imported || 0)} новых треков в T-Music?\n\n` +
@@ -343,25 +351,24 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
     )
     if (!confirmed) return
 
+    if (importBusy) return
+    stopPolling()
+    const generation = importEpoch.current
+    const importId = staged.import_id
     setImportBusy(true)
     setError(null)
     setProgress({ current: 0, total: summary.files_total || 0, message: 'Запуск импорта…' })
 
-    // Poll progress
-    pollRef.current = setInterval(async () => {
-      try {
-        const st = await adminApi.getVfsImportStatus(staged.import_id)
-        if (st.progress) setProgress(st.progress)
-        if (st.status === 'completed' || st.status === 'failed') {
-          clearInterval(pollRef.current)
-        }
-      } catch {
-        // ignore poll errors
-      }
-    }, 600)
+    const polling = startSerialPolling(
+      () => adminApi.getVfsImportStatus(importId),
+      (status) => {
+        if (generation === importEpoch.current && status?.progress) setProgress(status.progress)
+      },
+    )
+    pollRef.current = polling
 
     try {
-      const resp = await adminApi.runTreeImport(staged.import_id, {
+      const resp = await adminApi.runTreeImport(importId, {
         selected_folder_ids: Array.from(selectedFolders),
         selected_file_ids: Array.from(selectedFiles),
         target_root_id: targetRootId ? Number(targetRootId) : null,
@@ -369,16 +376,20 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
         preserve_parent_path: preserveParentPath,
         catalog_kind: catalogKind,
       })
-      if (pollRef.current) clearInterval(pollRef.current)
+      polling.stop()
+      if (generation !== importEpoch.current) return
       setResult(resp)
       setPreview(null)
       window.dispatchEvent(new CustomEvent('tmusic:vfs-imported', { detail: resp }))
       await onImported?.(resp)
     } catch (e) {
-      if (pollRef.current) clearInterval(pollRef.current)
+      polling.stop()
+      if (generation !== importEpoch.current) return
       setError(e.message || 'Ошибка импорта')
     } finally {
-      setImportBusy(false)
+      polling.stop()
+      if (pollRef.current === polling) pollRef.current = null
+      if (generation === importEpoch.current) setImportBusy(false)
     }
   }
 

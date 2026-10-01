@@ -92,37 +92,8 @@ def _resolve_share(db: Session, token: str) -> ShareLink:
     return share
 
 
-def _stream_track_response(request: Request, track) -> StreamingResponse:
-    """Same Range/decryption path as stream_router.stream_audio_file, no auth."""
-    import urllib.parse
-
-    total_size = stream_service.get_track_size(track)
-    if total_size <= 0:
-        raise HTTPException(status_code=400, detail="Audio file has invalid size.")
-
-    range_header = request.headers.get("Range")
-    start, end, content_length = stream_service.parse_range_header(range_header, total_size)
-
-    media_type = track.mime_type or "audio/mpeg"
-    encoded_name = urllib.parse.quote(track.name)
-
-    headers = {
-        "Content-Disposition": f"inline; filename*=UTF-8''{encoded_name}",
-        "Accept-Ranges": "bytes",
-        "Content-Length": str(content_length),
-        "Cache-Control": "public, max-age=3600",
-    }
-    status_code = 206 if range_header else 200
-    if status_code == 206:
-        headers["Content-Range"] = f"bytes {start}-{end}/{total_size}"
-
-    stream_gen = stream_service.get_stream_generator(track, start, content_length)
-    return StreamingResponse(
-        stream_gen,
-        status_code=status_code,
-        media_type=media_type,
-        headers=headers,
-    )
+async def _stream_track_response(request: Request, track) -> StreamingResponse:
+    return await stream_service.build_stream_response(request, track, cache_control="public, max-age=3600")
 
 
 @router.post("/shares", response_model=ShareResponse)
@@ -190,4 +161,4 @@ async def share_stream(
 ):
     share = _resolve_share(db, token)
     track = stream_service.get_track_or_404(db, share.file_id)
-    return _stream_track_response(request, track)
+    return await _stream_track_response(request, track)

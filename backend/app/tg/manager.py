@@ -5,13 +5,14 @@ and transparent mid-stream client failover.
 """
 import time
 import base64
+import binascii
 import hashlib
 import logging
 import asyncio
 from typing import Dict, List, Optional, Tuple
 
 from pyrogram import Client, errors
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -38,62 +39,68 @@ def encrypt_session_string(plain_str: Optional[str], secret: Optional[str]) -> O
     return _fernet_for_secret(secret).encrypt(plain_str.encode()).decode()
 
 
+class TGCredentialError(ValueError):
+    """Safe failure for encrypted credentials; never reclassify them as plaintext."""
+
+
+def _looks_fernet(value: str) -> bool:
+    # Includes malformed/truncated standard prefixes. Detection does not depend
+    # on possessing the correct key; decryption success is not a format test.
+    if value.startswith("gAAAA"):
+        return True
+    try:
+        raw = base64.urlsafe_b64decode(value.encode("ascii"))
+    except (UnicodeEncodeError, binascii.Error, ValueError):
+        return False
+    return len(raw) >= 73 and raw[0] >= 0x80
+
+
 def is_encrypted(value: Optional[str], secret: Optional[str]) -> bool:
-    """True when `value` is a valid Fernet token under the given secret."""
     if not value or not secret:
         return False
     try:
         _fernet_for_secret(secret).decrypt(value.encode())
         return True
-    except Exception:
+    except InvalidToken:
         return False
 
 
 def decrypt_session_string(encrypted_str: Optional[str], secret: Optional[str]) -> Optional[str]:
-    """Decrypts Fernet-encrypted session string using SESSION_SECRET."""
     if not encrypted_str:
         return None
+    if not _looks_fernet(encrypted_str):
+        return encrypted_str  # Explicit legacy plaintext compatibility.
     if not secret:
-        return encrypted_str  # Return raw if no secret provided
-
+        raise TGCredentialError("Telegram credentials require SESSION_SECRET.")
     try:
         return _fernet_for_secret(secret).decrypt(encrypted_str.encode()).decode()
-    except Exception as e:
-        logger.warning("Session string decryption failed: %s", e)
-        # If decryption fails, the string may already be unencrypted
-        return encrypted_str
+    except (InvalidToken, UnicodeDecodeError) as exc:
+        raise TGCredentialError("Telegram credential decryption failed; stored data was not changed.") from exc
 
 
 def ensure_encrypted(value: Optional[str], secret: Optional[str]) -> Tuple[Optional[str], bool]:
-    """Return ``(stored_value, changed)`` with ``value`` Fernet-sealed at rest.
-
-    Single choke point for the "encrypt if not already encrypted" rule shared
-    by the runtime self-heal (TelegramManager.start), scripts/secure_tg_accounts.py
-    and scripts/migrate_data.py — keeps the plaintext-detection invariant in one place.
-    """
-    if not value or not secret or is_encrypted(value, secret):
+    if not value:
+        return value, False
+    if _looks_fernet(value):
+        decrypt_session_string(value, secret)  # Wrong key/corruption fails closed.
+        return value, False
+    if not secret:
         return value, False
     return encrypt_session_string(value, secret), True
 
 
 def seal_tg_account(acc: "TGAccount", secret: Optional[str]) -> int:
-    """Encrypt plaintext ``session_string``/``api_hash`` of a TGAccount in place.
-
-    Returns the number of sealed fields (0..2). Never touches the DB session —
-    callers decide when to commit (manager commits once via ``healed`` flag,
-    CLI commits after the loop, migration commits per its own flow).
-    """
-    sealed = 0
-    if acc.session_string:
-        acc.session_string, changed = ensure_encrypted(acc.session_string, secret)
-        if changed:
-            sealed += 1
-            logger.info("Re-encrypted plaintext session_string for TG account %d at rest.", acc.id)
-    if acc.api_hash:
-        acc.api_hash, changed = ensure_encrypted(acc.api_hash, secret)
-        if changed:
-            sealed += 1
-            logger.info("Re-encrypted plaintext api_hash for TG account %d at rest.", acc.id)
+    # Validate both fields before mutating either ORM attribute. A bad api_hash
+    # must not leave a partially changed account to be committed by another row.
+    session, session_changed = ensure_encrypted(acc.session_string, secret)
+    api_hash, hash_changed = ensure_encrypted(acc.api_hash, secret)
+    if session_changed:
+        acc.session_string = session
+    if hash_changed:
+        acc.api_hash = api_hash
+    sealed = int(session_changed) + int(hash_changed)
+    if sealed:
+        logger.info("Sealed %d legacy plaintext field(s) for TG account %d.", sealed, acc.id)
     return sealed
 
 

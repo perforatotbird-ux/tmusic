@@ -3,10 +3,47 @@
  * Auth relies on HttpOnly session cookie (same-origin). No JWT in localStorage.
  */
 import { createLogger } from '../utils/logger'
+import { retryAfterSeconds } from '../utils/retryAfter'
 
 const log = createLogger('api')
 
 const BASE_URL = ''
+
+export class ApiError extends Error {
+  constructor(message, { status = 0, code = 'request_failed', issues = [], retryAfter = null } = {}) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = code
+    this.issues = issues
+    this.retryAfter = retryAfter
+  }
+}
+
+function httpError(status, body) {
+  if (status >= 500) return new ApiError('Сервис временно недоступен. Повторите попытку позже.', { status, code: 'server_error' })
+  const detail = body?.detail
+  const issues = Array.isArray(detail) ? detail.map((item) => ({
+    field: Array.isArray(item?.loc) ? item.loc.filter((part) => typeof part === 'string' || typeof part === 'number').join('.') : '',
+    message: typeof item?.msg === 'string' ? item.msg.slice(0, 300) : 'Некорректное значение',
+  })) : []
+  const message = issues.length
+    ? `Проверьте введённые данные: ${issues.map((item) => `${item.field}: ${item.message}`).join('; ')}`
+    : typeof detail === 'string' ? detail.slice(0, 500)
+    : typeof detail?.message === 'string' ? detail.message.slice(0, 500)
+    : 'Не удалось выполнить запрос.'
+  const code = typeof body?.code === 'string' ? body.code : typeof detail?.code === 'string' ? detail.code : 'request_failed'
+  return new ApiError(message, { status, code, issues })
+}
+
+async function fetchResponse(url, config) {
+  try {
+    return await fetch(url, config)
+  } catch (error) {
+    if (error?.name === 'AbortError') throw error
+    throw new ApiError('Не удалось связаться с сервером. Проверьте соединение.', { code: 'network_error' })
+  }
+}
 
 function getCookie(name) {
   const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'))
@@ -45,7 +82,7 @@ export async function request(endpoint, options = {}) {
   const started = performance.now()
   let response
   try {
-    response = await fetch(url, config)
+    response = await fetchResponse(url, config)
   } catch (networkErr) {
     log.error(`${method} ${endpoint} network error`, {
       error: networkErr,
@@ -62,7 +99,7 @@ export async function request(endpoint, options = {}) {
 
   if (response.status === 401) {
     window.dispatchEvent(new CustomEvent('tmusic:unauthorized'))
-    throw new Error('Authentication required')
+    throw new ApiError('Требуется вход в аккаунт.', { status: 401, code: 'authentication_required' })
   }
 
   // Fail-closed CSRF recovery: the server rejects cookie-authenticated
@@ -81,7 +118,7 @@ export async function request(endpoint, options = {}) {
       errCode = null
     }
     if (errCode === 'csrf_cookie_missing') {
-      const rearm = await fetch('/api/auth/csrf', { credentials: 'same-origin' })
+      const rearm = await fetchResponse('/api/auth/csrf', { credentials: 'same-origin' })
       if (rearm.ok) {
         return request(endpoint, {
           ...options,
@@ -92,21 +129,16 @@ export async function request(endpoint, options = {}) {
   }
 
   if (response.status === 429) {
-    const retryAfter = response.headers.get('Retry-After') || '60'
-    const errorDetail = `Rate limit exceeded. Retry after ${retryAfter} seconds.`
-    await new Promise(r => setTimeout(r, 1000 * parseInt(retryAfter, 10)))
-    throw new Error(errorDetail)
+    const retryAfter = retryAfterSeconds(response.headers.get('Retry-After'))
+    const errorDetail = `Слишком много запросов. Повторите через ${retryAfter} секунд.`
+    await new Promise(r => setTimeout(r, 1000 * retryAfter))
+    throw new ApiError(errorDetail, { status: 429, code: 'rate_limited', retryAfter })
   }
 
   if (!response.ok) {
-    let errorDetail = 'Request failed'
-    try {
-      const errJson = await response.json()
-      errorDetail = errJson.detail || errorDetail
-    } catch {
-      // Non-JSON error
-    }
-    throw new Error(errorDetail)
+    let body = null
+    try { body = await response.json() } catch { /* Non-JSON errors use a safe fallback. */ }
+    throw httpError(response.status, body)
   }
 
   if (response.status === 204) {
@@ -115,7 +147,9 @@ export async function request(endpoint, options = {}) {
 
   const contentType = response.headers.get('content-type')
   if (contentType && contentType.includes('application/json')) {
-    return await response.json()
+    try { return await response.json() } catch {
+      throw new ApiError('Сервер вернул некорректный ответ.', { status: response.status, code: 'invalid_response' })
+    }
   }
 
   return response

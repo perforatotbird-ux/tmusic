@@ -116,13 +116,22 @@ export function setupMediaSession(playerStore) {
   })
 }
 
+export function resolveMediaCoverUrl(value, baseUrl = typeof window !== 'undefined' ? window.location?.href : undefined) {
+  try {
+    const url = new URL(value || DEFAULT_COVER, baseUrl)
+    return ['http:', 'https:'].includes(url.protocol) ? url.href : ''
+  } catch {
+    try { return new URL(DEFAULT_COVER, baseUrl).href } catch { return '' }
+  }
+}
+
 export function updateMediaSessionMetadata(track, release) {
   if (!track) return
 
   const title = (track.name || 'Без названия').replace(/\.[^/.]+$/, '')
   const artist = release?.artistName || 'T-Music'
   const album = release?.title || ''
-  const coverUrl = release?.coverUrl || DEFAULT_COVER
+  const coverUrl = resolveMediaCoverUrl(release?.coverUrl || DEFAULT_COVER)
   const duration = track.duration || 0
 
   // Bridge to native Android service
@@ -142,16 +151,14 @@ export function updateMediaSessionMetadata(track, release) {
       title,
       artist,
       album,
-      artwork: [
+      artwork: coverUrl ? [
         { src: coverUrl, sizes: '96x96', type: 'image/jpeg' },
         { src: coverUrl, sizes: '128x128', type: 'image/jpeg' },
         { src: coverUrl, sizes: '192x192', type: 'image/jpeg' },
         { src: coverUrl, sizes: '256x256', type: 'image/jpeg' },
         { src: coverUrl, sizes: '512x512', type: 'image/jpeg' },
-      ],
+      ] : [],
     })
-    // Keep lockscreen session alive while advancing tracks.
-    setMediaPlaybackState('playing')
   } catch {
     /* ignore */
   }
