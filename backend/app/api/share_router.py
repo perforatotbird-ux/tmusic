@@ -160,5 +160,6 @@ async def share_stream(
     db: Session = Depends(get_db),
 ):
     share = _resolve_share(db, token)
-    track = stream_service.get_track_or_404(db, share.file_id)
+    track = stream_service.snapshot_track(stream_service.get_track_or_404(db, share.file_id))
+    db.close()
     return await _stream_track_response(request, track)

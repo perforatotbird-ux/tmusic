@@ -144,9 +144,24 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
   const [subsonic, setSubsonic] = useState(null)
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' })
 
+  const toastTimer = useRef(null)
+  const toastMounted = useRef(false)
+  useEffect(() => {
+    toastMounted.current = true
+    return () => {
+      toastMounted.current = false
+      clearTimeout(toastTimer.current)
+      toastTimer.current = null
+    }
+  }, [])
   const flash = useCallback((msg, kind = 'ok') => {
+    if (!toastMounted.current) return
+    clearTimeout(toastTimer.current)
     setToast({ msg, kind })
-    setTimeout(() => setToast(null), 3500)
+    toastTimer.current = setTimeout(() => {
+      toastTimer.current = null
+      setToast(null)
+    }, 3500)
   }, [])
 
   const loadAll = useCallback(async () => {

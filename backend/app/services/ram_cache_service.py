@@ -7,6 +7,7 @@ cap and a total-bytes cap (RAM_CACHE_MAX_BYTES). A count-only cap let a few
 very long tracks exhaust server memory (DoS via memory pressure).
 """
 import asyncio
+from contextlib import asynccontextmanager
 from collections import OrderedDict
 from typing import Optional, Dict
 
@@ -21,6 +22,7 @@ class RamCacheService:
         self.max_bytes = max_bytes
         self._cache: OrderedDict[int, bytes] = OrderedDict()
         self._current_bytes: int = 0
+        self._buffer_bytes: int = 0
         self._locks: Dict[int, asyncio.Lock] = {}
         self._global_lock = asyncio.Lock()
 
@@ -31,7 +33,29 @@ class RamCacheService:
             "max_items": self.max_items,
             "bytes": self._current_bytes,
             "max_bytes": self.max_bytes,
+            "buffer_bytes": self._buffer_bytes,
+            "buffer_max_bytes": self.max_bytes,
         }
+
+    @asynccontextmanager
+    async def reserve_buffer(self, plain_size: int):
+        """Nonblocking shared producer budget; reserve room for buf AND bytes copy.
+
+        Stored cache and all in-flight buffers each have a max_bytes budget.
+        Busy/oversized requests still stream, but do not accumulate a cache copy.
+        """
+        size = 2 * plain_size
+        reserved = False
+        async with self._global_lock:
+            if 0 < size <= self.max_bytes - self._buffer_bytes:
+                self._buffer_bytes += size
+                reserved = True
+        try:
+            yield reserved
+        finally:
+            if reserved:
+                async with self._global_lock:
+                    self._buffer_bytes -= size
 
     def get_lock(self, file_id: int) -> asyncio.Lock:
         if file_id not in self._locks:

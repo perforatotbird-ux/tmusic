@@ -9,6 +9,7 @@ from contextlib import aclosing
 import re
 import urllib.parse
 from dataclasses import dataclass
+from types import SimpleNamespace
 from collections import OrderedDict
 from typing import Optional, Tuple, AsyncGenerator, Dict, Any
 from fastapi import HTTPException
@@ -65,6 +66,13 @@ class StreamService:
         if not track:
             raise HTTPException(status_code=404, detail="Track not found.")
         return track
+
+    @classmethod
+    def snapshot_track(cls, track):
+        """Copy scalar stream/job fields before releasing the read transaction."""
+        return SimpleNamespace(**cls._source_snapshot(track),
+                               mime_type=getattr(track, "mime_type", None),
+                               updated_at=getattr(track, "updated_at", None))
 
     def get_track_size(self, track: VFile) -> Optional[int]:
         """Known plaintext size; encrypted cards stay unknown until header resolution."""
@@ -393,13 +401,24 @@ class StreamService:
                 async with aclosing(raw_stream), aclosing(dec_stream):
                     # Buffer entire track to RAM cache if full stream requested
                     if length >= total_plain_size and total_plain_size > 0:
-                        buf = bytearray()
-                        async for chunk in dec_stream:
-                            buf.extend(chunk)
-                            yield chunk
-                        if len(buf) != total_plain_size:
-                            raise RuntimeError("Decrypted audio source was incomplete")
-                        await ram_cache.put(file_id, bytes(buf))
+                        async with ram_cache.reserve_buffer(total_plain_size) as cacheable:
+                            buf = bytearray() if cacheable else None
+                            received = 0
+                            try:
+                                async for chunk in dec_stream:
+                                    received += len(chunk)
+                                    if received > total_plain_size:
+                                        raise RuntimeError("Decrypted audio source exceeded its size")
+                                    if buf is not None:
+                                        buf.extend(chunk)
+                                    yield chunk
+                                if received != total_plain_size:
+                                    raise RuntimeError("Decrypted audio source was incomplete")
+                                if buf is not None:
+                                    await ram_cache.put(file_id, bytes(buf))
+                            finally:
+                                if buf is not None:
+                                    buf.clear()
                     else:
                         async for chunk in dec_stream:
                             yield chunk

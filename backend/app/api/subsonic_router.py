@@ -593,7 +593,9 @@ async def _handle(
         kind, num = _parse_id(params.get("id"))
         if num is None:
             return _respond(fail(70, "Media not found."), f)
-        track = stream_service.get_track_or_404(db, num)
+        track = stream_service.snapshot_track(stream_service.get_track_or_404(db, num))
+        if db is not None:
+            db.close()
         return await stream_service.build_stream_response(request, track)
 
     if method in ("getCoverArt",):

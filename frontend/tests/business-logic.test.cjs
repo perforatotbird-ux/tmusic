@@ -72,7 +72,7 @@ for (const [stored, expected, muted] of [['0',0,true],['NaN',0.9,false],['9',1,f
 for (const event of ['transcode_started','transcode_complete','transcode_failed']) {
   test('browser ESM handles SSE without require: ' + event, () => {
     const { store, events, timers, logs } = player({ native: false })
-    store.setState({ queue: tracks, currentTrack: tracks[0] }); timers[0]()
+    store.setState({ queue: tracks, currentTrack: tracks[0] }); store.getState().startTranscodeEvents()
     events.onmessage({ data: JSON.stringify({ event, file_id: 1 }) })
     assert.equal(store.getState().notice?.kind, event === 'transcode_failed' ? 'error' : 'info')
     assert(!logs.some((args) => args[0] === 'SSE parse error'))
@@ -80,7 +80,7 @@ for (const event of ['transcode_started','transcode_complete','transcode_failed'
 }
 test('SSE ping/unrelated tracks do not change the player', () => {
   const { store, events, timers } = player({ native: false })
-  store.setState({ queue: tracks }); timers[0]()
+  store.setState({ queue: tracks }); store.getState().startTranscodeEvents()
   events.onmessage({ data: JSON.stringify({ event: 'ping' }) })
   events.onmessage({ data: JSON.stringify({ event: 'transcode_complete', file_id: 999 }) })
   assert.equal(store.getState().notice, null)

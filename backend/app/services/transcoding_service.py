@@ -43,6 +43,9 @@ PRIORITY_PLAYING = 0
 PRIORITY_PREFETCH = 1
 MAX_QUEUED_TRANSCODES = 100
 MAX_USER_ACTIVE_TRANSCODES = 50
+MAX_COMPLETED_JOBS = 1000
+COMPLETED_JOB_TTL = 3600
+JOB_SWEEP_INTERVAL = 60
 
 
 class TranscodePriorityQueue(asyncio.PriorityQueue):
@@ -108,6 +111,22 @@ class TranscodingService:
         self._started: bool = False
         self._lock = asyncio.Lock()
 
+    def _prune_jobs(self):
+        """Bound only terminal history; never evict pending/processing ownership."""
+        now = time.time()
+        terminal = []
+        for file_id, job in list(self._jobs.items()):
+            if job.status in (TranscodeStatus.PENDING, TranscodeStatus.PROCESSING):
+                continue
+            if job.finished_at is None:
+                job.finished_at = now
+            if now - job.finished_at >= COMPLETED_JOB_TTL:
+                self._jobs.pop(file_id, None)
+            else:
+                terminal.append((job.finished_at, file_id))
+        for _, file_id in sorted(terminal)[:max(0, len(terminal) - MAX_COMPLETED_JOBS)]:
+            self._jobs.pop(file_id, None)
+
     # ─── Lifecycle ─────────────────────────────────────────────────────────────
 
     def start(self, num_workers: int = None):
@@ -125,12 +144,18 @@ class TranscodingService:
     async def shutdown(self):
         """Cancel all background workers. Called from app lifespan."""
         if not self._started:
+            self._jobs.clear()
             return
         self._started = False
         for task in self._workers:
             task.cancel()
         await asyncio.gather(*self._workers, return_exceptions=True)
         self._workers.clear()
+        self._jobs.clear()
+        if self._queue is not None:
+            while not self._queue.empty():
+                self._queue.get_nowait()
+                self._queue.task_done()
         # Notify clients of shutdown
         self._notify({
             "event": "service_shutdown",
@@ -207,7 +232,9 @@ class TranscodingService:
 
         if not is_transcode:
             # File doesn't need transcoding — update cache and notify
-            self._set_cached(track.id, cache_key, ready=False, not_needed=True)
+            job.status = TranscodeStatus.NOT_NEEDED
+            job.finished_at = time.time()
+            self._prune_jobs()
             return TranscodeStatus.NOT_NEEDED
 
         # Enqueue
@@ -251,6 +278,7 @@ class TranscodingService:
 
     def get_status(self, file_id: int) -> TranscodeStatus:
         """Check current transcoding status for a file."""
+        self._prune_jobs()
         # Check in-process job state first
         job = self._jobs.get(file_id)
         if job:
@@ -273,6 +301,7 @@ class TranscodingService:
 
     def get_result(self, file_id: int) -> Optional[Dict[str, Any]]:
         """Get detailed transcode result — cached path, size, duration."""
+        self._prune_jobs()
         job = self._jobs.get(file_id)
         if job and job.status == TranscodeStatus.READY:
             return {
@@ -337,7 +366,10 @@ class TranscodingService:
         logger.info("Worker %s started", name)
         while self._started:
             try:
-                priority, ts, file_id = await self._queue.get()
+                priority, ts, file_id = await asyncio.wait_for(self._queue.get(), JOB_SWEEP_INTERVAL)
+            except asyncio.TimeoutError:
+                self._prune_jobs()
+                continue
             except asyncio.CancelledError:
                 break
 
@@ -423,6 +455,7 @@ class TranscodingService:
                     }, job.requester_user_ids)
             finally:
                 self._queue.task_done()
+                self._prune_jobs()
 
         logger.info("Worker %s stopped", name)
 
@@ -442,6 +475,10 @@ class TranscodingService:
             track = FileRepository.get_by_id(db, job.file_id)
             if not track:
                 raise ValueError(f"Track {job.file_id} not found in DB")
+
+            from app.services.stream_service import stream_service
+            track = stream_service.snapshot_track(track)
+            db.close()
 
             # Build source_data dict for fast_streamer (same as stream_service does)
             source_data = {

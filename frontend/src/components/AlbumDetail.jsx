@@ -54,6 +54,25 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
   const [createUncertain, setCreateUncertain] = useState(false)
   const [addedFlash, setAddedFlash] = useState(null)
   const loadSeq = useRef(0)
+  const flashTimer = useRef(null)
+  const flashMounted = useRef(false)
+  useEffect(() => {
+    flashMounted.current = true
+    return () => {
+      flashMounted.current = false
+      clearTimeout(flashTimer.current)
+      flashTimer.current = null
+    }
+  }, [])
+  const clearPlaylistFlashLater = () => {
+    if (!flashMounted.current) return
+    clearTimeout(flashTimer.current)
+    flashTimer.current = setTimeout(() => {
+      flashTimer.current = null
+      setAddedFlash(null)
+      setPlaylistTarget(null)
+    }, 550)
+  }
 
   const { playQueue, queue, queueIndex, isPlaying, togglePlay, playNext, addToQueue, setNotice, durations } = usePlayerStore()
   const { isAuthenticated } = useAuthStore()
@@ -141,7 +160,7 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
     try {
       await playlistsApi.addTrack(playlist.id, playlistTarget.id)
       setAddedFlash(playlist.id)
-      setTimeout(() => { setAddedFlash(null); setPlaylistTarget(null) }, 550)
+      clearPlaylistFlashLater()
     } catch (error) {
       setPlaylistError(error?.message || 'Не удалось добавить трек в плейлист.')
     } finally {
@@ -160,7 +179,7 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
       const pl = await playlistsApi.create(name, playlistTarget.id)
       setNewPlName('')
       setAddedFlash(pl.id)
-      setTimeout(() => { setAddedFlash(null); setPlaylistTarget(null) }, 550)
+      clearPlaylistFlashLater()
     } catch (error) {
       const uncertain = !error?.status || error.status >= 500 || error.code === 'invalid_response'
       setCreateUncertain(uncertain)

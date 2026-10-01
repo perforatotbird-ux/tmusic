@@ -28,7 +28,14 @@ export function App() {
   const boundTrackIdRef = useRef(null)
   const errorTrackRef = useRef({ id: null, count: 0 })
 
-  const { user, checkAuth, setAuthModalOpen } = useAuthStore()
+  const { user, isAuthenticated, checkAuth, setAuthModalOpen } = useAuthStore()
+
+  useEffect(() => {
+    if (isAuthenticated && !user?.password_change_required) {
+      usePlayerStore.getState().startTranscodeEvents()
+    }
+    return () => usePlayerStore.getState().stopTranscodeEvents()
+  }, [isAuthenticated, user?.password_change_required])
 
   useEffect(() => {
     const openPasswordChange = () => setPasswordChangeOpen(true)
@@ -54,7 +61,7 @@ export function App() {
   useEffect(() => {
     log.info('App mounted, checking session')
     checkAuth()
-    setupMediaSession(usePlayerStore)
+    const disposeMediaSession = setupMediaSession(usePlayerStore)
 
     const handleUnauthorized = () => {
       log.warn('received tmusic:unauthorized → opening auth modal')
@@ -83,6 +90,7 @@ export function App() {
 
     return () => {
       log.info('App unmounted')
+      disposeMediaSession()
       window.removeEventListener('tmusic:unauthorized', handleUnauthorized)
       if (onVis) document.removeEventListener('visibilitychange', onVis)
       if (resumeIfNeeded) window.removeEventListener('focus', resumeIfNeeded)
@@ -167,10 +175,15 @@ export function App() {
   }, [])
 
   useEffect(() => {
-    if (audioRef.current) {
-      setAudioElement(audioRef.current)
+    const audio = audioRef.current
+    if (audio) setAudioElement(audio)
+    return () => {
+      if (usePlayerStore.getState().audioElement === audio) {
+        usePlayerStore.getState().dispose()
+        boundTrackIdRef.current = null
+      }
     }
-  }, [audioRef.current])
+  }, [setAudioElement])
 
   // Metadata + resume-offset when the active track changes.
   // src/play() are started synchronously in playerStore (Android-safe).

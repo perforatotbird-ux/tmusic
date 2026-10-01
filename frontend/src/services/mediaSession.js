@@ -28,10 +28,14 @@ export function setMediaPlaybackState(state) {
   }
 }
 
+let mediaSessionCleanup = null
+
 export function setupMediaSession(playerStore) {
-  // Expose command dispatcher for native Android wrapper
-  if (typeof window !== 'undefined') {
-    window.__tmusicNativeCmd = (action, details) => {
+  if (mediaSessionCleanup) mediaSessionCleanup()
+  const actions = new Set()
+  const ms = navigator.mediaSession
+  const dispatcher = (action, details) => {
+
       const s = playerStore.getState()
       switch (action) {
         case 'play': {
@@ -76,14 +80,29 @@ export function setupMediaSession(playerStore) {
         default:
           console.warn('Unknown native media command:', action)
       }
+  }
+  if (typeof window !== 'undefined') window.__tmusicNativeCmd = dispatcher
+  const cleanup = () => {
+    if (mediaSessionCleanup !== cleanup) return
+    for (const action of actions) {
+      try { ms.setActionHandler(action, null) } catch { /* unsupported action */ }
     }
+    if (typeof window !== 'undefined' && window.__tmusicNativeCmd === dispatcher) {
+      delete window.__tmusicNativeCmd
+    }
+    if (ms) {
+      try { ms.metadata = null } catch { /* optional platform property */ }
+    }
+    setMediaPlaybackState('none')
+    mediaSessionCleanup = null
+  }
+  mediaSessionCleanup = cleanup
+  if (!ms) return cleanup
+  const setAction = (action, handler) => {
+    try { ms.setActionHandler(action, handler); actions.add(action) } catch { /* unsupported action */ }
   }
 
-  if (!('mediaSession' in navigator)) return
-
-  const ms = navigator.mediaSession
-
-  ms.setActionHandler('play', () => {
+  setAction('play', () => {
     const s = playerStore.getState()
     // OS "play" after lockscreen — resume the element even if store says playing
     // (Android often pauses the <audio> while keeping our isPlaying=true).
@@ -98,7 +117,7 @@ export function setupMediaSession(playerStore) {
     if (!s.isPlaying) s.togglePlay()
   })
 
-  ms.setActionHandler('pause', () => {
+  setAction('pause', () => {
     const s = playerStore.getState()
     if (s.isPlaying) s.togglePlay()
     else if (s.audioElement && !s.audioElement.paused) {
@@ -107,13 +126,14 @@ export function setupMediaSession(playerStore) {
     }
   })
 
-  ms.setActionHandler('previoustrack', () => playerStore.getState().prevTrack())
-  ms.setActionHandler('nexttrack', () => playerStore.getState().nextTrack())
-  ms.setActionHandler('seekto', (details) => {
+  setAction('previoustrack', () => playerStore.getState().prevTrack())
+  setAction('nexttrack', () => playerStore.getState().nextTrack())
+  setAction('seekto', (details) => {
     if (details.seekTime !== undefined) {
       playerStore.getState().seek(details.seekTime)
     }
   })
+  return cleanup
 }
 
 export function resolveMediaCoverUrl(value, baseUrl = typeof window !== 'undefined' ? window.location?.href : undefined) {

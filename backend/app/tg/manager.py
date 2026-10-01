@@ -218,6 +218,8 @@ class TelegramManager:
         is_primary: bool = False
     ) -> Optional[Client]:
         """Creates and starts an in-memory Pyrogram Client."""
+        client = None
+        registered = False
         try:
             client = Client(
                 name=f"tmusic_acc_{account_id}",
@@ -232,18 +234,13 @@ class TelegramManager:
             await client.start()
             me = await client.get_me()
             if me is None:
-                # Started but unusable: stop it here, otherwise the connected
-                # client leaks (registered nowhere, stopped never).
-                try:
-                    await client.stop()
-                except Exception:
-                    pass
                 raise RuntimeError(f"TG Account {account_id}: get_me() returned nothing.")
             username = getattr(me, "username", None) or getattr(me, "first_name", "Account")
             logger.info("Connected TG Account %d ('%s') as @%s (User ID: %s, Primary: %s)",
                         account_id, name, username, me.id, is_primary)
 
             self.clients[account_id] = client
+            registered = True
             if is_primary or self.primary_id is None:
                 self.primary_id = account_id
 
@@ -251,6 +248,19 @@ class TelegramManager:
         except Exception as e:
             logger.error("Failed to start TG Account %d ('%s'): %s", account_id, name, e)
             return None
+        finally:
+            if client is not None and not registered:
+                # CancelledError also reaches finally. Shield cleanup so a second
+                # cancellation cannot abandon the client's connection ownership.
+                cleanup = asyncio.create_task(client.stop())
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    await cleanup
+                    raise
+                except Exception:
+                    logger.warning("Failed to clean up unregistered TG Account %d", account_id,
+                                   exc_info=True)
 
     async def stop(self):
         """Disconnect and cleanup all Telegram clients."""

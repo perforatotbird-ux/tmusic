@@ -96,3 +96,8 @@ flowchart LR
 - [[music.env]]
 
 [[00-Главная]]
+
+
+## Cleanup неуспешного startup
+
+[[Ревью ресурсов 2026-10-01]]: незарегистрированный клиент останавливается в finally при ошибке get_me/start или cancellation; registered clients остаются под управлением manager.stop. Локальные изменения, без deployment.

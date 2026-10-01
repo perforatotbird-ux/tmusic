@@ -35,6 +35,20 @@ router = APIRouter(prefix="/api/stream", tags=["stream"])
 STREAM_TOKEN_TTL = timedelta(minutes=10)
 
 
+class ManagedSSEStreamingResponse(StreamingResponse):
+    """Release subscription even when disconnect precedes generator iteration."""
+    def __init__(self, *args, release, **kwargs):
+        self.release = release
+        super().__init__(*args, **kwargs)
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self.release()
+
+
+
 @router.post("/token")
 async def mint_stream_token(
     db: Session = Depends(get_db),
@@ -61,13 +75,23 @@ async def mint_stream_token(
 async def transcode_events(
     request: Request,
     user: AppUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """SSE stream for real-time transcoding notifications.
     Frontend connects with: const evtSource = new EventSource('/api/stream/transcode-events');"""
+    user_id = user.id
+    db.close()  # Auth is complete; no transaction may span an infinite response.
     try:
-        client_queue = transcoding_service.subscribe(user.id)
+        client_queue = transcoding_service.subscribe(user_id)
     except ValueError:
         raise HTTPException(status_code=429, detail="Too many SSE connections.")
+
+    released = False
+    def release():
+        nonlocal released
+        if not released:
+            released = True
+            transcoding_service.unsubscribe(user_id, client_queue)
 
     async def event_generator():
         try:
@@ -88,11 +112,12 @@ async def transcode_events(
         except Exception:
             pass
         finally:
-            transcoding_service.unsubscribe(user.id, client_queue)
+            release()
 
     # Set headers for SSE
-    response = StreamingResponse(
+    response = ManagedSSEStreamingResponse(
         event_generator(),
+        release=release,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -227,10 +252,13 @@ async def stream_audio_file(
     Full support for HTTP 206 Partial Content Range scrubbing on both plain and encrypted files.
     If a transcoded MP3 is cached on disk, serves that instead.
     """
-    track = stream_service.get_track_or_404(db, file_id)
+    track = stream_service.snapshot_track(stream_service.get_track_or_404(db, file_id))
+    user_id = getattr(user, "id", None)
+    if db is not None:
+        db.close()  # Release before Telegram preflight and slow body delivery.
 
     def enqueue_original():
         if needs_transcoding(track.name, track.mime_type) and request.headers.get("X-Prefetch") != "1":
-            transcoding_service.request_transcode(track, priority=0, requester_user_id=getattr(user, "id", None))
+            transcoding_service.request_transcode(track, priority=0, requester_user_id=user_id)
 
     return await stream_service.build_stream_response(request, track, on_original=enqueue_original)

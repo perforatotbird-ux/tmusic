@@ -56,3 +56,8 @@
 - [[API Stream]]
 
 [[00-Главная]]
+
+
+## Teardown корня
+
+[[Ревью ресурсов 2026-10-01]]: setupMediaSession возвращает owner-aware disposer, снимающий browser action handlers и native dispatcher; App вызывает его в cleanup. Audio binding также имеет dispose cleanup; playback snapshot сохраняется для повторного mount.

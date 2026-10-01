@@ -72,7 +72,7 @@ test('favorite failure differs from successful unfavorite and refresh clears war
  await store.getState().load({force:true});assert.equal(store.getState().error,null)
 })
 function album(api){let name='Synthetic',error=null,uncertain=false,busy=false;const ref={current:false},calls=[]
- const ctx={newPlName:name,playlistTarget:{id:41},playlistMutationRef:ref,createUncertain:false,playlistsApi:api,setPlaylistBusy:v=>busy=v,setPlaylistError:v=>error=v,setCreateUncertain:v=>{uncertain=v;ctx.createUncertain=v},setNewPlName:v=>name=v,setAddedFlash:v=>calls.push(v),setPlaylistTarget:noop,setTimeout:noop}
+ const ctx={newPlName:name,playlistTarget:{id:41},playlistMutationRef:ref,createUncertain:false,playlistsApi:api,setPlaylistBusy:v=>busy=v,setPlaylistError:v=>error=v,setCreateUncertain:v=>{uncertain=v;ctx.createUncertain=v},setNewPlName:v=>name=v,setAddedFlash:v=>calls.push(v),setPlaylistTarget:noop,setTimeout:noop,clearPlaylistFlashLater:noop}
  const text=source('components/AlbumDetail.jsx'),a=text.indexOf('  const createAndAdd ='),b=text.indexOf('  const releaseInfo =',a)
  vm.createContext(ctx);vm.runInContext(text.slice(a,b).replace('const createAndAdd =','globalThis.action ='),ctx)
  return {ctx,get:()=>({name,error,uncertain,busy,calls,ref})}

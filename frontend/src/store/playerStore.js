@@ -15,6 +15,7 @@ const resumeTimers = new Set()
 // ─── Background Transcoding SSE Listener ─────────────────────────────────────────────────
 let transcodeEventSource = null
 const pendingTranscodeNotifications = new Set()
+const transcodeNotificationTimers = new Set()
 
 function initTranscodeSSE() {
   if (IS_NATIVE || transcodeEventSource) return
@@ -32,7 +33,11 @@ function initTranscodeSSE() {
         const msg = `Готово: "${track.title || track.name}" теперь в MP3 320kbps`
         usePlayerStore.setState({ notice: { kind: 'info', text: msg } })
         pendingTranscodeNotifications.add(data.file_id)
-        setTimeout(() => pendingTranscodeNotifications.delete(data.file_id), 10000)
+        const timer = setTimeout(() => {
+          transcodeNotificationTimers.delete(timer)
+          pendingTranscodeNotifications.delete(data.file_id)
+        }, 10000)
+        transcodeNotificationTimers.add(timer)
       } else if (data.event === 'transcode_started' && track) {
         const msg = `Транскодинг: "${track.title || track.name}"`
         usePlayerStore.setState({ notice: { kind: 'info', text: msg } })
@@ -55,9 +60,16 @@ function initTranscodeSSE() {
   }
 }
 
-// Initialize SSE on module load
-if (!IS_NATIVE) {
-  setTimeout(initTranscodeSSE, 2000)
+function stopTranscodeSSE() {
+  if (transcodeEventSource) {
+    transcodeEventSource.onmessage = null
+    transcodeEventSource.onerror = null
+    transcodeEventSource.close()
+    transcodeEventSource = null
+  }
+  for (const timer of transcodeNotificationTimers) clearTimeout(timer)
+  transcodeNotificationTimers.clear()
+  pendingTranscodeNotifications.clear()
 }
 
 function rememberPrecached(id) {
@@ -121,6 +133,22 @@ export const usePlayerStore = create((set, get) => {
   let shuffleOrder = []
   let orderPos = -1
   let lastAudibleVolume = initialVolume > 0 ? initialVolume : 0.9
+  let resumeCleanup = null
+  let readyCleanup = null
+  let audioGeneration = 0
+
+  function clearRecovery(stopWatchdog = true) {
+    audioGeneration += 1
+    if (resumeCleanup) resumeCleanup()
+    if (readyCleanup) readyCleanup()
+    for (const timer of resumeTimers) clearTimeout(timer)
+    resumeTimers.clear()
+    if (stopWatchdog) {
+      const id = get()._watchdogId
+      if (id != null) clearInterval(id)
+      set({ _watchdogId: null })
+    }
+  }
 
   function syncShuffle(len, currentIdx, enabled) {
     if (!enabled || len === 0) {
@@ -136,6 +164,8 @@ export const usePlayerStore = create((set, get) => {
   function startAudio(fileId, { forceLoad = false, autoplay = true } = {}) {
     const audio = get().audioElement
     if (!audio || fileId == null) return
+    clearRecovery(!autoplay)
+    const generation = audioGeneration
 
     const url = streamApi.getStreamUrl(fileId)
     const key = String(fileId)
@@ -164,17 +194,19 @@ export const usePlayerStore = create((set, get) => {
     setMediaPlaybackState('playing')
 
     const tryPlay = () => {
-      if (get().currentTrack?.id !== fileId) return
+      if (generation !== audioGeneration || get().currentTrack?.id !== fileId) return
       if (!get().isPlaying) return
       const p = audio.play()
       if (p && typeof p.catch === 'function') {
         p.catch(() => {
-          if (get().currentTrack?.id !== fileId || !get().isPlaying) return
+          if (generation !== audioGeneration || get().currentTrack?.id !== fileId || !get().isPlaying) return
           const t = setTimeout(() => {
             resumeTimers.delete(t)
-            if (get().currentTrack?.id === fileId && get().isPlaying && audio.paused) {
+            if (generation === audioGeneration && get().currentTrack?.id === fileId && get().isPlaying && audio.paused) {
               const p2 = audio.play()
-              if (p2 && p2.catch) p2.catch(() => armGlobalResume())
+              if (p2 && p2.catch) p2.catch(() => {
+                if (generation === audioGeneration) armGlobalResume()
+              })
             }
           }, 250)
           resumeTimers.add(t)
@@ -187,9 +219,13 @@ export const usePlayerStore = create((set, get) => {
       tryPlay()
     } else {
       const onCanPlay = () => {
+        if (readyCleanup) readyCleanup()
+        tryPlay()
+      }
+      readyCleanup = () => {
         audio.removeEventListener('canplay', onCanPlay)
         audio.removeEventListener('loadeddata', onCanPlay)
-        tryPlay()
+        readyCleanup = null
       }
       audio.addEventListener('canplay', onCanPlay)
       audio.addEventListener('loadeddata', onCanPlay)
@@ -199,7 +235,7 @@ export const usePlayerStore = create((set, get) => {
 
   /** Resume on next user gesture / tab visible if OS blocked autoplay. */
   function armGlobalResume() {
-    if (IS_NATIVE) return
+    if (IS_NATIVE || resumeCleanup || !get().isPlaying || !get().currentTrack || !get().audioElement) return
     const handler = () => {
       const { isPlaying, currentTrack, audioElement } = get()
       if (!isPlaying || !currentTrack || !audioElement) {
@@ -221,7 +257,9 @@ export const usePlayerStore = create((set, get) => {
       document.removeEventListener('touchstart', handler)
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('focus', handler)
+      resumeCleanup = null
     }
+    resumeCleanup = cleanup
     document.addEventListener('click', handler)
     document.addEventListener('touchstart', handler)
     document.addEventListener('visibilitychange', onVis)
@@ -234,13 +272,15 @@ export const usePlayerStore = create((set, get) => {
     const id = setInterval(() => {
       const { isPlaying, currentTrack, audioElement } = get()
       if (!isPlaying || !currentTrack || !audioElement) {
-        clearInterval(id)
-        set({ _watchdogId: null })
+        clearRecovery()
         return
       }
       if (audioElement.paused && audioElement.readyState >= 1) {
+        const generation = audioGeneration
         const p = audioElement.play()
-        if (p && p.catch) p.catch(() => armGlobalResume())
+        if (p && p.catch) p.catch(() => {
+          if (generation === audioGeneration) armGlobalResume()
+        })
       }
     }, 1500)
     set({ _watchdogId: id })
@@ -304,7 +344,19 @@ export const usePlayerStore = create((set, get) => {
     audioElement: null,
     _watchdogId: null,
 
+    startTranscodeEvents: () => initTranscodeSSE(),
+    stopTranscodeEvents: () => stopTranscodeSSE(),
+    dispose: () => {
+      if (get().currentTrack && get().queue.length) persistSession(true)
+      get().reset({ preserveSession: true })
+      set({ audioElement: null })
+    },
     setAudioElement: (el) => {
+      const previous = get().audioElement
+      if (previous && previous !== el) {
+        clearRecovery()
+        previous.pause?.()
+      }
       if (el) {
         el.volume = get().volume
         el.muted = get().isMuted
@@ -367,12 +419,10 @@ export const usePlayerStore = create((set, get) => {
       return true
     },
 
-    reset: () => {
+    reset: ({ preserveSession = false, stopEvents = true } = {}) => {
       const audio = get().audioElement
-      const watchdog = get()._watchdogId
-      if (watchdog) clearInterval(watchdog)
-      for (const timer of resumeTimers) clearTimeout(timer)
-      resumeTimers.clear()
+      clearRecovery()
+      if (stopEvents) stopTranscodeSSE()
       for (const ctrl of prefetchAborts.values()) {
         try { ctrl.abort() } catch { }
       }
@@ -387,7 +437,9 @@ export const usePlayerStore = create((set, get) => {
         audio.removeAttribute('data-track-id')
       }
       setMediaPlaybackState('none')
-      try { localStorage.removeItem(SESSION_KEY) } catch { /* ignore */ }
+      if (!preserveSession) {
+        try { localStorage.removeItem(SESSION_KEY) } catch { /* ignore */ }
+      }
       set({
         currentTrack: null,
         currentRelease: null,
@@ -399,6 +451,7 @@ export const usePlayerStore = create((set, get) => {
         duration: 0,
         bufferedUpTo: 0,
         _watchdogId: null,
+        notice: null,
       })
     },
 
@@ -547,7 +600,7 @@ export const usePlayerStore = create((set, get) => {
       if (idx < 0 || idx >= queue.length) return
       const nextQueue = queue.filter((_, i) => i !== idx)
       if (nextQueue.length === 0) {
-        get().reset()
+        get().reset({ stopEvents: false })
         return
       }
       if (idx === queueIndex) {
@@ -612,6 +665,7 @@ export const usePlayerStore = create((set, get) => {
       if (!audioElement || !currentTrack) return
       if (isPlaying && !audioElement.paused) {
         audioElement.pause()
+        clearRecovery()
         set({ isPlaying: false })
         setMediaPlaybackState('paused')
         persistSession()
@@ -624,8 +678,11 @@ export const usePlayerStore = create((set, get) => {
           startAudio(currentTrack.id)
         } else {
           setMediaPlaybackState('playing')
+          const generation = audioGeneration
           const p = audioElement.play()
-          if (p && p.catch) p.catch(() => armGlobalResume())
+          if (p && p.catch) p.catch(() => {
+            if (generation === audioGeneration) armGlobalResume()
+          })
         }
         ensureWatchdog()
         persistSession()
@@ -672,6 +729,7 @@ export const usePlayerStore = create((set, get) => {
             orderPos = 0
           } else {
             orderPos = shuffleOrder.length
+            clearRecovery()
             set({ isPlaying: false })
             setMediaPlaybackState('none')
             persistSession()
@@ -690,6 +748,7 @@ export const usePlayerStore = create((set, get) => {
           if (repeat === 'all') {
             nextIdx = 0
           } else {
+            clearRecovery()
             set({ isPlaying: false })
             setMediaPlaybackState('none')
             persistSession()
@@ -700,6 +759,7 @@ export const usePlayerStore = create((set, get) => {
 
       const next = queue[nextIdx]
       if (!next) {
+        clearRecovery()
         set({ isPlaying: false })
         return
       }

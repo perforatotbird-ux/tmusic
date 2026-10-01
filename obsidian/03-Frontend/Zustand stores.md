@@ -92,3 +92,8 @@ Shuffle removal сохраняет позицию текущего трека в
 - API client ApiError хранит status/code/нормализованные validation issues (без input/ctx), retryAfter. AbortError остаётся cancellation; network/5xx generic, 4xx detail.message/validation читаемы.
 - Album picker/playlist panel показывают mutation errors, не только console. Admin allSettled помечает per-section loading/error/stale; sequence защищает новый refresh от старого ответа.
 - Проверки: 72 Node tests, production build и два mocked-API UI smoke. См. [[Ревью обработки ошибок 2026-10-01]].
+
+
+## Resource ownership
+
+[[Ревью ресурсов 2026-10-01]]: SSE управляется authenticated App effect, reset/logout закрывает source и notification timers. Recovery подписка одна, readiness и retries очищаются; dispose сохраняет session snapshot, снимает audio/queue/prefetch/watchdog. API TTL/LRU cache: 128 entries, 16 MiB estimated serialized UTF-16 payload, один expiry timer.
