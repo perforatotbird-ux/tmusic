@@ -142,12 +142,24 @@ export function AdminCatalog({ onOpenCoverPicker }) {
     setLoading(true)
     setError(null)
     try {
-      const data = await adminApi.catalogArtists({
+      // Постраничная догрузка: бэкенд отдаёт максимум 500 за раз,
+      // без этого хвост каталога (после буквы Г) просто не виден.
+      const PAGE = 500
+      const MAX_TOTAL = 20000
+      const base = {
         ...(kind ? { kind } : {}),
         ...(search.trim() ? { search: search.trim() } : {}),
-        limit: 500,
-      })
-      if (mySeq === loadSeq.current) setArtists(data || [])
+      }
+      let offset = 0
+      let all = []
+      for (;;) {
+        const batch = await adminApi.catalogArtists({ ...base, limit: PAGE, offset })
+        const items = batch || []
+        all = all.concat(items)
+        if (items.length < PAGE || all.length >= MAX_TOTAL) break
+        offset += PAGE
+      }
+      if (mySeq === loadSeq.current) setArtists(all)
     } catch (e) {
       if (mySeq === loadSeq.current) {
         setError(e.message || 'Не удалось загрузить каталог')
@@ -361,8 +373,17 @@ export function AdminCatalog({ onOpenCoverPicker }) {
 
   const selectAllAlbums = async () => {
     try {
-      const data = await adminApi.catalogAlbums({ limit: 500 })
-      const ids = (data || []).map((album) => album.id)
+      const PAGE = 500
+      let offset = 0
+      let all = []
+      for (;;) {
+        const batch = await adminApi.catalogAlbums({ limit: PAGE, offset })
+        const items = batch || []
+        all = all.concat(items)
+        if (items.length < PAGE || all.length >= 20000) break
+        offset += PAGE
+      }
+      const ids = all.map((album) => album.id)
       setSelectedAlbums((prev) => prev.length === ids.length ? [] : ids)
     } catch (e) {
       setError(e.message || 'Не удалось выбрать альбомы')
@@ -471,6 +492,11 @@ export function AdminCatalog({ onOpenCoverPicker }) {
       </div>
 
       {loading && <div style={{ padding: 20, textAlign: 'center', color: 'var(--dim)', fontSize: 13 }}><Loader2 size={20} className="animate-spin" /> Загрузка…</div>}
+      {!loading && artists.length > 0 && (
+        <div style={{ fontSize: 11.5, color: 'var(--dim)', marginBottom: 8 }}>
+          Показано карточек: <b>{artists.length}</b> (загружены все страницы, обрезки по алфавиту больше нет)
+        </div>
+      )}
       {!loading && artists.length === 0 && <div style={{ padding: 20, textAlign: 'center', color: 'var(--dim)', fontSize: 13 }}>Ничего не найдено</div>}
 
       <div style={{ display: 'flex', flexDirection: 'column' }}>

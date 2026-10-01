@@ -21,8 +21,7 @@ async def get_credentials(db: Session = Depends(get_db), user: AppUser = Depends
         "token": token,
         "server_path": "/rest",
         "auth_modes": [
-            "password = panel password (p=...)",
-            "password = token",
+            "password = Subsonic token (p=...)",
             "token auth t=md5(token+salt)&s=salt",
         ],
         "api_version": "1.16.1",

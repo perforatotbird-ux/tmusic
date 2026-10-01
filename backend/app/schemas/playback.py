@@ -88,4 +88,4 @@ class LyricsResponse(BaseModel):
     artist: Optional[str] = None
     track: Optional[str] = None
     album: Optional[str] = None
-    duration_sec: Optional[int] = None
+    duration_sec: Optional[float] = None

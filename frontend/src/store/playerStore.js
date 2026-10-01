@@ -7,12 +7,59 @@ import { createLogger } from '../utils/logger'
 const log = createLogger('player')
 
 const precachedTracks = new Set()
-// In-flight prefetch aborters, keyed by track id: a new playQueue aborts
-// previous prefetches so they stop consuming bandwidth/connections.
 const prefetchAborts = new Map()
 
 /** Retry timers for Android autoplay blocks after background/lockscreen. */
 const resumeTimers = new Set()
+
+// ─── Background Transcoding SSE Listener ─────────────────────────────────────────────────
+let transcodeEventSource = null
+const pendingTranscodeNotifications = new Set()
+
+function initTranscodeSSE() {
+  if (IS_NATIVE || transcodeEventSource) return
+  transcodeEventSource = streamApi.createTranscodeEventSource()
+
+  transcodeEventSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data)
+      if (data.event === 'ping') return
+
+      const { usePlayerStore } = require('./playerStore')
+      const state = usePlayerStore.getState()
+      const track = state.queue.find((t) => t.id === data.file_id)
+
+      if (data.event === 'transcode_complete' && track) {
+        const msg = `Готово: "${track.title || track.name}" теперь в MP3 320kbps`
+        usePlayerStore.setState({ notice: { kind: 'info', text: msg } })
+        pendingTranscodeNotifications.add(data.file_id)
+        setTimeout(() => pendingTranscodeNotifications.delete(data.file_id), 10000)
+      } else if (data.event === 'transcode_started' && track) {
+        const msg = `Транскодинг: "${track.title || track.name}"`
+        usePlayerStore.setState({ notice: { kind: 'info', text: msg } })
+      } else if (data.event === 'transcode_failed' && track) {
+        const msg = `Ошибка транскодинга: "${track.title || track.name}"`
+        usePlayerStore.setState({ notice: { kind: 'error', text: msg } })
+      } else if (data.event === 'transcode_prefetch' && track) {
+        log.debug('Started prefetching transcode for track', { id: data.file_id })
+      }
+    } catch (e) {
+      log.debug('SSE parse error', { error: e.message })
+    }
+  }
+
+  transcodeEventSource.onerror = (err) => {
+    log.debug('Transcode SSE error, reconnecting...', err)
+    transcodeEventSource = null
+    // Reconnect after 5s
+    setTimeout(initTranscodeSSE, 5000)
+  }
+}
+
+// Initialize SSE on module load
+if (!IS_NATIVE) {
+  setTimeout(initTranscodeSSE, 2000)
+}
 
 function rememberPrecached(id) {
   precachedTracks.add(id)
@@ -102,6 +149,13 @@ export const usePlayerStore = create((set, get) => {
       } catch {
         /* ignore */
       }
+      // The ONE file being requested now: ask the backend to transcode it at
+      // PLAYING priority (idempotent — a job that is already queued/running
+      // is left alone). Everything else is enqueued only after playback has
+      // actually started (prefetchNextTranscodes, App.jsx handlePlaying).
+      streamApi.triggerTranscode(fileId).catch((err) => {
+        log.debug('triggerTranscode failed', { id: fileId, error: err.message })
+      })
     }
 
     if (!autoplay) return
@@ -378,6 +432,10 @@ export const usePlayerStore = create((set, get) => {
       log.info('playTrack', { id: track.id, title: track.title, artist: track.artist, fresh_queue: idx === -1 })
       startAudio(track.id)
       ensureWatchdog()
+      // If this is a single-track play, also trigger prefetch of upcoming tracks
+      if (idx !== -1 && get().queue.length > idx + 1) {
+        setTimeout(() => get().precacheNextTracks(), 100)
+      }
       persistSession()
     },
 
@@ -797,8 +855,11 @@ export const usePlayerStore = create((set, get) => {
         const url = streamApi.getStreamUrl(track.id)
         // Fetch initial chunk with Range header. The body is consumed (into
         // the HTTP cache) so the connection is released instead of dangling.
+        // X-Prefetch tells the backend NOT to auto-trigger a transcode: a
+        // buffering request must never enqueue jobs (that caused the mass
+        // transcode of the whole upcoming window at PLAYING priority).
         fetch(url, {
-          headers: { Range: `bytes=0-${bytes - 1}` },
+          headers: { Range: `bytes=0-${bytes - 1}`, 'X-Prefetch': '1' },
           signal: ctrl.signal,
         })
           .then((resp) => {
@@ -820,6 +881,40 @@ export const usePlayerStore = create((set, get) => {
             }
           })
       }
+
+      // NOTE: background transcoding of upcoming tracks is intentionally NOT
+      // done here. See prefetchNextTranscodes() — it fires only after the
+      // current track has actually started playing (App.jsx handlePlaying),
+      // and enqueues exactly 2 tracks at PREFETCH priority.
+    },
+
+    /**
+     * Sliding transcode window: exactly the next 2 tracks in the EFFECTIVE
+     * playback order (shuffle-aware), nothing else. Called only after the
+     * current track is really playing, so a queue start no longer bulk-
+     * transcodes the whole queue — current track (priority 0, via its own
+     * playback GET) + these 2 (priority 1), then the backend stops.
+     */
+    prefetchNextTranscodes: () => {
+      const { queue, queueIndex, shuffle } = get()
+      if (!queue || queue.length === 0) return
+
+      const upcoming = shuffle ? get().upcomingIndices() : null
+      const idxs =
+        upcoming && upcoming.length
+          ? upcoming.slice(0, 2)
+          : [queueIndex + 1, queueIndex + 2]
+      const ids = []
+      for (const i of idxs) {
+        const track = queue[i]
+        if (track && track.id != null) ids.push(track.id)
+      }
+      if (ids.length === 0) return
+
+      // Fire and forget — backend skips non-transcodable and READY tracks.
+      streamApi.prefetchTracks(ids).catch((err) => {
+        log.debug('Transcode prefetch failed', { error: err.message })
+      })
     },
   }
 })

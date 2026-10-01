@@ -1,6 +1,6 @@
 {
   "name": "mobile",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "T-Music Android APK Shell",
   "type": "module",
   "main": "index.js",

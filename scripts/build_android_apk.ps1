@@ -101,8 +101,8 @@ try {
     }
 
     $buildType = if ($Release) { "assembleRelease" } else { "assembleDebug" }
-    Write-Host "Running Gradle: $buildType..." -ForegroundColor Gray
-    & $gradlew $buildType
+    Write-Host "Running Gradle: clean $buildType..." -ForegroundColor Gray
+    & $gradlew clean $buildType
     if ($LASTEXITCODE -ne 0) { throw "Gradle build failed with exit code $LASTEXITCODE" }
 
     $outDir = if ($Release) {

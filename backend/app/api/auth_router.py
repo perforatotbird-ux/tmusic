@@ -66,6 +66,24 @@ async def login(body: LoginRequest, request: Request, response: Response, db: Se
     return token_resp
 
 
+@router.get("/csrf")
+async def refresh_csrf(response: Response):
+    """Re-arm the CSRF double-submit cookie.
+
+    Called by the SPA when a mutation fails with code `csrf_cookie_missing`
+    (fail-closed CSRF — see app.core.csrf): sets a fresh readable csrf_token
+    cookie so the retried mutation can echo it in X-CSRF-Token. Unauthenticated
+    and side-effect free by design: the token is random per call and proves
+    nothing by itself — the defense is the *pair* (cookie + echoed header).
+    """
+    response.set_cookie(
+        value=new_csrf_token(),
+        max_age=60 * 60 * 24,
+        **csrf_cookie_kwargs(),
+    )
+    return {"status": "ok"}
+
+
 @router.get("/me", response_model=UserResponse)
 async def get_me(user: AppUser = Depends(get_current_user)):
     """Get currently authenticated user status."""

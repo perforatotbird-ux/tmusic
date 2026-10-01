@@ -148,6 +148,10 @@ const CARD_KIND_LABEL = Object.fromEntries(CARD_KINDS.map((k) => [k.id, k.label]
 // The "Артисты" / "Альбомы" tabs are fixed views catalogued under these kinds.
 const MOBILE_TAB_KIND = { artists: 'artist', albums: 'albums' }
 
+// Одна страница каталога главной. Бэкенд отдаёт максимум 500 за раз;
+// хвост каталога (после буквы Г) подгружается кнопкой «Показать ещё».
+const LIB_PAGE_SIZE = 200
+
 export function MusicLibrary({ onOpenCoverPicker }) {
   const [items, setItems] = useState([])
   const [selectedArtist, setSelectedArtist] = useState(null)
@@ -158,6 +162,8 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   const [mobileTab, setMobileTab] = useState('library') // 'library' | 'artists' | 'albums' | 'search' | 'profile'
   const [search, setSearch] = useState('')
   const [isLoading, setIsLoading] = useState(true)
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [stats, setStats] = useState(null)
   // 'covers' | 'folders' — Windows-style VFS hierarchy vs cover catalog
   const [viewMode, setViewMode] = useState(() => {
@@ -282,29 +288,100 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   const loadData = async () => {
     const mySeq = ++loadSeq.current
     setIsLoading(true)
+    setHasMore(false)
     try {
       // Never send search=null — backend treats it as a literal filter.
       const searchVal = (debouncedSearch || search || '').trim()
       if (viewKind === 'albums') {
         const data = await libraryApi.getAlbums({
           ...(searchVal ? { search: searchVal } : {}),
-          limit: 100,
+          limit: LIB_PAGE_SIZE,
+          offset: 0,
         })
-        if (mySeq === loadSeq.current) setItems(data || [])
+        if (mySeq === loadSeq.current) {
+          setItems(data || [])
+          setHasMore((data || []).length >= LIB_PAGE_SIZE)
+        }
       } else {
         const data = await libraryApi.getArtists({
           ...(viewKind === 'all' ? {} : { kind: viewKind }),
           ...(searchVal ? { search: searchVal } : {}),
-          limit: 100,
+          limit: LIB_PAGE_SIZE,
+          offset: 0,
         })
-        if (mySeq === loadSeq.current) setItems(data || [])
+        if (mySeq === loadSeq.current) {
+          setItems(data || [])
+          setHasMore((data || []).length >= LIB_PAGE_SIZE)
+        }
       }
     } catch (e) {
       console.error('Failed to load library catalog:', e)
-      if (mySeq === loadSeq.current) setItems([])
+      if (mySeq === loadSeq.current) {
+        setItems([])
+        setHasMore(false)
+      }
     } finally {
       if (mySeq === loadSeq.current) setIsLoading(false)
     }
+  }
+
+  // Догрузка следующей страницы каталога (кнопка «Показать ещё»).
+  const loadMore = async () => {
+    if (loadingMore || !hasMore) return
+    setLoadingMore(true)
+    try {
+      const searchVal = (debouncedSearch || search || '').trim()
+      const offset = items.length
+      let data
+      if (viewKind === 'albums') {
+        data = await libraryApi.getAlbums({
+          ...(searchVal ? { search: searchVal } : {}),
+          limit: LIB_PAGE_SIZE,
+          offset,
+        })
+      } else {
+        data = await libraryApi.getArtists({
+          ...(viewKind === 'all' ? {} : { kind: viewKind }),
+          ...(searchVal ? { search: searchVal } : {}),
+          limit: LIB_PAGE_SIZE,
+          offset,
+        })
+      }
+      const batch = data || []
+      setItems((prev) => [...prev, ...batch])
+      setHasMore(batch.length >= LIB_PAGE_SIZE)
+    } catch (e) {
+      console.error('Failed to load more catalog items:', e)
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
+  // Панель под сеткой: счётчик + кнопка «Показать ещё».
+  const renderLoadMore = () => {
+    if (items.length === 0) return null
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, padding: '18px 0 8px' }}>
+        <div style={{ fontSize: 12, color: 'var(--dim)' }}>Показано: {items.length}{hasMore ? ' — есть ещё' : ''}</div>
+        {hasMore && (
+          <button
+            type="button"
+            onClick={loadMore}
+            disabled={loadingMore}
+            style={{
+              background: 'var(--accent-muted)', color: 'var(--accent)',
+              border: '1px solid var(--line)', borderRadius: 8,
+              minHeight: 40, padding: '8px 18px', fontWeight: 800, fontSize: 13,
+              cursor: loadingMore ? 'default' : 'pointer', opacity: loadingMore ? 0.6 : 1,
+              display: 'inline-flex', alignItems: 'center', gap: 8,
+            }}
+          >
+            {loadingMore && <Loader2 size={14} className="animate-spin" />}
+            {loadingMore ? 'Загрузка…' : 'Показать ещё'}
+          </button>
+        )}
+      </div>
+    )
   }
 
   const handleSearchChange = (e) => {
@@ -1239,17 +1316,23 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                  <div style={{ fontSize: '15px', fontWeight: '700', color: 'var(--ink)' }}>Ничего не найдено</div>
                  <div style={{ fontSize: '13px' }}>Попробуйте изменить запрос</div>
                </div>
-             ) : isAlbumSection ? (
-               <div className="tmusic-grid-albums">
-                 {items.map((album) => renderAlbumCard(album))}
-               </div>
-             ) : (
-               <div className="tmusic-grid-artists">
-                 {items.map((artist) => renderArtistCard(artist))}
-               </div>
-             )}
-            </div>
-          ) : (
+              ) : isAlbumSection ? (
+                <>
+                  <div className="tmusic-grid-albums">
+                    {items.map((album) => renderAlbumCard(album))}
+                  </div>
+                  {renderLoadMore()}
+                </>
+              ) : (
+                <>
+                  <div className="tmusic-grid-artists">
+                    {items.map((artist) => renderArtistCard(artist))}
+                  </div>
+                  {renderLoadMore()}
+                </>
+              )}
+             </div>
+           ) : (
             /* ─── Catalog: Медиатека (category strip) / Артисты / Альбомы ──────── */
             <div>
               {/* Admin: create catalog cards (opened from the avatar menu) */}
@@ -1439,14 +1522,20 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               </div>
             ) : isAlbumSection ? (
               /* ─── Albums / Compilations Grid (Square Cards) ─────────────── */
-              <div className="tmusic-grid-albums">
-                {items.map((album) => renderAlbumCard(album))}
-              </div>
+              <>
+                <div className="tmusic-grid-albums">
+                  {items.map((album) => renderAlbumCard(album))}
+                </div>
+                {renderLoadMore()}
+              </>
             ) : (
               /* ─── Artists Grid (Circular Avatar Cards) ──────────────────── */
-              <div className="tmusic-grid-artists">
-                {items.map((artist) => renderArtistCard(artist))}
-              </div>
+              <>
+                <div className="tmusic-grid-artists">
+                  {items.map((artist) => renderArtistCard(artist))}
+                </div>
+                {renderLoadMore()}
+              </>
             ))}
           </div>
         )}

@@ -94,3 +94,35 @@ def test_metadata_status_includes_lyrics_flag():
         data = resp.json()
         assert "lyrics" in data
         assert "enabled" in data["lyrics"]
+
+
+def test_lyrics_endpoint_float_duration(monkeypatch):
+    """Ensure float duration from LRCLIB (e.g. 256.0933329) does not trigger Pydantic ValidationError."""
+    monkeypatch.setattr(
+        lyrics_service,
+        "get_lyrics",
+        lambda **kwargs: {
+            "found": True,
+            "source": "lrclib",
+            "plain": "Lyrics text",
+            "synced": "[00:01.00]Lyrics text",
+            "artist": "Artist",
+            "track": "Track",
+            "album": "Album",
+            "duration_sec": 256.0933329,
+        },
+    )
+    resp = client.get(
+        "/api/metadata/lyrics",
+        params={
+            "artist": "Artist",
+            "track": "Track",
+            "duration": 256,
+        },
+    )
+    assert resp.status_code in (200, 401)
+    if resp.status_code == 200:
+        data = resp.json()
+        assert data["found"] is True
+        assert data["duration_sec"] == 256.0933329
+

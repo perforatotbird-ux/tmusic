@@ -15,14 +15,21 @@ import logging
 import re
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.core.logging_config import get_frontend_logger, utc_iso
+from app.core.rate_limiter import limiter
 from app.utils.client_ip import get_client_ip
 
 router = APIRouter(prefix="/api/system", tags=["logs"])
 log = get_frontend_logger()
+
+# This endpoint is intentionally unauthenticated (login-page errors must be
+# loggable), so it gets its own tight per-IP budget on top of the shared
+# /api/* limit — an attacker cycling IPs can no longer spam-extend the log
+# faster than it rotates away (5 MB × 4 archives).
+CLIENT_LOGS_PER_MIN = 30
 
 MAX_EVENTS_PER_BATCH = 50
 MAX_MSG_LEN = 2000
@@ -73,6 +80,9 @@ class ClientLogBatch(BaseModel):
 @router.post("/client-logs")
 async def ingest_client_logs(batch: ClientLogBatch, request: Request):
     """Append a batch of frontend events to frontend.log."""
+    client_ip = get_client_ip(request)
+    if limiter.is_rate_limited(f"clientlogs:{client_ip}", CLIENT_LOGS_PER_MIN, 60):
+        raise HTTPException(status_code=429, detail="Too many log batches.")
     ip = get_client_ip(request)
     ua = (request.headers.get("user-agent") or "")[:200]
     written = 0

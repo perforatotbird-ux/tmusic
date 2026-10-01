@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.auth import AppUser
 from app.models.share import ShareLink
@@ -52,15 +53,32 @@ def _share_response(
     )
 
 
-def create_share_impl(db: Session, user_id: int, file_id: int) -> ShareLink:
-    """Shared creation path for API handler and Subsonic createShare."""
+def create_share_impl(
+    db: Session,
+    user_id: int,
+    file_id: int,
+    expires_in_hours: Optional[int] = None,
+) -> ShareLink:
+    """Shared creation path for API handler and Subsonic createShare.
+
+    2026-09 audit (minor 3): when no explicit expiry is given the share now
+    defaults to settings.SHARE_DEFAULT_TTL_HOURS (30 days) instead of never
+    expiring. Pass 0 or negative to create a permanent share explicitly via
+    the API; the Subsonic path and omitted expiry always get the default TTL.
+    """
     from datetime import timedelta
+
+    ttl_hours = expires_in_hours
+    if ttl_hours is None or ttl_hours <= 0:
+        ttl_hours = settings.SHARE_DEFAULT_TTL_HOURS if expires_in_hours is None else 0
 
     share = ShareLink(
         token=secrets.token_urlsafe(TOKEN_BYTES),
         user_id=user_id,
         file_id=file_id,
     )
+    if ttl_hours > 0:
+        share.expires_at = utcnow().replace(microsecond=0) + timedelta(hours=ttl_hours)
     db.add(share)
     db.commit()
     db.refresh(share)
@@ -117,20 +135,7 @@ async def create_share(
     vf = db.scalar(select(VFile).where(VFile.id == body.file_id, VFile.is_trash == False))  # noqa: E712
     if not vf:
         raise HTTPException(status_code=404, detail="Track not found.")
-    from datetime import timedelta
-
-    share = ShareLink(
-        token=secrets.token_urlsafe(TOKEN_BYTES),
-        user_id=user.id,
-        file_id=body.file_id,
-    )
-    if body.expires_in_hours is not None:
-        share.expires_at = utcnow().replace(microsecond=0) + timedelta(
-            hours=body.expires_in_hours
-        )
-    db.add(share)
-    db.commit()
-    db.refresh(share)
+    share = create_share_impl(db, user.id, body.file_id, expires_in_hours=body.expires_in_hours)
     return _share_response(share, request, track_name=vf.name)
 
 

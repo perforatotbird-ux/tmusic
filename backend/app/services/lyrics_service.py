@@ -49,6 +49,13 @@ def _normalize(node: Dict[str, Any]) -> Optional[dict]:
     synced = (node.get("syncedLyrics") or "").strip()
     if not plain and not synced:
         return None
+    raw_dur = node.get("duration")
+    dur_sec: Optional[float] = None
+    if raw_dur is not None:
+        try:
+            dur_sec = float(raw_dur)
+        except (ValueError, TypeError):
+            dur_sec = None
     return {
         "found": True,
         "source": "lrclib",
@@ -57,7 +64,7 @@ def _normalize(node: Dict[str, Any]) -> Optional[dict]:
         "artist": node.get("artistName"),
         "track": node.get("trackName"),
         "album": node.get("albumName"),
-        "duration_sec": node.get("duration"),
+        "duration_sec": dur_sec,
     }
 
 
@@ -96,7 +103,12 @@ def _lookup_upstream(
             if artist and artist != "Unknown":
                 artist_match = 0 if (node.get("artistName") or "").lower() == artist.lower() else 1
             dur = node.get("duration")
-            dur_gap = abs(int(dur) - duration) if (duration and dur) else 9999
+            dur_gap = 9999.0
+            if duration is not None and dur is not None:
+                try:
+                    dur_gap = abs(float(dur) - float(duration))
+                except (ValueError, TypeError):
+                    dur_gap = 9999.0
             return (has_sync, artist_match, dur_gap)
 
         for node in sorted(hits, key=score):

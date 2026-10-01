@@ -225,6 +225,8 @@ def run_pg_dump(db: Session, reason: str = "manual", actor_id: Optional[int] = N
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30 * 60,
         )
     except FileNotFoundError:
@@ -298,6 +300,8 @@ def inspect_backup(db: Session, name: str) -> Dict[str, Any]:
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
         )
     except FileNotFoundError:
@@ -348,7 +352,7 @@ def restore_backup(
         str(path),
     ]
     try:
-        proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60 * 60)
+        proc = subprocess.run(cmd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60 * 60)
     except FileNotFoundError as exc:
         _finish_backup_run(db, run, "failed", error=str(exc))
         raise RuntimeError("pg_restore not found in PATH on this host")

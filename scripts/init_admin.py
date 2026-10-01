@@ -25,35 +25,35 @@ from sqlalchemy import select  # noqa: E402
 
 from app.core.database import SessionLocal  # noqa: E402
 from app.core.security import hash_password  # noqa: E402
-from app.models.auth import AppUser  # noqa: E402
+from app.models.auth import AppSetting, AppUser  # noqa: E402
 
 ADMIN_USERNAME = "admin"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Provision the T-Music admin account.")
-    parser.add_argument("--password", help="New admin password (min 8 chars).")
+    parser.add_argument("--password", help="New admin password.")
     parser.add_argument("--hash-only", metavar="PASSWORD",
                         help="Only print the bcrypt hash (for ADMIN_PASSWORD_HASH in music.env).")
     args = parser.parse_args()
 
     if args.hash_only is not None:
-        if len(args.hash_only) < 4:
-            print("ERROR: password must be at least 4 characters.", file=sys.stderr)
+        if len(args.hash_only) < 1:
+            print("ERROR: password cannot be empty.", file=sys.stderr)
             return 2
         print(hash_password(args.hash_only))
         return 0
 
     password = args.password
     if password is None:
-        password = getpass.getpass("New admin password (min 4 chars): ")
+        password = getpass.getpass("New admin password: ")
         confirm = getpass.getpass("Confirm password: ")
         if password != confirm:
             print("ERROR: passwords do not match.", file=sys.stderr)
             return 2
 
-    if password is not None and len(password) < 4:
-        print("ERROR: password must be at least 4 characters.", file=sys.stderr)
+    if password is not None and len(password) < 1:
+        print("ERROR: password cannot be empty.", file=sys.stderr)
         return 2
 
     with SessionLocal() as db:
@@ -66,15 +66,28 @@ def main() -> int:
                 print("ERROR: admin account does not exist; a password is required to create it.",
                       file=sys.stderr)
                 return 2
-            user = AppUser(username=ADMIN_USERNAME, password_hash=hash_password(password),
+            pw_hash = hash_password(password)
+            user = AppUser(username=ADMIN_USERNAME, password_hash=pw_hash,
                            is_active=True)
             db.add(user)
+            setting = db.get(AppSetting, "admin_bootstrap_hash")
+            if setting:
+                setting.value = pw_hash
+            else:
+                db.add(AppSetting(key="admin_bootstrap_hash", value=pw_hash))
             print("Admin account created.")
         else:
             if password is not None:
-                user.password_hash = hash_password(password)
+                pw_hash = hash_password(password)
+                user.password_hash = pw_hash
                 user.failed_login_attempts = 0
                 user.locked_until = None
+                user.token_version = (user.token_version or 0) + 1
+                setting = db.get(AppSetting, "admin_bootstrap_hash")
+                if setting:
+                    setting.value = pw_hash
+                else:
+                    db.add(AppSetting(key="admin_bootstrap_hash", value=pw_hash))
                 print("Admin password updated (bcrypt).")
             if not user.is_active:
                 user.is_active = True

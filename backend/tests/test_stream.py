@@ -195,3 +195,43 @@ def test_decrypt_session_string():
     # Raw string returns as-is
     assert decrypt_session_string(original, secret) == original
     assert decrypt_session_string(None, secret) is None
+
+
+@pytest.mark.asyncio
+async def test_stream_get_only_enqueues_transcode_for_playback_requests(monkeypatch):
+    """A buffering Range prefetch must never enqueue a transcode job.
+
+    Only a real playback GET (no X-Prefetch marker) may trigger the
+    PLAYING-priority job for the requested track; otherwise every queue start
+    mass-transcodes the whole upcoming window.
+    """
+    from types import SimpleNamespace
+
+    import app.api.stream_router as sr
+
+    track = SimpleNamespace(id=42, name="song.m4a", mime_type="audio/mp4")
+    enqueued = []
+
+    monkeypatch.setattr(sr.stream_service, "get_track_or_404", lambda db, file_id: track)
+    monkeypatch.setattr(sr, "needs_transcoding", lambda *a, **k: True)
+    monkeypatch.setattr(sr.transcoding_service, "get_result", lambda file_id: None)
+    monkeypatch.setattr(sr.stream_service, "get_track_size", lambda t: 1000)
+    monkeypatch.setattr(
+        sr.transcoding_service,
+        "request_transcode",
+        lambda t, priority=0: enqueued.append(priority),
+    )
+
+    # Playback request → exactly one job at PLAYING priority (0)
+    await sr.stream_audio_file(42, SimpleNamespace(headers={}), db=None, user=None)
+    assert enqueued == [0]
+    enqueued.clear()
+
+    # Buffering/prefetch request → nothing may be enqueued
+    await sr.stream_audio_file(
+        42,
+        SimpleNamespace(headers={"X-Prefetch": "1", "Range": "bytes=0-99"}),
+        db=None,
+        user=None,
+    )
+    assert enqueued == []

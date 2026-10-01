@@ -93,11 +93,18 @@ def test_admin_analytics_shape():
 
 def test_maintenance_mode_blocks_public_api(monkeypatch):
     from app.services import admin_service
+    import app.main as app_main
 
+    # The flag is TTL-cached (5 s); drop the cache so the patched
+    # get_setting is actually consulted by this test.
+    app_main.reset_maintenance_cache()
     monkeypatch.setattr(admin_service, "get_setting", lambda db, key, default=None: "true")
-    resp = client.get("/api/library/artists")
-    assert resp.status_code == 503
-    assert resp.headers.get("X-Maintenance-Mode") == "1"
+    try:
+        resp = client.get("/api/library/artists")
+        assert resp.status_code == 503
+        assert resp.headers.get("X-Maintenance-Mode") == "1"
+    finally:
+        app_main.reset_maintenance_cache()
 
 
 def test_settings_roundtrip_key_guard():

@@ -349,6 +349,92 @@ def get_vfs_import_status_route(
         raise HTTPException(status_code=exc.status_code, detail=str(exc))
 
 
+@router.get("/live-children")
+async def get_live_vfs_children(
+    parent_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_admin_user),
+):
+    """Дерево текущей БД сервера для панели приёмника (симметрия с деревом бэкапа).
+
+    Возвращает тот же shape, что и GET /import/{import_id}/children:
+    folders с subfolder_count/file_count + files с is_audio.
+    """
+    from app.services.vfs_import_service import _is_audio as _check_audio
+
+    if parent_id is None:
+        folders = list(
+            db.scalars(
+                select(Folder)
+                .where(
+                    or_(Folder.parent_id.is_(None), Folder.parent_id == 0),
+                    Folder.is_trash.is_(False),
+                )
+                .order_by(Folder.name)
+            ).all()
+        )
+        files = list(
+            db.scalars(
+                select(VFile)
+                .where(
+                    or_(VFile.folder_id.is_(None), VFile.folder_id == 0),
+                    VFile.is_trash.is_(False),
+                )
+                .order_by(VFile.name)
+            ).all()
+        )
+    else:
+        parent = db.get(Folder, parent_id)
+        if not parent or parent.is_trash:
+            raise HTTPException(status_code=404, detail="Папка приёмника не найдена")
+        folders = list(
+            db.scalars(
+                select(Folder)
+                .where(Folder.parent_id == parent_id, Folder.is_trash.is_(False))
+                .order_by(Folder.name)
+            ).all()
+        )
+        files = list(
+            db.scalars(
+                select(VFile)
+                .where(VFile.folder_id == parent_id, VFile.is_trash.is_(False))
+                .order_by(VFile.name)
+            ).all()
+        )
+
+    folder_rows = []
+    for folder in folders:
+        subfolder_count = db.scalar(
+            select(func.count(Folder.id)).where(
+                Folder.parent_id == folder.id, Folder.is_trash.is_(False)
+            )
+        ) or 0
+        file_count = db.scalar(
+            select(func.count(VFile.id)).where(
+                VFile.folder_id == folder.id, VFile.is_trash.is_(False)
+            )
+        ) or 0
+        folder_rows.append({
+            "id": folder.id,
+            "name": folder.name,
+            "parent_id": folder.parent_id,
+            "subfolder_count": int(subfolder_count),
+            "file_count": int(file_count),
+        })
+    file_rows = [
+        {
+            "id": f.id,
+            "name": f.name,
+            "folder_id": f.folder_id,
+            "size": f.size,
+            "mime_type": f.mime_type,
+            "is_audio": bool(_check_audio(f.name, f.mime_type)),
+        }
+        for f in files
+    ]
+    return {"ok": True, "parent_id": parent_id, "folders": folder_rows, "files": file_rows}
+
+
 @router.get("/folders")
 async def list_admin_folders(
     parent_id: Optional[int] = Query(None),

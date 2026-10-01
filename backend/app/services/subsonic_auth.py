@@ -1,17 +1,22 @@
 """
 T-Music Subsonic auth helpers.
-Supports:
-  - plaintext password (p=) verified against bcrypt app_users.password_hash
-  - dedicated Subsonic token as password (p=token)
-  - Subsonic token auth t=md5(token+salt), s=salt
-Token is stored Fernet-encrypted on app_users.subsonic_token_enc.
+
+2026-09 audit hardening (M-1): the PANEL bcrypt password is no longer
+accepted in the query string (`p=`). URL-logging the main account password
+was the actual risk; the dedicated Subsonic token carries no privileges
+outside /rest and rotates without touching the panel credential.
+
+Supported modes:
+  - p=<subsonic token>      (token as password)
+  - t=md5(token+salt)&s=salt (token auth)
+The token is stored Fernet-encrypted on app_users.subsonic_token_enc.
 """
 import base64
 import hashlib
-from datetime import timedelta
 import hmac
 import logging
 import secrets
+from datetime import timedelta
 from typing import Optional
 
 from cryptography.fernet import Fernet
@@ -94,6 +99,12 @@ def authenticate_subsonic(
     token: Optional[str],
     salt: Optional[str],
 ) -> Optional[AppUser]:
+    """Authenticate a Subsonic client against the DEDICATED token only.
+
+    The panel bcrypt password is deliberately NOT accepted here anymore:
+    it used to travel in the query string (`p=<panel password>`), which leaks
+    the main account credential into proxy logs and browser history.
+    """
     if not username:
         return None
     user = db.scalar(select(AppUser).where(AppUser.username == username))
@@ -105,18 +116,15 @@ def authenticate_subsonic(
         return None
 
     authenticated = False
-    if password:
-        if verify_password(password, user.password_hash):
-            authenticated = True
-        else:
-            shared = decrypt_token(user.subsonic_token_enc)
-            authenticated = bool(shared and hmac.compare_digest(password, shared))
+    shared = decrypt_token(user.subsonic_token_enc)
 
-    if not authenticated and token and salt:
-        shared = decrypt_token(user.subsonic_token_enc)
-        if shared:
-            expected = hashlib.md5((shared + salt).encode("utf-8")).hexdigest()
-            authenticated = hmac.compare_digest(token.lower(), expected.lower())
+    if password and shared:
+        # p=<token> — compare against the dedicated token only.
+        authenticated = hmac.compare_digest(password, shared)
+
+    if not authenticated and token and salt and shared:
+        expected = hashlib.md5((shared + salt).encode("utf-8")).hexdigest()
+        authenticated = hmac.compare_digest(token.lower(), expected.lower())
 
     if authenticated:
         _record_success(db, user)

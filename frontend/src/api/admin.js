@@ -101,6 +101,10 @@ export const adminApi = {
     const qs = parentId !== undefined && parentId !== null ? `?parent_id=${encodeURIComponent(parentId)}` : ''
     return request(`/api/admin/vfs/import/${encodeURIComponent(importId)}/children${qs}`)
   },
+  getLiveVfsChildren: (parentId) => {
+    const qs = parentId !== undefined && parentId !== null ? `?parent_id=${encodeURIComponent(parentId)}` : ''
+    return request(`/api/admin/vfs/live-children${qs}`)
+  },
   previewTreeImport: (importId, body = {}) =>
     request(`/api/admin/vfs/import/${encodeURIComponent(importId)}/tree-preview`, {
       method: 'POST',

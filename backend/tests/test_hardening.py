@@ -132,3 +132,34 @@ def test_stream_query_token_requires_scope():
     with SessionLocal() as db:
         assert revoke_access_token(db, tok) is True
     assert client.get("/api/auth/me", headers=me_headers).status_code == 401
+
+
+def _chunked(content: bytes):
+    # Generator content -> httpx sends Transfer-Encoding: chunked with NO
+    # Content-Length header: exercises the measure-the-actual-body path.
+    yield content
+
+
+def test_body_cap_blocks_oversize_chunked_login():
+    """M-1: 2 MB chunked body without Content-Length must be 413, not buffered."""
+    big = b"x" * (2 * 1024 * 1024)
+    resp = client.post(
+        "/api/auth/login",
+        content=_chunked(big),
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 413
+    assert resp.json() == {"detail": "Request body too large."}
+
+
+def test_body_cap_replays_small_chunked_login():
+    """M-1: a small chunked body must reach auth logic intact (401 proves
+    the replayed body parsed — the user simply does not exist)."""
+    small = b'{"username": "bodysize-probe-nobody", "password": "wrong"}'
+    resp = client.post(
+        "/api/auth/login",
+        content=_chunked(small),
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 401
+    assert resp.json() == {"detail": "Invalid credentials."}

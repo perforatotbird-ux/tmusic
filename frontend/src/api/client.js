@@ -65,6 +65,32 @@ export async function request(endpoint, options = {}) {
     throw new Error('Authentication required')
   }
 
+  // Fail-closed CSRF recovery: the server rejects cookie-authenticated
+  // mutations whose csrf_token cookie is gone (403 code=csrf_cookie_missing).
+  // Re-arm the cookie once via GET /api/auth/csrf and replay the request.
+  // Only replayed for method+endpoint — body is reused as-is (no streams).
+  if (
+    response.status === 403 &&
+    !options.headers?.['X-CSRF-Token-Replayed'] &&
+    !['GET', 'HEAD', 'OPTIONS'].includes(method)
+  ) {
+    let errCode = null
+    try {
+      errCode = (await response.clone().json())?.code || null
+    } catch {
+      errCode = null
+    }
+    if (errCode === 'csrf_cookie_missing') {
+      const rearm = await fetch('/api/auth/csrf', { credentials: 'same-origin' })
+      if (rearm.ok) {
+        return request(endpoint, {
+          ...options,
+          headers: { ...headers, 'X-CSRF-Token-Replayed': '1' },
+        })
+      }
+    }
+  }
+
   if (response.status === 429) {
     const retryAfter = response.headers.get('Retry-After') || '60'
     const errorDetail = `Rate limit exceeded. Retry after ${retryAfter} seconds.`

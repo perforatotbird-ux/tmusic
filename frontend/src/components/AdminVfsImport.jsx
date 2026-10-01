@@ -53,6 +53,14 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
 
   // Target and import state
   const [targetRootId, setTargetRootId] = useState('')
+  // Live-DB receiver tree (симметрия с деревом бэкапа слева)
+  const [targetRoots, setTargetRoots] = useState([])
+  const [targetRootFiles, setTargetRootFiles] = useState([])
+  const [targetExpanded, setTargetExpanded] = useState(() => new Set())
+  const [targetChildrenMap, setTargetChildrenMap] = useState({})
+  const [targetLoading, setTargetLoading] = useState(() => new Set())
+  const [targetSearch, setTargetSearch] = useState('')
+  const [targetTreeError, setTargetTreeError] = useState(null)
   const [preserveParentPath, setPreserveParentPath] = useState(true)
   const [catalogKind, setCatalogKind] = useState('compilation')
   const [diffBusy, setDiffBusy] = useState(false)
@@ -64,6 +72,49 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
 
   const pollRef = useRef(null)
 
+  // Загрузка корней live-БД приёмника
+  const loadTargetRoots = useCallback(async () => {
+    setTargetTreeError(null)
+    try {
+      const resp = await adminApi.getLiveVfsChildren(null)
+      setTargetRoots(resp.folders || [])
+      setTargetRootFiles(resp.files || [])
+    } catch (e) {
+      setTargetTreeError(e.message || 'Ошибка загрузки дерева T-Music')
+    }
+  }, [])
+
+  useEffect(() => {
+    if (staged?.import_id) loadTargetRoots()
+  }, [staged?.import_id, loadTargetRoots])
+
+  const toggleTargetExpand = async (folderId) => {
+    setTargetExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(folderId)) next.delete(folderId)
+      else next.add(folderId)
+      return next
+    })
+    if (!targetChildrenMap[folderId]) {
+      setTargetLoading((prev) => new Set(prev).add(folderId))
+      try {
+        const resp = await adminApi.getLiveVfsChildren(folderId)
+        setTargetChildrenMap((prev) => ({
+          ...prev,
+          [folderId]: { folders: resp.folders || [], files: resp.files || [] },
+        }))
+      } catch (e) {
+        setTargetTreeError(e.message || 'Ошибка загрузки подпапок T-Music')
+      } finally {
+        setTargetLoading((prev) => {
+          const next = new Set(prev)
+          next.delete(folderId)
+          return next
+        })
+      }
+    }
+  }
+
   const resetAll = () => {
     if (pollRef.current) clearInterval(pollRef.current)
     setFile(null)
@@ -74,6 +125,14 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
     setSelectedFolders(new Set())
     setSelectedFiles(new Set())
     setTreeSearch('')
+    setTargetRoots([])
+    setTargetRootFiles([])
+    setTargetExpanded(new Set())
+    setTargetChildrenMap({})
+    setTargetLoading(new Set())
+    setTargetSearch('')
+    setTargetTreeError(null)
+    setTargetRootId('')
     setPreserveParentPath(true)
     setCatalogKind('compilation')
     setPreview(null)
@@ -492,6 +551,98 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
     )
   }
 
+  // Узел дерева приёмника (live-БД): иконка папки + Expand + одиночный выбор цели
+  const renderTargetNode = (folder, depth = 0) => {
+    const isExpanded = targetExpanded.has(folder.id)
+    const isSelected = String(targetRootId) === String(folder.id)
+    const isLoading = targetLoading.has(folder.id)
+    const children = targetChildrenMap[folder.id]
+    const matchesFilter =
+      !targetSearch ||
+      folder.name.toLowerCase().includes(targetSearch.toLowerCase()) ||
+      (children?.folders || []).some((f) => f.name.toLowerCase().includes(targetSearch.toLowerCase()))
+    if (!matchesFilter && depth === 0) return null
+    return (
+      <div key={`target-folder-${folder.id}`} style={{ userSelect: 'none' }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '5px 8px',
+            paddingLeft: depth * 18 + 8,
+            borderRadius: 6,
+            background: isSelected ? 'rgba(80, 200, 120, 0.12)' : 'transparent',
+            borderBottom: '1px solid rgba(255, 255, 255, 0.03)',
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => toggleTargetExpand(folder.id)}
+            style={{
+              background: 'transparent', border: 0, padding: 2, cursor: 'pointer',
+              color: 'var(--dim)', display: 'flex', alignItems: 'center',
+            }}
+          >
+            {isLoading ? <Loader2 size={14} className="animate-spin" />
+              : isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          </button>
+          {isExpanded
+            ? <FolderOpen size={16} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+            : <Folder size={16} style={{ color: 'var(--accent)', flexShrink: 0 }} />}
+          <span
+            onClick={() => setTargetRootId(String(folder.id))}
+            title={`Выбрать как приёмник: ${folder.name}`}
+            style={{
+              flex: 1, fontSize: 12.5, fontWeight: isSelected ? 800 : 600, cursor: 'pointer',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              color: isSelected ? 'var(--accent)' : 'var(--ink)',
+            }}
+          >
+            {folder.name}
+          </span>
+          <span style={{ fontSize: 11, color: 'var(--dim)', flexShrink: 0 }}>
+            {folder.subfolder_count > 0 && `${folder.subfolder_count} пап.`}
+            {folder.subfolder_count > 0 && folder.file_count > 0 && ' · '}
+            {folder.file_count > 0 && `${folder.file_count} трек.`}
+          </span>
+        </div>
+        {isExpanded && children && (
+          <div>
+            {(children.folders || []).map((sub) => renderTargetNode(sub, depth + 1))}
+            {(children.files || []).slice(0, 30).map((vf) => (
+              <div
+                key={`target-file-${vf.id}`}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '3px 8px', paddingLeft: (depth + 1) * 18 + 18,
+                }}
+              >
+                {vf.is_audio
+                  ? <Music size={13} style={{ color: 'var(--dim)', flexShrink: 0 }} />
+                  : <File size={13} style={{ color: 'var(--dim)', flexShrink: 0 }} />}
+                <span style={{ flex: 1, fontSize: 11.5, color: 'var(--dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={vf.name}>
+                  {vf.name}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const selectedTargetName = useMemo(() => {
+    if (!targetRootId) return 'Корень T-Music'
+    const all = [
+      ...targetRoots,
+      ...Object.values(targetChildrenMap).flatMap((c) => c.folders || []),
+      ...targetFolders,
+    ]
+    const found = all.find((f) => String(f.id) === String(targetRootId))
+    return found ? `${found.name} · #${found.id}` : `#${targetRootId}`
+  }, [targetRootId, targetRoots, targetChildrenMap, targetFolders])
+
   const inputStyle = {
     background: 'var(--bg)',
     border: '1px solid var(--line)',
@@ -796,7 +947,7 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
 
             {/* Right Column: Destination, Diff & Import */}
             <div style={{ display: 'grid', gap: 10 }}>
-              {/* Destination selector */}
+              {/* Destination selector: live-дерево приёмника текущей БД */}
               <div
                 style={{
                   padding: 10,
@@ -807,24 +958,70 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
                   gap: 8,
                 }}
               >
-                <label style={{ display: 'grid', gap: 4, fontSize: 12 }}>
-                  <span style={{ fontWeight: 700 }}>Целевое назначение в T-Music</span>
-                  <select
-                    value={targetRootId}
-                    onChange={(e) => setTargetRootId(e.target.value)}
-                    disabled={disabled || importBusy}
-                    style={inputStyle}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontWeight: 700, fontSize: 12 }}>Приёмник в T-Music (текущая база)</span>
+                  <button
+                    type="button"
+                    onClick={loadTargetRoots}
+                    style={{ background: 'transparent', border: 0, color: 'var(--accent)', fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4 }}
                   >
-                    <option value="">Корень T-Music</option>
-                    {targetFolders
-                      .filter((item) => !item.is_trash)
-                      .map((folder) => (
-                        <option key={folder.id} value={folder.id}>
-                          {folder.name} · #{folder.id}
-                        </option>
-                      ))}
-                  </select>
-                </label>
+                    <RefreshCw size={11} /> Обновить
+                  </button>
+                </div>
+                <div style={{ fontSize: 11.5, color: 'var(--dim)' }}>
+                  Приёмник: <b style={{ color: 'var(--accent)' }}>{selectedTargetName}</b>
+                  {' '}· содержимое папки источника сравнивается с содержимым приёмника, импортируется только отсутствующее.
+                </div>
+                <div
+                  style={{
+                    border: '1px solid var(--line)',
+                    borderRadius: 8,
+                    background: 'rgba(0,0,0,0.15)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    height: 260,
+                    overflow: 'hidden',
+                  }}
+                >
+                  <div style={{ padding: '6px 8px', borderBottom: '1px solid var(--line)' }}>
+                    <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                      <Search size={13} style={{ position: 'absolute', left: 8, color: 'var(--dim)' }} />
+                      <input
+                        value={targetSearch}
+                        onChange={(e) => setTargetSearch(e.target.value)}
+                        placeholder="Фильтр приёмника…"
+                        style={{ ...inputStyle, minHeight: 30, padding: '4px 8px 4px 26px', fontSize: 11.5, width: '100%' }}
+                      />
+                      {targetSearch && (
+                        <X size={13} style={{ position: 'absolute', right: 8, color: 'var(--dim)', cursor: 'pointer' }} onClick={() => setTargetSearch('')} />
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ flex: 1, overflowY: 'auto', padding: '6px 4px' }}>
+                    <div
+                      onClick={() => setTargetRootId('')}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px',
+                        borderRadius: 6, cursor: 'pointer',
+                        background: !targetRootId ? 'rgba(80, 200, 120, 0.12)' : 'transparent',
+                        fontSize: 12.5, fontWeight: 700,
+                      }}
+                    >
+                      <Folder size={16} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                      <span style={{ flex: 1 }}>Корень T-Music</span>
+                      {!targetRootId && <span style={{ fontSize: 11, color: 'var(--accent)' }}>● приёмник</span>}
+                    </div>
+                    {targetRoots.map((folder) => renderTargetNode(folder, 0))}
+                    {targetTreeError && (
+                      <div style={{ fontSize: 11.5, color: 'var(--danger)', padding: 8 }}>{targetTreeError}</div>
+                    )}
+                    {!targetTreeError && targetRoots.length === 0 && (
+                      <div style={{ fontSize: 11.5, color: 'var(--dim)', padding: 12, textAlign: 'center' }}>
+                        Корневых папок нет — приёмником будет корень
+                      </div>
+                    )}
+                  </div>
+                </div>
 
                 {/* Catalog Kind Selector */}
                 <label style={{ display: 'grid', gap: 4, fontSize: 12 }}>
@@ -855,8 +1052,9 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
                 </label>
 
                 <div style={{ fontSize: 11, color: 'var(--dim)', lineHeight: 1.4, marginTop: 2 }}>
-                  При выборе «Корень»: если папка с тем же именем (например, <b>Music</b>) уже есть в корне T-Music,
-                  треки объединятся с ней. Существующие файлы пропускаются без дублирования.
+                  Пример: источник <b>DriveK\Music</b> → приёмник <b>Music</b>: всё содержимое источника
+                  сравнивается с содержимым приёмника по именам (без учёта регистра), совпавшие папки
+                  переиспользуются, совпавшие файлы пропускаются — импортируется только отсутствующее.
                 </div>
               </div>
 

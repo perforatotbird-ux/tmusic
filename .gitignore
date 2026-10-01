@@ -9,9 +9,15 @@ music.env
 *.sqlite3
 *.db
 
+# Database dumps / backups must never live inside the repo checkout
+# (they contain password hashes, TG session strings, encryption material).
+*.dump
+*.sql
+*Auto Backup*
+data/backups/
+
 # Logs
 *.log
-*.sql
 backend/_server.log
 backend/_server_err.log
 backend/storage/
@@ -59,3 +65,7 @@ mobile/android/app/src/main/res/xml/config.xml
 *.keystore
 *.apk
 *.aab
+
+# Ignore large FFmpeg binaries
+backend/app/utils/ffmpeg/*.dll
+backend/app/utils/ffmpeg/*.exe

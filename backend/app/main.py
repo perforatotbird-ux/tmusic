@@ -15,13 +15,14 @@ import logging
 import time
 import uuid
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode
+from urllib.parse import parse_qsl, unquote, urlencode
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.core.config import settings
 from app.core.logging_config import (
@@ -32,7 +33,7 @@ from app.core.logging_config import (
 # lifespan logger emits): JSONL file + human console + encrypted rotation.
 setup_logging()
 
-from app.core.csrf import csrf_check_failed
+from app.core.csrf import CSRF_COOKIE, csrf_check_failed
 from app.core.database import (
     wait_for_database,
     ensure_performance_indexes,
@@ -65,6 +66,7 @@ from app.api.admin_catalog_router import router as admin_catalog_router
 from app.api.admin_vfs_router import router as admin_vfs_router
 from app.services.backup_scheduler import start_backup_scheduler, stop_backup_scheduler
 from app.services.discovery_service import discovery_service
+from app.services.transcoding_service import transcoding_service
 from app.api.logs_router import router as logs_router
 from app.services import admin_service
 
@@ -142,6 +144,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Discovery service failed to start: %s", e)
 
+    # 5. Transcoding Service (background ffmpeg workers for non-browser audio formats)
+    try:
+        transcoding_service.start()
+    except Exception as e:
+        logger.warning("Transcoding service failed to start: %s", e)
+
     yield
 
     # 5. Graceful shutdown
@@ -151,6 +159,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     await discovery_service.stop()
+    await transcoding_service.shutdown()
     await tg_manager.stop()
     await cover_cache.close()
     logger.info("T-Music Server stopped cleanly.")
@@ -189,6 +198,11 @@ async def csrf_protect_middleware(request: Request, call_next):
 
     Bearer-authenticated requests, safe methods, and the session-less
     login/logout endpoints are exempt (see app.core.csrf).
+
+    Fail-closed (2026-09 audit fix): a cookie-authenticated mutation with no
+    csrf_token cookie at all is rejected too — the client re-arms via
+    GET /api/auth/csrf and retries. The 403 body carries a stable `code` so
+    the frontend can distinguish "re-arm and retry" from a real forgery.
     """
     if csrf_check_failed(request):
         ACCESS_LOG.warning(
@@ -200,9 +214,17 @@ async def csrf_protect_middleware(request: Request, call_next):
                 "client_ip": request.client.host if request.client else None,
             },
         )
+        missing_cookie = not request.cookies.get(CSRF_COOKIE)
         return JSONResponse(
             status_code=403,
-            content={"detail": "CSRF validation failed."},
+            content={
+                "detail": (
+                    "CSRF cookie missing — re-arm via GET /api/auth/csrf and retry."
+                    if missing_cookie
+                    else "CSRF validation failed."
+                ),
+                "code": "csrf_cookie_missing" if missing_cookie else "csrf_invalid",
+            },
         )
     return await call_next(request)
 
@@ -339,15 +361,59 @@ async def access_log_middleware(request: Request, call_next):
 
 
 # ─── CORS Middleware ─────────────────────────────────────────────────────────
+# 2026-09-29: the private-range regex is gated by CORS_ALLOW_LAN — turn it
+# off once every client is covered by an explicit ALLOWED_ORIGINS entry.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$",
+    allow_origin_regex=(
+        r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?$"
+        if settings.CORS_ALLOW_LAN
+        else None
+    ),
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["Content-Range", "Accept-Ranges", "Content-Length", "Content-Disposition"]
 )
+
+
+# ─── Trusted Host Middleware (2026-09-29) ────────────────────────────────────
+# Rejects requests with an unexpected Host header (400) before routing —
+# Host-header poisoning otherwise flows into generated share URLs
+# (share_router._share_url uses request.base_url). Default ["*"] preserves
+# the previous behavior; lock down via TRUSTED_HOSTS in music.env.
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.TRUSTED_HOSTS)
+
+
+# ─── Maintenance-flag short TTL cache (minor 6) ─────────────────────────────
+# maintenance_middleware previously ran a DB query for EVERY /api/ request.
+# The flag changes at human speed, so a 5-second cache keeps the check O(0)
+# DB queries in the hot path while still switching over promptly.
+_MAINTENANCE_CACHE_TTL = 5.0
+_maintenance_cache: dict = {"value": False, "checked_at": 0.0}
+
+
+def _maintenance_enabled() -> bool:
+    import time as _time
+
+    now = _time.monotonic()
+    if now - _maintenance_cache["checked_at"] < _MAINTENANCE_CACHE_TTL:
+        return _maintenance_cache["value"]
+    try:
+        with SessionLocal() as db:
+            enabled = str(admin_service.get_setting(db, "maintenance_mode", "false")).lower() in ("1", "true", "yes", "on")
+    except Exception:
+        enabled = False
+    _maintenance_cache["value"] = enabled
+    _maintenance_cache["checked_at"] = now
+    return enabled
+
+
+def reset_maintenance_cache() -> None:
+    """Drop the TTL cache (used by tests that monkeypatch get_setting)."""
+    _maintenance_cache["value"] = False
+    _maintenance_cache["checked_at"] = 0.0
 
 
 @app.middleware("http")
@@ -361,18 +427,93 @@ async def maintenance_middleware(request: Request, call_next):
         or path == "/api/system/config"
     )
     if not allowed:
-        try:
-            with SessionLocal() as db:
-                enabled = str(admin_service.get_setting(db, "maintenance_mode", "false")).lower() in ("1", "true", "yes", "on")
-        except Exception:
-            enabled = False
-        if enabled and (path.startswith("/api/") or path.startswith("/rest/")):
+        if _maintenance_enabled() and (path.startswith("/api/") or path.startswith("/rest/")):
             return JSONResponse(
                 status_code=503,
                 content={"detail": "Service is temporarily unavailable for maintenance."},
                 headers={"Retry-After": "300", "X-Maintenance-Mode": "1"},
             )
     return await call_next(request)
+
+
+# ─── Request body size cap (minor 5, hardened 2026-09-29) ───────────────────
+# Global backstop for JSON/Form endpoints: multipart uploads enforce their own
+# tighter caps, but any other POST/PUT/PATCH body is now capped at 1 MB of
+# ACTUAL bytes before parsing. The Content-Length header alone is advisory
+# (absent on chunked transfers, forgeable), so the body is measured while
+# streaming it.
+#
+# Pure-ASGI implementation (not @app.middleware): BaseHTTPMiddleware drives
+# downstream from the original receive channel, so a consumed-and-replayed
+# body would arrive empty there. Here the middleware owns `receive` and
+# replays the bounded snapshot downstream itself.
+MAX_JSON_BODY_BYTES = 1 * 1024 * 1024
+
+
+# Upload endpoints with their own, larger caps — exempt from the generic 1 MB
+# JSON backstop. (VFS import 256 MB, cover/avatar image uploads ~10 MB.)
+_UPLOAD_BODY_PATHS = (
+    "/api/admin/vfs/import",
+    "/api/library/cover",
+    "/api/auth/avatar",
+)
+
+
+class BodySizeLimitMiddleware:
+    """Cap POST/PUT/PATCH bodies on /api/* and /rest/* at 1 MB actual bytes."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("method") in ("POST", "PUT", "PATCH"):
+            # scope["path"] is still percent-encoded — decode before the
+            # prefix check so "/%61pi/..." cannot dodge the cap and still
+            # route to an /api/* endpoint.
+            path = unquote(scope.get("path", ""))
+            if path.startswith(("/api/", "/rest/")) and not path.startswith(_UPLOAD_BODY_PATHS):
+                declared = _header_value(scope, b"content-length")
+                if declared is not None:
+                    try:
+                        if int(declared) > MAX_JSON_BODY_BYTES:
+                            return await _body_too_large(scope, receive, send)
+                    except ValueError:
+                        pass  # malformed header — fall through to measuring
+                body = bytearray()
+                while True:
+                    message = await receive()
+                    if message.get("type") != "http.request":
+                        return  # client went away mid-body; nothing to serve
+                    body += message.get("body", b"")
+                    if len(body) > MAX_JSON_BODY_BYTES:
+                        return await _body_too_large(scope, receive, send)
+                    if not message.get("more_body"):
+                        break
+                snapshot = bytes(body)
+
+                async def _replay():
+                    return {"type": "http.request", "body": snapshot, "more_body": False}
+
+                return await self.app(scope, _replay, send)
+        return await self.app(scope, receive, send)
+
+
+def _header_value(scope, name: bytes):
+    for key, value in scope.get("headers", ()):  # type: ignore[union-attr]
+        if key.lower() == name:
+            try:
+                return value.decode("latin-1")
+            except Exception:
+                return None
+    return None
+
+
+async def _body_too_large(scope, receive, send):
+    response = JSONResponse(status_code=413, content={"detail": "Request body too large."})
+    return await response(scope, receive, send)
+
+
+app.add_middleware(BodySizeLimitMiddleware)
 
 
 # ─── Include API Routers ──────────────────────────────────────────────────────

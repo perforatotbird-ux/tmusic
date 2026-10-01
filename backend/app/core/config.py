@@ -80,6 +80,15 @@ class Settings(BaseSettings):
     RAM_CACHE_MAX_BYTES: int = 512 * 1024 * 1024  # 512 MB total RAM buffer cap
     PRECACHE_CHUNK_BYTES: int = 2 * 1024 * 1024  # 2MB initial chunk for pre-caching
 
+    # On-the-fly Audio Transcoding (m4a/opus → mp3 320kbps for browser compatibility)
+    TRANSCODE_CACHE_DIR: Path = BASE_DIR / "cache" / "music_transcoded"
+    TRANSCODE_ENABLED: bool = True
+    TRANSCODE_BITRATE_KBPS: int = 320  # CBR 320kbps for maximum quality
+    TRANSCODE_WORKERS: int = 2         # Concurrent background transcode workers
+    TRANSCODE_FORMATS_NEED: list = ["m4a", "mp4", "ogg", "opus", "flac", "wma", "aac"]
+    TRANSCODE_PREFETCH_COUNT: int = 2   # Number of upcoming tracks to pre-transcode
+    TRANSCODE_CACHE_MAX_BYTES: int = 10 * 1024 * 1024 * 1024  # 10 GB transcode cache cap
+
     # API rate limits (requests per minute per client IP). Auth endpoints get a
     # stricter budget. Previously hardcoded in main.py.
     API_RATE_LIMIT_PER_MIN: int = 120
@@ -109,11 +118,12 @@ class Settings(BaseSettings):
     SUBSONIC_ENABLED: bool = True
     SUBSONIC_SERVER_NAME: str = "T-Music"
     SUBSONIC_API_VERSION: str = "1.16.1"
-    # Optional dedicated Subsonic password (recommended for clients).
-    # If unset, panel user bcrypt password is accepted via p= parameter.
-    SUBSONIC_API_PASSWORD: Optional[str] = None
-    # Optional token-auth secret: clients send t=md5(SUBSONIC_TOKEN+salt)
-    SUBSONIC_TOKEN: Optional[str] = None
+    # Auth (2026-09 audit): ONLY the per-user dedicated Subsonic token is
+    # accepted (p=<token> or t=md5(token+salt)). The panel bcrypt password is
+    # deliberately NOT accepted in the query string anymore. Tokens are
+    # Fernet-encrypted per user and rotate via POST /api/subsonic/credentials/rotate.
+    SUBSONIC_API_PASSWORD: Optional[str] = None  # legacy env name, unused, kept to not break parsers
+    SUBSONIC_TOKEN: Optional[str] = None         # legacy env name, unused, kept to not break parsers
 
     # External APIs
     LASTFM_API_KEY: Optional[str] = None
@@ -130,6 +140,12 @@ class Settings(BaseSettings):
     # Lyrics (LRCLIB proxy — no API key, outbound HTTPS only)
     LYRICS_ENABLED: bool = True
     LYRICS_HTTP_TIMEOUT_SEC: int = 8
+
+    # Share links (minor 3, 2026-09 audit): a share created without an explicit
+    # expiry now defaults to this TTL instead of living forever. Set 0 to keep
+    # the legacy "never expires" behaviour. Max explicit expiry is unchanged
+    # (ShareCreate.expires_in_hours <= 24*365).
+    SHARE_DEFAULT_TTL_HOURS: int = 24 * 30  # 30 days
 
     @property
     def lastfm_secret(self) -> Optional[str]:
@@ -155,6 +171,18 @@ class Settings(BaseSettings):
         "http://localhost:5175",
         "http://127.0.0.1:5175",
     ]
+
+    # 2026-09-29 hardening knobs (both default to previous behavior).
+    # TRUSTED_HOSTS feeds Starlette TrustedHostMiddleware: requests whose
+    # Host header is not listed get a 400 before reaching any route. This
+    # kills Host-header poisoning of generated share URLs (request.base_url).
+    # Set explicit hostnames when the server has a stable address, e.g.
+    # ["tmusic.lan", "192.168.1.50:8005"]. "*" disables the check.
+    TRUSTED_HOSTS: List[str] = ["*"]
+    # CORS_ALLOW_LAN gates the private-range allow_origin_regex below.
+    # Set false once every client uses an explicit ALLOWED_ORIGINS entry —
+    # otherwise any host on the LAN can read API responses with credentials.
+    CORS_ALLOW_LAN: bool = True
 
     def get_master_keys(self) -> List[bytes]:
         """
@@ -218,3 +246,4 @@ settings.CACHE_DIR.mkdir(parents=True, exist_ok=True)
 settings.IMG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 settings.COVER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 settings.EXTERNAL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+settings.TRANSCODE_CACHE_DIR.mkdir(parents=True, exist_ok=True)

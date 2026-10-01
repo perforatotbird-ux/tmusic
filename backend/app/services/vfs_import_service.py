@@ -27,6 +27,10 @@ from app.utils.time import utcnow
 logger = logging.getLogger("tmusic.vfs.import")
 
 MAX_IMPORT_BYTES = 256 * 1024 * 1024
+# 2026-09-29: the compressed upload is capped above, but the DECOMPRESSED
+# SQL stream was unbounded (zip-bomb → disk fill). 1 GiB of SQL text is
+# orders of magnitude beyond a legitimate library dump (MAX_ROWS=1M anyway).
+MAX_IMPORT_DECOMPRESSED_BYTES = 1024 * 1024 * 1024
 MAX_ROWS = 1_000_000
 MAX_LINE_BYTES = 2 * 1024 * 1024
 PREVIEW_ITEM_LIMIT = 200
@@ -1536,6 +1540,7 @@ def stage_vfs_upload(upload: UploadFile, actor_id: int) -> Dict[str, Any]:
     is_zip = display_name.lower().endswith(".zip")
     sql_path = root / f"{import_id}.sql"
     sqlite_path = root / f"{import_id}_stage.db"
+    upload_path: Optional[Path] = None  # zip branch only; the except-cleanup below must not NameError
 
     total_bytes = 0
     try:
@@ -1558,7 +1563,11 @@ def stage_vfs_upload(upload: UploadFile, actor_id: int) -> Dict[str, Any]:
                     raise VfsImportError("В ZIP-архиве не найден файл SQL-дампа")
                 chosen = sql_names[0]
                 with zf.open(chosen) as src, sql_path.open("wb") as dst:
+                    decomp_bytes = 0
                     while c := src.read(1024 * 1024):
+                        decomp_bytes += len(c)
+                        if decomp_bytes > MAX_IMPORT_DECOMPRESSED_BYTES:
+                            raise VfsImportError("Распакованный дамп превышает допустимый размер 1 ГБ", 413)
                         dst.write(c)
         else:
             with sql_path.open("xb") as out:

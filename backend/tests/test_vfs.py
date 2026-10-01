@@ -25,6 +25,9 @@ def test_vfs_endpoints_guard():
 
 
 def test_vfs_routes_registered():
-    routes = {getattr(r, "path", "") for r in app.routes}
-    assert "/api/vfs/roots" in routes
-    assert "/api/vfs/folders/{folder_id}/tracks" in routes
+    # app.openapi() lists every registered route with full paths on all
+    # supported FastAPI versions (app.routes nesting changed in FastAPI 0.14x:
+    # included routers are wrapped in _IncludedRouter entries there).
+    paths = set(app.openapi()["paths"])
+    assert "/api/vfs/roots" in paths
+    assert "/api/vfs/folders/{folder_id}/tracks" in paths

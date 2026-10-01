@@ -251,6 +251,11 @@ export function App() {
       audioRef.current?.duration || 0,
       audioRef.current?.currentTime || 0
     )
+    // Playback of the current track actually started → NOW enqueue exactly
+    // the next 2 queue tracks (shuffle-aware) for background transcoding.
+    // The current track itself is already being transcoded via its own
+    // playback GET. Nothing else is ever enqueued: no queue-wide bulk work.
+    usePlayerStore.getState().prefetchNextTranscodes()
   }
 
   const handleError = () => {

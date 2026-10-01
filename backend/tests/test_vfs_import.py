@@ -128,7 +128,9 @@ def test_run_import_merges_vfs_in_isolated_database(tmp_path):
 
 
 def test_vfs_import_routes_are_registered():
-    paths = {getattr(route, "path", "") for route in app.routes}
+    # OpenAPI path list is stable across FastAPI versions (app.routes
+    # nesting changed in FastAPI 0.14x: _IncludedRouter wrappers).
+    paths = set(app.openapi()["paths"])
     assert "/api/admin/vfs/import/preview" in paths
     assert "/api/admin/vfs/import/{import_id}/run" in paths
     assert "/api/admin/vfs/import/upload" in paths
@@ -335,4 +337,26 @@ def test_stage_upload_real_cloudbyte_backup_if_present():
     children = get_staged_children(staged["import_id"], actor_id=1, parent_id=drive_folder["id"])
     assert "folders" in children
     assert "files" in children
+
+
+def test_stage_upload_zip_bomb_capped(monkeypatch):
+    """M-6: a highly compressible ZIP (tiny upload, huge SQL) must be
+    rejected at the decompressed-bytes cap instead of filling the disk."""
+    import zipfile
+    from io import BytesIO
+    from fastapi import UploadFile
+    import pytest
+    import app.services.vfs_import_service as vis
+
+    monkeypatch.setattr(vis, "MAX_IMPORT_DECOMPRESSED_BYTES", 1024)
+
+    bio = BytesIO()
+    with zipfile.ZipFile(bio, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("bomb.sql", "0" * (100 * 1024))  # 100 KB out, ~100 B zipped
+    bio.seek(0)
+
+    upload = UploadFile(filename="bomb.zip", file=bio)
+    with pytest.raises(vis.VfsImportError) as exc:
+        vis.stage_vfs_upload(upload, actor_id=1)
+    assert exc.value.status_code == 413
 

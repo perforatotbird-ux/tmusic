@@ -8,7 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class ShareCreate(BaseModel):
     file_id: int
-    expires_in_hours: Optional[int] = Field(default=None, ge=1, le=24 * 365)
+    # Omitted → server default TTL (settings.SHARE_DEFAULT_TTL_HOURS, 30 days).
+    # Explicit 0 → permanent (legacy behaviour, opt-in). Max is 1 year.
+    expires_in_hours: Optional[int] = Field(default=None, ge=0, le=24 * 365)
 
 
 class ShareResponse(BaseModel):

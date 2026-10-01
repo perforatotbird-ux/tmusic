@@ -8,12 +8,15 @@ from collections import OrderedDict
 from typing import Optional, Tuple, AsyncGenerator, Dict, Any
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
+from pathlib import Path
 
 from app.models.vfs import VFile
 from app.repositories.file_repository import FileRepository
 from app.services.ram_cache_service import ram_cache
 from app.services.decryption_service import DecryptionService
 from app.tg.downloader import fast_streamer
+from app.core.config import settings
+from app.utils.ffmpeg_transcoder import needs_transcoding, TranscodeStatus
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +49,15 @@ class StreamService:
         return track.size
 
     @staticmethod
+    def get_transcoded_mp3_size(track: VFile) -> Optional[int]:
+        """Returns the size of a cached transcoded MP3 if available, else None."""
+        from app.services.transcoding_service import transcoding_service
+        result = transcoding_service.get_result(track.id)
+        if result and result.get("mp3_size"):
+            return result["mp3_size"]
+        return None
+
+    @staticmethod
     def build_track_responses(db: Session, vfiles: list) -> list:
         """TrackResponse list with plaintext size + best-known duration.
 
@@ -55,15 +67,28 @@ class StreamService:
         """
         from app.schemas.stream import TrackResponse
         from app.services.playback_service import playback_service
+        from app.services.transcoding_service import transcoding_service, TranscodeStatus
 
         durations = playback_service.durations_map(db, [vf.id for vf in vfiles])
         out = []
         for vf in vfiles:
+            needs_transcode = needs_transcoding(vf.name, vf.mime_type)
+            transcode_status = transcribing_status = None
+            if needs_transcode:
+                transcode_status = transcoding_service.get_status(vf.id)
+                if transcode_status == TranscodeStatus.READY:
+                    mp3_size = StreamService.get_transcoded_mp3_size(vf)
+                    effective_size = mp3_size or StreamService.get_track_size(vf)
+                else:
+                    effective_size = StreamService.get_track_size(vf)
+            else:
+                effective_size = StreamService.get_track_size(vf)
+
             out.append(
                 TrackResponse(
                     id=vf.id,
                     name=vf.name,
-                    size=StreamService.get_track_size(vf),
+                    size=effective_size,
                     mime_type=vf.mime_type or "audio/mpeg",
                     folder_id=vf.folder_id,
                     stream_url=f"/api/stream/{vf.id}",
@@ -115,9 +140,45 @@ class StreamService:
         """
         Generates decrypted plaintext byte stream from RAM cache or Telegram MTProto.
         Detached-safe: snapshots all needed VFile attributes before yielding.
+        If a transcoded MP3 is cached on disk, streams from that instead.
         """
         file_id = track.id
         file_name = track.name
+
+        # ─── 0. Check if a transcoded MP3 is cached on disk ────────────────────
+        from app.services.transcoding_service import transcoding_service
+
+        if needs_transcoding(file_name, track.mime_type):
+            result = transcoding_service.get_result(file_id)
+            if result and result.get("cached_path"):
+                cached_path = result["cached_path"]
+                cached_size = result.get("mp3_size", Path(cached_path).stat().st_size)
+                end = start + length
+                if length >= cached_size:
+                    # Full file streaming — use file-level IO
+                    with open(cached_path, "rb") as f:
+                        if start > 0:
+                            f.seek(start)
+                        while True:
+                            chunk = f.read(1024 * 1024)  # 1 MB chunks
+                            if not chunk:
+                                break
+                            yield chunk
+                    return
+                else:
+                    # Range request
+                    with open(cached_path, "rb") as f:
+                        f.seek(start)
+                        remaining = min(length, cached_size - start)
+                        while remaining > 0:
+                            chunk = f.read(min(1024 * 1024, remaining))
+                            if not chunk:
+                                break
+                            yield chunk
+                            remaining -= len(chunk)
+                    return
+
+        # ─── 1. Check RAM cache (plaintext buffer) ────────────────────────────
         is_encrypted = bool(track.is_encrypted)
         total_plain_size = self.get_track_size(track)
 

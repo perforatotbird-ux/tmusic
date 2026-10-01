@@ -42,8 +42,27 @@ def _ensure_user() -> AppUser:
         else:
             if not user.password_hash.startswith("$"):
                 user.password_hash = hash_password(PASSWORD)
-                db.commit()
+            # Reset brute-force counters: negative-auth tests intentionally
+            # trip the lockout, which must not leak into subsequent tests.
+            user.failed_login_attempts = 0
+            user.locked_until = None
+            db.commit()
+        # Load column values while still bound: the session closes on return
+        # and detached lazy-refresh would raise DetachedInstanceError.
+        db.refresh(user)
         return user
+
+
+def _subsonic_token() -> str:
+    """Dedicated per-user Subsonic token (the ONLY credential /rest accepts).
+
+    The panel bcrypt password is deliberately rejected in the query string
+    (2026-09 hardening M-1): it must never travel in URLs/proxy logs.
+    """
+    _ensure_user()
+    with SessionLocal() as db:
+        user = db.scalar(select(AppUser).where(AppUser.username == USERNAME))
+        return subsonic_auth.ensure_subsonic_token(db, user)
 
 
 def test_subsonic_auth_fail():
@@ -54,11 +73,25 @@ def test_subsonic_auth_fail():
     assert data["subsonic-response"]["error"]["code"] == 40
 
 
-def test_subsonic_ping_plain_password():
+def test_subsonic_panel_password_rejected():
+    """Panel password in p= must FAIL (hardening M-1) — only the dedicated
+    Subsonic token authenticates /rest."""
     _ensure_user()
     resp = client.get(
         "/rest/ping.view",
         params={"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "T-Music", "f": "json"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()["subsonic-response"]
+    assert body["status"] == "failed"
+    assert body["error"]["code"] == 40
+
+
+def test_subsonic_ping_token_as_password():
+    """p=<dedicated token> authenticates."""
+    resp = client.get(
+        "/rest/ping.view",
+        params={"u": USERNAME, "p": _subsonic_token(), "v": "1.16.1", "c": "T-Music", "f": "json"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -89,10 +122,9 @@ def test_subsonic_ping_token_auth():
 
 
 def test_subsonic_xml_ping():
-    _ensure_user()
     resp = client.get(
         "/rest/ping",
-        params={"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "T-Music", "f": "xml"},
+        params={"u": USERNAME, "p": _subsonic_token(), "v": "1.16.1", "c": "T-Music", "f": "xml"},
     )
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/xml")
@@ -101,11 +133,10 @@ def test_subsonic_xml_ping():
 
 
 def test_subsonic_get_license_and_folders():
-    _ensure_user()
     for method in ("getLicense.view", "getMusicFolders.view", "getArtists.view"):
         resp = client.get(
             f"/rest/{method}",
-            params={"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "T-Music", "f": "json"},
+            params=_base_params(),
         )
         assert resp.status_code == 200
         body = resp.json()["subsonic-response"]
@@ -120,7 +151,7 @@ def test_admin_credentials_endpoint_shape():
 
 
 def _base_params(**extra):
-    p = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "T-Music", "f": "json"}
+    p = {"u": USERNAME, "p": _subsonic_token(), "v": "1.16.1", "c": "T-Music", "f": "json"}
     p.update(extra)
     return p
 
