@@ -10,12 +10,14 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import case, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_admin_user
 from app.core.config import settings
+from app.core.password_work import run_password_work
 from app.core.database import get_db
 from app.models.auth import AdminAuditEvent, AppUser, RevokedToken
 from app.models.music import MusicAlbum, MusicArtist
@@ -23,6 +25,7 @@ from app.models.playlist import Playlist
 from app.models.playback import ListeningHistory, PlaybackPosition, UserFavorite
 from app.models.share import ShareLink
 from app.models.vfs import TGAccount, VFile
+from app.schemas.playback import MAX_HISTORY_DURATION_SEC
 from app.services import admin_service
 from app.services.ram_cache_service import ram_cache
 from app.core.disk_cache import external_cache
@@ -62,6 +65,10 @@ class CreateUser(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     role: str = Field(default="user", pattern="^(admin|editor|user)$")
 
+    @field_validator("username", mode="before")
+    @classmethod
+    def normalize_username(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 def _audit(
     db: Session,
@@ -231,7 +238,7 @@ async def admin_list_backups(
 
 
 @router.post("/backups/run")
-async def admin_run_backup(
+def admin_run_backup(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
@@ -258,7 +265,7 @@ async def admin_download_backup(
 
 
 @router.post("/backups/{name}/restore")
-async def admin_restore_backup(
+def admin_restore_backup(
     name: str,
     body: RestoreRequest,
     request: Request,
@@ -365,13 +372,19 @@ async def admin_create_user(
     from app.core.security import hash_password
 
     new_user = AppUser(
-        username=body.username.strip(),
-        password_hash=hash_password(body.password),
+        username=body.username,
+        password_hash=await run_password_work(hash_password, body.password),
         role=body.role,
         is_active=True,
     )
     db.add(new_user)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        # Unique lookup is not enough when two creates race. Do not expose
+        # database exception details or leave the request session unusable.
+        db.rollback()
+        raise HTTPException(status_code=400, detail="User creation conflict.") from None
     _audit(db, request, user, "user.created", "user", new_user.id, {"username": new_user.username, "role": new_user.role})
     db.commit()
     db.refresh(new_user)
@@ -387,7 +400,14 @@ async def admin_patch_user(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
-    target = db.scalar(select(AppUser).where(AppUser.id == user_id))
+    # Never hold a row lock while awaiting a bounded password worker: workers
+    # may already be waiting for that same row during login/password migration.
+    new_hash = None
+    if body.new_password:
+        from app.core.security import hash_password
+
+        new_hash = await run_password_work(hash_password, body.new_password)
+    target = db.scalar(select(AppUser).where(AppUser.id == user_id).with_for_update())
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     if target.id == user.id and (body.role is not None or body.is_active is False):
@@ -401,9 +421,7 @@ async def admin_patch_user(
             raise HTTPException(status_code=400, detail="Cannot disable the last active administrator")
         target.is_active = body.is_active
     if body.new_password:
-        from app.core.security import hash_password
-
-        target.password_hash = hash_password(body.new_password)
+        target.password_hash = new_hash
         target.token_version = (target.token_version or 0) + 1
         target.failed_login_attempts = 0
         target.locked_until = None
@@ -528,12 +546,22 @@ async def admin_analytics(
     user: AppUser = Depends(get_admin_user),
 ):
     since = utcnow() - timedelta(days=days)
+    # Reject nonfinite/out-of-policy historical values BEFORE aggregation so
+    # one old Infinity row cannot poison every total. Read-only compatibility.
+    valid_seconds = case(
+        (
+            (ListeningHistory.duration_played_sec >= 0)
+            & (ListeningHistory.duration_played_sec <= MAX_HISTORY_DURATION_SEC),
+            ListeningHistory.duration_played_sec,
+        ),
+        else_=0.0,
+    )
     totals = db.execute(
         select(
             func.count(ListeningHistory.id),
             func.count(func.distinct(ListeningHistory.user_id)),
             func.count(func.distinct(ListeningHistory.file_id)),
-            func.coalesce(func.sum(ListeningHistory.duration_played_sec), 0.0),
+            func.coalesce(func.sum(valid_seconds), 0.0),
             func.coalesce(func.sum(case((ListeningHistory.completed.is_(True), 1), else_=0)), 0),
         ).where(ListeningHistory.started_at >= since)
     ).one()
@@ -542,7 +570,7 @@ async def admin_analytics(
             VFile.id,
             VFile.name,
             func.count(ListeningHistory.id).label("plays"),
-            func.coalesce(func.sum(ListeningHistory.duration_played_sec), 0.0).label("seconds"),
+            func.coalesce(func.sum(valid_seconds), 0.0).label("seconds"),
         )
         .join(VFile, VFile.id == ListeningHistory.file_id)
         .where(ListeningHistory.started_at >= since)
@@ -555,7 +583,7 @@ async def admin_analytics(
             AppUser.id,
             AppUser.username,
             func.count(ListeningHistory.id).label("plays"),
-            func.coalesce(func.sum(ListeningHistory.duration_played_sec), 0.0).label("seconds"),
+            func.coalesce(func.sum(valid_seconds), 0.0).label("seconds"),
         )
         .join(ListeningHistory, ListeningHistory.user_id == AppUser.id)
         .where(ListeningHistory.started_at >= since)
@@ -567,7 +595,7 @@ async def admin_analytics(
         select(
             func.date(ListeningHistory.started_at).label("day"),
             func.count(ListeningHistory.id).label("plays"),
-            func.coalesce(func.sum(ListeningHistory.duration_played_sec), 0.0).label("seconds"),
+            func.coalesce(func.sum(valid_seconds), 0.0).label("seconds"),
         )
         .where(ListeningHistory.started_at >= since)
         .group_by(func.date(ListeningHistory.started_at))

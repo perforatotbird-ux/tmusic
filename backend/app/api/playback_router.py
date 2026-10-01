@@ -2,6 +2,7 @@
 T-Music Playback API Router
 Resume positions + listening history.
 """
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -26,6 +27,8 @@ from app.schemas.playback import (
 from app.services.playback_service import playback_service
 from app.services import lastfm_service
 from app.utils.like import escape_like
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/playback", tags=["playback"])
 
@@ -126,7 +129,7 @@ async def create_history(
         else:
             lastfm_service.update_now_playing(artist, track, album)
     except Exception:
-        pass
+        logger.exception("Last.fm delivery failed; local history remains saved")
     return HistoryItem(
         id=row.id,
         file_id=row.file_id,

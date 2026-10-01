@@ -82,4 +82,21 @@ Secure proxy обложки (по key или url).
 - [[Модели БД]]
 - [[Обзор Backend]]
 
+## Плейлисты, lyrics и история — граничные значения
+
+- `POST /api/playlists`: trim имени до min_length, 1–120 символов; whitespace-only input → 422. Service layer отдельно валидирует имя, Subsonic create/update использует protocol error 10 для некорректного имени.
+- LRCLIB: null/non-dict search entries игнорируются до score/sort, строковые поля проверяются перед strip/lower, nonfinite/negative duration → None. Network errors остаются best-effort.
+- `POST /api/playback/history`: played и track duration — finite 0..86400 секунд; invalid input → 422, запись не создаётся. Optional track duration допускает None.
+- Старые invalid history durations санитайзятся в ответах (played=0, track=None), admin analytics исключает invalid seconds до суммирования. Это read-only совместимость, не массовая очистка БД.
+
+Результаты: [[Ревью граничных значений 2026-10-01]] · [[Тестирование]].
+
 [[00-Главная]]
+
+## Async: batch mirror
+
+POST `/api/playlists/mirror` (auth): `{name, file_ids}`. Уникальные положительные ID, максимум 5000. Find/create + полная ordered замена атомарны; invalid/missing/trashed ID не меняет старый список. Пустой массив явно очищает список. FolderBrowser отправляет максимум 500 tracks, как раньше. См. [[Ревью async 2026-10-01]].
+
+## Atomic playlist creation
+
+POST `/api/playlists` принимает name и optional `initial_file_id` (positive strict integer). Track validate + playlist + first item выполняются одним commit; missing/trash track или commit failure откатывают создание. Ответ PlaylistSummary имеет track_count=1 при initial track, иначе 0. Старый create(name) совместим. AlbumDetail передаёт track в том же POST, не делает второй addTrack. При network/5xx/malformed success результат неизвестен: ввод сохраняется, создание блокируется до обновления/проверки списка; blind retry/компенсирующее удаление не выполняются.

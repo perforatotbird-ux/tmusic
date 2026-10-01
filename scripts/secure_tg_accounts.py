@@ -25,7 +25,7 @@ from sqlalchemy import select  # noqa: E402
 from app.core.config import settings  # noqa: E402
 from app.core.database import SessionLocal  # noqa: E402
 from app.models.vfs import TGAccount  # noqa: E402
-from app.tg.manager import ensure_encrypted, seal_tg_account  # noqa: E402
+from app.tg.manager import ensure_encrypted, seal_tg_account, TGCredentialError  # noqa: E402
 
 
 def main() -> int:
@@ -40,23 +40,27 @@ def main() -> int:
     plaintext_rows = 0
     sealed_fields = 0
 
-    with SessionLocal() as db:
-        accounts = db.scalars(select(TGAccount)).all()
-        for acc in accounts:
-            if args.check:
-                # Report-only: never mutate the ORM objects — just test the rule.
-                _, s_changed = ensure_encrypted(acc.session_string, settings.SESSION_SECRET)
-                _, h_changed = ensure_encrypted(acc.api_hash, settings.SESSION_SECRET)
-                sealed = int(s_changed) + int(h_changed)
-            else:
-                sealed = seal_tg_account(acc, settings.SESSION_SECRET)
-            if sealed:
-                plaintext_rows += 1
-                sealed_fields += sealed
-                print(f"  account id={acc.id} name={acc.name!r}: plaintext credentials found")
+    try:
+        with SessionLocal() as db:
+            accounts = db.scalars(select(TGAccount)).all()
+            for acc in accounts:
+                if args.check:
+                    # Report-only: never mutate the ORM objects — just test the rule.
+                    _, s_changed = ensure_encrypted(acc.session_string, settings.SESSION_SECRET)
+                    _, h_changed = ensure_encrypted(acc.api_hash, settings.SESSION_SECRET)
+                    sealed = int(s_changed) + int(h_changed)
+                else:
+                    sealed = seal_tg_account(acc, settings.SESSION_SECRET)
+                if sealed:
+                    plaintext_rows += 1
+                    sealed_fields += sealed
+                    print(f"  account id={acc.id} name={acc.name!r}: plaintext credentials found")
 
-        if not args.check and sealed_fields:
-            db.commit()
+            if not args.check and sealed_fields:
+                db.commit()
+    except TGCredentialError:
+        print("ERROR: encrypted Telegram credentials could not be verified. No changes committed; check SESSION_SECRET and the key-rotation procedure.", file=sys.stderr)
+        return 2
 
     if args.check:
         print(f"Check complete: {plaintext_rows} account(s) with plaintext credentials.")

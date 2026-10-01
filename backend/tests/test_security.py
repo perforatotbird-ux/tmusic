@@ -42,7 +42,7 @@ def test_password_hashing():
 
 
 def test_jwt_lifecycle():
-    token, jti, expire = create_access_token("test_user", claims={"role": "listener"})
+    token, jti, expire = create_access_token("test_user", claims={"role": "listener", "uid": 1, "tv": 0})
     assert isinstance(token, str)
 
     payload = decode_access_token(token)

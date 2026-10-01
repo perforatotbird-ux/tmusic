@@ -61,12 +61,16 @@ def fail(code: int, message: str) -> Dict[str, Any]:
     }
 
 
-def _x(value: Any) -> str:
+def _scalar(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, bool):
         return "true" if value else "false"
-    return escape(str(value))
+    return str(value)
+
+
+def _x(value: Any) -> str:
+    return escape(_scalar(value))
 
 
 def _tag(name: str, value: Any) -> str:
@@ -77,7 +81,7 @@ def dict_to_subsonic_xml(payload: Dict[str, Any]) -> str:
     root = payload.get("subsonic-response") or {}
     reserved = ("status", "version", "type", "serverVersion", "openSubsonic")
     attrs = "".join(
-        f" {k}={quoteattr(_x(root[k]))}" for k in reserved if k in root
+        f" {k}={quoteattr(_scalar(root[k]))}" for k in reserved if k in root
     )
     parts = ['<?xml version="1.0" encoding="UTF-8"?>', f"<subsonic-response{attrs}>"]
     for key, value in root.items():
@@ -102,20 +106,20 @@ def value_to_xml(name: str, value: Any) -> str:
 
     if isinstance(value, dict):
         if name == "error":
-            attr_s = "".join(f" {k}={quoteattr(_x(v))}" for k, v in value.items())
+            attr_s = "".join(f" {k}={quoteattr(_scalar(v))}" for k, v in value.items())
             return f"<error{attr_s} />"
 
         if name in ("searchResult3", "searchResult2"):
             # Child collections + optional id attr
             scalar = {k: v for k, v in value.items() if not isinstance(v, (list, dict))}
             lists = {k: v for k, v in value.items() if isinstance(v, list)}
-            attr_s = "".join(f" {k}={quoteattr(_x(v))}" for k, v in scalar.items())
+            attr_s = "".join(f" {k}={quoteattr(_scalar(v))}" for k, v in scalar.items())
             inner = "".join(value_to_xml(k, v) for k, v in lists.items())
             return f"<{name}{attr_s}>{inner}</{name}>" if lists else f"<{name}{attr_s} />"
 
         scalars = {k: v for k, v in value.items() if not isinstance(v, (dict, list))}
         children = {k: v for k, v in value.items() if isinstance(v, (dict, list))}
-        attr_s = "".join(f" {k}={quoteattr(_x(v))}" for k, v in scalars.items())
+        attr_s = "".join(f" {k}={quoteattr(_scalar(v))}" for k, v in scalars.items())
         if not children:
             return f"<{name}{attr_s} />"
         inner = "".join(value_to_xml(k, v) for k, v in children.items())

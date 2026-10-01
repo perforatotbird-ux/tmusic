@@ -1,11 +1,11 @@
 """
 T-Music Admin Provisioning CLI
-Sets the admin panel password (bcrypt).
+Sets the admin panel password (Argon2id).
 
 Usage:
   python scripts/init_admin.py                      # prompt for password interactively
   python scripts/init_admin.py --password "s3cret"  # non-interactive
-  python scripts/init_admin.py --hash-only "s3cret" # print bcrypt hash for ADMIN_PASSWORD_HASH
+  python scripts/init_admin.py --hash-only "s3cret" # print Argon2id hash for ADMIN_PASSWORD_HASH
 
 Replaces the historical default-credentials flow (admin/admin123, PIN 1234),
 which was removed in the 2026-09 security audit (finding C-2).
@@ -34,12 +34,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Provision the T-Music admin account.")
     parser.add_argument("--password", help="New admin password.")
     parser.add_argument("--hash-only", metavar="PASSWORD",
-                        help="Only print the bcrypt hash (for ADMIN_PASSWORD_HASH in music.env).")
+                        help="Only print the Argon2id hash (for ADMIN_PASSWORD_HASH in music.env).")
     args = parser.parse_args()
 
     if args.hash_only is not None:
-        if len(args.hash_only) < 1:
-            print("ERROR: password cannot be empty.", file=sys.stderr)
+        if not 8 <= len(args.hash_only) <= 128:
+            print("ERROR: password must contain 8 to 128 characters.", file=sys.stderr)
             return 2
         print(hash_password(args.hash_only))
         return 0
@@ -52,13 +52,13 @@ def main() -> int:
             print("ERROR: passwords do not match.", file=sys.stderr)
             return 2
 
-    if password is not None and len(password) < 1:
-        print("ERROR: password cannot be empty.", file=sys.stderr)
+    if password is not None and not 8 <= len(password) <= 128:
+        print("ERROR: password must contain 8 to 128 characters.", file=sys.stderr)
         return 2
 
     with SessionLocal() as db:
         user = db.execute(
-            select(AppUser).where(AppUser.username == ADMIN_USERNAME)
+            select(AppUser).where(AppUser.username == ADMIN_USERNAME).with_for_update()
         ).scalar_one_or_none()
 
         if user is None:
@@ -88,7 +88,7 @@ def main() -> int:
                     setting.value = pw_hash
                 else:
                     db.add(AppSetting(key="admin_bootstrap_hash", value=pw_hash))
-                print("Admin password updated (bcrypt).")
+                print("Admin password updated (Argon2id).")
             if not user.is_active:
                 user.is_active = True
                 print("Admin account re-activated.")

@@ -13,7 +13,7 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 from fastapi import UploadFile
 from sqlalchemy import delete, select, func
@@ -467,50 +467,33 @@ def _scan_structure(path: Path) -> SourceSnapshot:
 
 
 def _index_source(snapshot: SourceSnapshot) -> None:
-    children: Dict[int, List[int]] = {}
-    closure_by_descendant: Dict[int, List[Tuple[int, int]]] = {}
-    for ancestor, descendant, depth in snapshot.closures:
-        if ancestor not in snapshot.folders or descendant not in snapshot.folders:
-            continue
-        children.setdefault(ancestor, []).append(descendant)
-        closure_by_descendant.setdefault(descendant, []).append((ancestor, depth))
-        previous = snapshot.depth_by_id.get(descendant)
-        if previous is None or depth < previous:
-            snapshot.depth_by_id[descendant] = depth
+    paths: Dict[int, str] = {}
+    depths: Dict[int, int] = {}
     for folder_id in snapshot.folders:
-        snapshot.depth_by_id.setdefault(folder_id, 0)
-    memo: Dict[int, str] = {}
-
-    def build_path(folder_id: int, visiting: Set[int]) -> str:
-        if folder_id in memo:
-            return memo[folder_id]
-        if folder_id in visiting:
-            raise VfsImportError("В исходном дереве папок обнаружен цикл")
-        folder = snapshot.folders.get(folder_id)
-        if not folder:
-            raise VfsImportError("В исходном дереве отсутствует папка")
-        visiting.add(folder_id)
-        ancestors = closure_by_descendant.get(folder_id)
-        if ancestors:
-            ids = [item[0] for item in sorted(ancestors, key=lambda item: (-item[1], item[0]))]
-        else:
-            ids = []
-            current = folder_id
-            while current is not None:
-                ids.append(current)
-                current = snapshot.folders.get(current, {}).get("parent_id")
-            ids.reverse()
-        names = [snapshot.folders[item]["name"] for item in ids if item in snapshot.folders]
-        visiting.remove(folder_id)
-        memo[folder_id] = "/".join(names) or folder["name"]
-        return memo[folder_id]
-
-    for folder_id in snapshot.folders:
-        snapshot.path_by_id[folder_id] = build_path(folder_id, set())
-    snapshot.depth_by_id = {
-        folder_id: snapshot.depth_by_id.get(folder_id, 0)
-        for folder_id in snapshot.folders
-    }
+        chain: List[int] = []
+        visiting: Set[int] = set()
+        current = folder_id
+        while current is not None and current not in paths:
+            if current in visiting:
+                raise VfsImportError("В исходном дереве папок обнаружен цикл")
+            if current not in snapshot.folders:
+                raise VfsImportError("В исходном дереве отсутствует родительская папка")
+            if len(chain) >= 256:
+                raise VfsImportError("Глубина исходного дерева превышает 256 папок")
+            visiting.add(current)
+            chain.append(current)
+            current = snapshot.folders[current]["parent_id"]
+        prefix = paths.get(current, "")
+        depth = depths[current] + 1 if current is not None else 0
+        if depth + len(chain) > 256:
+            raise VfsImportError("Глубина исходного дерева превышает 256 папок")
+        for item in reversed(chain):
+            prefix = f"{prefix}/{snapshot.folders[item]['name']}" if prefix else snapshot.folders[item]["name"]
+            paths[item] = prefix
+            depths[item] = depth
+            depth += 1
+    snapshot.path_by_id = paths
+    snapshot.depth_by_id = depths
 
 
 def _normalise_path(value: Optional[str]) -> str:
@@ -989,6 +972,7 @@ def run_vfs_import(
     import_id: str,
     actor_id: int,
     confirm: bool,
+    before_commit: Optional[Callable[[Session, Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     state = _get_session(import_id, actor_id)
     if not confirm:
@@ -1084,7 +1068,6 @@ def run_vfs_import(
         if batch:
             db.add_all(batch)
             db.flush()
-        db.commit()
         result = {
             "ok": True,
             "import_id": import_id,
@@ -1096,7 +1079,11 @@ def run_vfs_import(
             "warnings": state.preview.get("warnings", []),
             "completed_at": utcnow().isoformat(),
         }
+        if before_commit is not None:
+            before_commit(db, result)
+        db.commit()
         state.status = "completed"
+        state.result = result
         state.error = None
         _remove_file(state.path)
         state.path = None
@@ -2133,6 +2120,7 @@ def run_tree_import(
     confirm: bool,
     preserve_parent_path: bool = True,
     catalog_kind: str = "compilation",
+    before_commit: Optional[Callable[[Session, Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     state = _get_session(import_id, actor_id)
     if not confirm:
@@ -2143,9 +2131,10 @@ def run_tree_import(
     if not _RUN_LOCK.acquire(blocking=False):
         raise VfsImportError("Другой VFS-импорт уже выполняется", 409)
 
-    conn = sqlite3.connect(str(state.sqlite_path), check_same_thread=False)
-    conn.row_factory = sqlite3.Row
+    conn = None
     try:
+        conn = sqlite3.connect(str(state.sqlite_path), check_same_thread=False)
+        conn.row_factory = sqlite3.Row
         with _SESSION_LOCK:
             state.status = "running"
             state.progress = {
@@ -2376,8 +2365,6 @@ def run_tree_import(
         _sync_catalog_for_imported_tree(
             db, folder_mapping, staged_folders, target_root_id, catalog_kind=catalog_kind
         )
-        db.commit()
-
         result = {
             "ok": True,
             "import_id": import_id,
@@ -2390,23 +2377,40 @@ def run_tree_import(
             "completed_at": utcnow().isoformat(),
         }
 
+        if before_commit is not None:
+            before_commit(db, result)
+        db.commit()
         with _SESSION_LOCK:
             state.status = "completed"
+            state.error = None
             state.result = result
             state.progress["stage"] = "completed"
             state.progress["message"] = "Импорт успешно завершён!"
 
         return result
-    except Exception as exc:
+    except VfsImportError as exc:
         db.rollback()
         with _SESSION_LOCK:
             state.status = "failed"
             state.error = str(exc)
             state.progress["stage"] = "failed"
-            state.progress["message"] = f"Ошибка импорта: {exc}"
-        logger.exception("VFS tree import failed")
-        raise VfsImportError(f"Ошибка импорта: {exc}") from exc
+            state.progress["message"] = str(exc)
+        raise
+    except Exception as exc:
+        db.rollback()
+        reference = uuid.uuid4().hex[:12]
+        message = f"Импорт не выполнен. Код ошибки: {reference}."
+        with _SESSION_LOCK:
+            state.status = "failed"
+            state.error = message
+            state.progress["stage"] = "failed"
+            state.progress["message"] = message
+        logger.exception("VFS tree import failed; reference=%s", reference)
+        raise VfsImportError(message, 500) from exc
     finally:
-        conn.close()
-        _RUN_LOCK.release()
+        try:
+            if conn is not None:
+                conn.close()
+        finally:
+            _RUN_LOCK.release()
 

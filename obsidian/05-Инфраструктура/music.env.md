@@ -44,7 +44,11 @@
 | COOKIE_SECURE | false | true при HTTPS |
 | TRUST_PROXY_HEADERS | false | true только за trusted proxy |
 | ALLOWED_ORIGINS | JSON list | CORS; никогда `"*"` с credentials |
-| ADMIN_PASSWORD_HASH | optional | bcrypt; источник истины пока строка в env |
+| ADMIN_PASSWORD_HASH | optional | Argon2id PHC или bounded bcrypt; one-shot применение каждого нового значения |
+| PASSWORD_ARGON2_MEMORY_KIB | 65536 | KiB на KDF, границы 19456–131072 |
+| PASSWORD_ARGON2_TIME_COST | 3 | Iterations, границы 2–6 |
+| PASSWORD_ARGON2_PARALLELISM | 1 | Lanes, границы 1–4 |
+| PASSWORD_HASH_CONCURRENCY | 2 | Проверки/хеширования одновременно на процесс, границы 1–4 |
 
 ### Rate limit
 | Ключ | Default |
@@ -116,5 +120,11 @@ python scripts/init_admin.py --hash-only "your-password"
 ---
 
 Связано: [[Архитектура]] · [[Архитектура безопасности]] · [[Telegram кластер]] · [[Запуск Windows]]
+
+## Argon2id rollout
+
+См. [[ADR-005 Argon2id Migration]]. Обновить зависимости и пересобрать backend/frontend. Не возвращаться к bcrypt-only версии после появления Argon2id в БД. Для multi-instance сначала обеспечить совместимое чтение на всех экземплярах; текущая ветка одновременно включает запись Argon2id. `SECRET_KEY`, `SESSION_SECRET`, CORS и ключи аудио не менять ради перехода password hashing. Готовый bcrypt-хэш нельзя преобразовать без исходного пароля.
+
+CLI с паролем в аргументе может оставлять его в history/process list: для установки предпочитать `python scripts/init_admin.py` с getpass. Реальные хэши и пароли не сохранять в базе Obsidian.
 
 [[00-Главная]]

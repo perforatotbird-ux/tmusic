@@ -68,7 +68,11 @@ def _read_zip(path: Path, password: str | None) -> bytes:
     try:
         with pyzipper.AESZipFile(path, "r") as zf:
             zf.setpassword(password.encode("utf-8"))
-            name = zf.namelist()[0]
+            files = [entry for entry in zf.infolist() if not entry.is_dir()]
+            if not files:
+                print(f"Archive contains no files: {path.name}", file=sys.stderr)
+                raise SystemExit(1)
+            name = files[0].filename
             return zf.read(name)
     except RuntimeError as e:
         if "password" in str(e).lower() or "Bad password" in str(e):

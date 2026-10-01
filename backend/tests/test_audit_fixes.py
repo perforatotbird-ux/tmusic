@@ -191,8 +191,9 @@ def test_bootstrap_preserves_panel_password_change():
     import app.services.bootstrap as bs
     from datetime import datetime
 
-    env_hash = "$2b$12$envhashenvhashenvhashenvhashenvhashenvhashenvhashenvh"
-    panel_hash = "$2b$12$panelhashpanelhashpanelhashpanelhashpanelhashpanelhas"
+    import bcrypt
+    env_hash = bcrypt.hashpw(b"synthetic-env", bcrypt.gensalt(rounds=4)).decode()
+    panel_hash = bcrypt.hashpw(b"synthetic-panel", bcrypt.gensalt(rounds=4)).decode()
 
     user = SimpleNamespace(
         username="admin",
@@ -241,8 +242,9 @@ def test_bootstrap_reapplies_on_env_rotation():
     import app.services.bootstrap as bs
     from datetime import datetime
 
-    old_env_hash = "$2b$12$oldhasholdhasholdhasholdhasholdhasholdhasholdhashold"
-    new_env_hash = "$2b$12$newhashnewhashnewhashnewhashnewhashnewhashnewhashnew"
+    import bcrypt
+    old_env_hash = bcrypt.hashpw(b"synthetic-old", bcrypt.gensalt(rounds=4)).decode()
+    new_env_hash = bcrypt.hashpw(b"synthetic-new", bcrypt.gensalt(rounds=4)).decode()
 
     user = SimpleNamespace(
         username="admin",

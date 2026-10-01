@@ -10,6 +10,7 @@ Network failures and timeouts are swallowed (return None). Never logs secrets
 """
 import json
 import logging
+import math
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -44,26 +45,36 @@ def _get(path: str, params: Dict[str, Any], timeout: float) -> Optional[dict]:
         return None
 
 
+def _text(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _duration(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+        return result if math.isfinite(result) and result >= 0 else None
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
 def _normalize(node: Dict[str, Any]) -> Optional[dict]:
-    plain = (node.get("plainLyrics") or "").strip()
-    synced = (node.get("syncedLyrics") or "").strip()
+    if not isinstance(node, dict):
+        return None
+    plain = _text(node.get("plainLyrics"))
+    synced = _text(node.get("syncedLyrics"))
     if not plain and not synced:
         return None
-    raw_dur = node.get("duration")
-    dur_sec: Optional[float] = None
-    if raw_dur is not None:
-        try:
-            dur_sec = float(raw_dur)
-        except (ValueError, TypeError):
-            dur_sec = None
+    dur_sec = _duration(node.get("duration"))
     return {
         "found": True,
         "source": "lrclib",
         "plain": plain or None,
         "synced": synced or None,
-        "artist": node.get("artistName"),
-        "track": node.get("trackName"),
-        "album": node.get("albumName"),
+        "artist": _text(node.get("artistName")) or None,
+        "track": _text(node.get("trackName")) or None,
+        "album": _text(node.get("albumName")) or None,
         "duration_sec": dur_sec,
     }
 
@@ -98,11 +109,11 @@ def _lookup_upstream(
     if isinstance(hits, list) and hits:
         # Prefer synced lyrics, then exact artist match, then shortest duration gap.
         def score(node: dict) -> tuple:
-            has_sync = 0 if (node.get("syncedLyrics") or "").strip() else 1
+            has_sync = 0 if _text(node.get("syncedLyrics")) else 1
             artist_match = 0
             if artist and artist != "Unknown":
-                artist_match = 0 if (node.get("artistName") or "").lower() == artist.lower() else 1
-            dur = node.get("duration")
+                artist_match = 0 if _text(node.get("artistName")).lower() == artist.lower() else 1
+            dur = _duration(node.get("duration"))
             dur_gap = 9999.0
             if duration is not None and dur is not None:
                 try:
@@ -111,9 +122,7 @@ def _lookup_upstream(
                     dur_gap = 9999.0
             return (has_sync, artist_match, dur_gap)
 
-        for node in sorted(hits, key=score):
-            if not isinstance(node, dict):
-                continue
+        for node in sorted((node for node in hits if isinstance(node, dict)), key=score):
             normalized = _normalize(node)
             if normalized:
                 return normalized
@@ -147,7 +156,8 @@ def get_lyrics(
         return None
 
     timeout = float(getattr(settings, "LYRICS_HTTP_TIMEOUT_SEC", 8) or 8)
-    duration = int(duration_sec) if duration_sec and duration_sec > 0 else None
+    safe_duration = _duration(duration_sec)
+    duration = int(safe_duration) if safe_duration and safe_duration > 0 else None
 
     cache_parts = {
         "artist": artist,

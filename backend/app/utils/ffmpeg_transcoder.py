@@ -212,8 +212,8 @@ async def transcode_from_bytes(
             stderr=asyncio.subprocess.PIPE,
         )
 
-        stdout_data, stderr_data = await asyncio.wait_for(
-            proc.communicate(),
+        stdout_data, stderr_data = await communicate_with_cleanup(
+            proc,
             timeout=300,  # 5 minute timeout
         )
     finally:
@@ -280,3 +280,23 @@ __all__ = [
     "transcode_from_bytes",
     "get_mp3_duration",
 ]
+
+async def communicate_with_cleanup(proc, timeout: float):
+    """Reap the child before allowing timeout/cancellation to escape."""
+    try:
+        return await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except BaseException:
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        # Drain pipes as well as waiting: wait() alone can deadlock on full pipes.
+        cleanup = asyncio.create_task(proc.communicate())
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                continue  # Repeated cancellation must not abandon the child.
+        cleanup.result()
+        raise

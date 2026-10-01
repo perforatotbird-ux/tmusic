@@ -116,7 +116,7 @@ def authenticate_subsonic(
         verify_password(password or "x", _DUMMY_HASH)
         return None
     if user.locked_until and user.locked_until > utcnow():
-        verify_password(password or "x", user.password_hash)
+        verify_password(password or "x", _DUMMY_HASH)
         return None
 
     authenticated = False

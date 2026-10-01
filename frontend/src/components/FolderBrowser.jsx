@@ -402,29 +402,11 @@ export function FolderBrowser() {
       })
       if (isAuthenticated) {
         try {
-          const lists = await playlistsApi.list()
-          const existing = (lists || []).find(
-            (p) => (p.name || '').toLowerCase() === (folder.name || '').toLowerCase()
-          )
           const ids = tracks.slice(0, 500).map((t) => t.id)
-          const target = existing || (await playlistsApi.create(folder.name))
-          const detail = await playlistsApi.get(target.id)
-          for (const row of detail?.tracks || []) {
-            try {
-              await playlistsApi.removeItem(target.id, row.id)
-            } catch {
-              /* ignore */
-            }
-          }
-          for (const fileId of ids) {
-            try {
-              await playlistsApi.addTrack(target.id, fileId)
-            } catch {
-              /* ignore */
-            }
-          }
+          await playlistsApi.mirror(folder.name, ids)
         } catch (e) {
           console.error('Playlist mirror failed:', e)
+          setNotice({ kind: 'error', text: 'Не удалось подтвердить сохранение плейлиста. Обновите список и попробуйте снова.' })
         }
       }
     } catch (e) {

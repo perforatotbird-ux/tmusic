@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/metadata", tags=["metadata"])
 
 
 @router.get("/status")
-async def metadata_status(user: AppUser = Depends(get_current_user)):
+def metadata_status(user: AppUser = Depends(get_current_user)):
     return {
         "lastfm": {
             "enabled": settings.LASTFM_ENABLED,
@@ -43,7 +43,7 @@ async def metadata_status(user: AppUser = Depends(get_current_user)):
 
 
 @router.get("/lyrics", response_model=LyricsResponse)
-async def lyrics_lookup(
+def lyrics_lookup(
     artist: Optional[str] = Query(None, max_length=200),
     track: Optional[str] = Query(None, max_length=300),
     album: Optional[str] = Query(None, max_length=200),
@@ -67,7 +67,7 @@ async def lyrics_lookup(
 
 
 @router.get("/artist")
-async def artist_lookup(
+def artist_lookup(
     name: str = Query(..., min_length=1, max_length=200),
     user: AppUser = Depends(get_current_user),
 ):
@@ -80,7 +80,7 @@ async def artist_lookup(
 
 
 @router.get("/track")
-async def track_lookup(
+def track_lookup(
     artist: str = Query(..., min_length=1, max_length=200),
     track: str = Query(..., min_length=1, max_length=300),
     album: Optional[str] = Query(None, max_length=200),
@@ -95,7 +95,7 @@ async def track_lookup(
 
 
 @router.post("/artists/{artist_id}/enrich")
-async def enrich_artist(
+def enrich_artist(
     artist_id: int,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_catalog_user),

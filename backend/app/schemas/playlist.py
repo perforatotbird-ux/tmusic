@@ -2,12 +2,20 @@
 T-Music Playlist Schemas
 """
 from datetime import datetime
-from typing import List, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Annotated, List, Optional
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 
-class PlaylistCreate(BaseModel):
+class PlaylistName(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+class PlaylistCreate(PlaylistName):
+    initial_file_id: Optional[Annotated[StrictInt, Field(gt=0)]] = None
 
 
 class PlaylistTrack(BaseModel):
@@ -42,3 +50,14 @@ class PlaylistItemAdd(BaseModel):
 
 class PlaylistReorder(BaseModel):
     item_ids: List[int] = Field(min_length=1, max_length=5000)
+
+
+class PlaylistMirror(PlaylistName):
+    file_ids: List[Annotated[StrictInt, Field(gt=0)]] = Field(max_length=5000)
+
+    @field_validator("file_ids")
+    @classmethod
+    def unique_files(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("Duplicate file IDs are not allowed")
+        return value

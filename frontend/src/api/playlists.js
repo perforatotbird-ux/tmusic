@@ -6,11 +6,18 @@ import { request } from './client'
 export const playlistsApi = {
   list: () => request('/api/playlists'),
 
-  create: (name) =>
+  create: (name, initialFileId = null) =>
     request('/api/playlists', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, ...(initialFileId == null ? {} : { initial_file_id: initialFileId }) }),
+    }),
+
+  mirror: (name, fileIds) =>
+    request('/api/playlists/mirror', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, file_ids: fileIds }),
     }),
 
   get: (id) => request(`/api/playlists/${id}`),

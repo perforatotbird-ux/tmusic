@@ -6,6 +6,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import {
   ShieldCheck,
+  KeyRound,
   Pencil,
   LogOut,
   LogIn,
@@ -304,6 +305,16 @@ export function ProfileMenu({
 
               <div style={{ height: 1, background: 'var(--line)', margin: '8px 0' }} />
 
+              <button
+                type="button"
+                onClick={() => {
+                  close()
+                  window.dispatchEvent(new Event('tmusic:change-password'))
+                }}
+                style={menuBtn}
+              >
+                <KeyRound size={15} style={{ color: 'var(--dim)' }} /> Сменить пароль
+              </button>
               <button type="button" onClick={() => setAvatarMode(true)} style={menuBtn}>
                 <ImageIcon size={15} style={{ color: 'var(--dim)' }} /> Сменить аватар
               </button>

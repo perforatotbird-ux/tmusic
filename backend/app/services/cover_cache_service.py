@@ -206,6 +206,9 @@ class CoverCacheService:
     def __init__(self):
         self._session: Optional[aiohttp.ClientSession] = None
         self._in_flight: Dict[str, asyncio.Future] = {}
+        self._fetch_tasks = set()
+        self._closing = False
+        self._generation = 0
         self._lock = asyncio.Lock()
 
     @staticmethod
@@ -242,8 +245,22 @@ class CoverCacheService:
         return self._session
 
     async def close(self):
+        self._closing = True
+        self._generation += 1
+        tasks = list(self._fetch_tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        async with self._lock:
+            for future in self._in_flight.values():
+                if not future.done():
+                    future.set_result((None, None))
+            self._in_flight.clear()
+        self._fetch_tasks.clear()
         if self._session and not self._session.closed:
             await self._session.close()
+        self._session = None
+        self._closing = False
 
     def url_to_key(self, url: str) -> str:
         """Deterministic 32-char SHA-1 key matching CloudByte canonical cache format."""
@@ -296,6 +313,7 @@ class CoverCacheService:
 
     async def fetch_and_cache(self, url: str) -> Tuple[Optional[bytes], Optional[str]]:
         """Fetch remote image with in-flight deduplication, SSRF defense, and permanent disk caching."""
+        generation = self._generation
         key = self.url_to_key(url)
 
         # Check local cache first
@@ -309,42 +327,40 @@ class CoverCacheService:
 
         # In-flight deduplication
         async with self._lock:
+            if self._closing or generation != self._generation:
+                return None, None
             if key in self._in_flight:
                 future = self._in_flight[key]
             else:
                 loop = asyncio.get_running_loop()
                 future = loop.create_future()
                 self._in_flight[key] = future
-                asyncio.create_task(self._do_fetch(url, key, future))
+                task = asyncio.create_task(self._do_fetch(url, key, future))
+                self._fetch_tasks.add(task)
+                task.add_done_callback(self._fetch_tasks.discard)
 
-        return await future
+        return await asyncio.shield(future)
 
     async def _do_fetch(self, url: str, key: str, future: asyncio.Future):
+        result = (None, None)
         try:
             session = await self.get_session()
             data = await _fetch_safe(session, url)
-            if not data:
-                future.set_result((None, None))
-                return
-
-            mime = _detect_mime_and_validate(data)
-            if not mime:
-                future.set_result((None, None))
-                return
-
-            # Save permanently in CloudByte format: {key}.bin and {key}.meta
-            bin_dest = settings.IMG_CACHE_DIR / f"{key}.bin"
-            meta_dest = settings.IMG_CACHE_DIR / f"{key}.meta"
-            bin_dest.write_bytes(data)
-            meta_dest.write_text(mime, encoding="utf-8")
-
-            future.set_result((data, mime))
+            mime = _detect_mime_and_validate(data) if data else None
+            if mime:
+                bin_dest = settings.IMG_CACHE_DIR / f"{key}.bin"
+                meta_dest = settings.IMG_CACHE_DIR / f"{key}.meta"
+                bin_dest.write_bytes(data)
+                meta_dest.write_text(mime, encoding="utf-8")
+                result = (data, mime)
         except Exception as e:
             logger.warning("Failed to fetch image from %s: %s", url, e)
-            future.set_result((None, None))
         finally:
+            if not future.done():
+                future.set_result(result)
             async with self._lock:
-                self._in_flight.pop(key, None)
+                if self._in_flight.get(key) is future:
+                    self._in_flight.pop(key, None)
 
     def save_custom_cover(self, data: bytes) -> Optional[str]:
         """Save a user-uploaded custom cover permanently."""

@@ -25,7 +25,6 @@ function initTranscodeSSE() {
       const data = JSON.parse(event.data)
       if (data.event === 'ping') return
 
-      const { usePlayerStore } = require('./playerStore')
       const state = usePlayerStore.getState()
       const track = state.queue.find((t) => t.id === data.file_id)
 
@@ -70,6 +69,7 @@ function rememberPrecached(id) {
 }
 
 const storedVolume = parseFloat(localStorage.getItem('tmusic_volume') || '0.9')
+const initialVolume = Number.isFinite(storedVolume) ? Math.max(0, Math.min(1, storedVolume)) : 0.9
 const SESSION_KEY = 'tmusic_session'
 const DURATIONS_KEY = 'tmusic_durations'
 const SESSION_QUEUE_CAP = 600
@@ -120,6 +120,7 @@ export const usePlayerStore = create((set, get) => {
   // closures: order = permutation of 0..queue.length-1, orderPos = our slot.
   let shuffleOrder = []
   let orderPos = -1
+  let lastAudibleVolume = initialVolume > 0 ? initialVolume : 0.9
 
   function syncShuffle(len, currentIdx, enabled) {
     if (!enabled || len === 0) {
@@ -293,8 +294,8 @@ export const usePlayerStore = create((set, get) => {
     currentTime: 0,
     duration: 0,
     bufferedUpTo: 0,
-    volume: Number.isFinite(storedVolume) ? storedVolume : 0.9,
-    isMuted: false,
+    volume: initialVolume,
+    isMuted: initialVolume === 0,
     shuffle: false,
     repeat: 'off', // 'off' | 'all' | 'one'
     isPlayerExpanded: false,
@@ -499,24 +500,27 @@ export const usePlayerStore = create((set, get) => {
     /** Spotify-style "Play next": insert right after the current track. */
     playNext: (track) => {
       if (!track) return
-      const { queue, queueIndex, currentTrack } = get()
+      const { queue, currentTrack } = get()
       if (!currentTrack || queue.length === 0) {
         get().playQueue([track], 0, null)
         return
       }
-      const existing = queue.findIndex((t) => t.id === track.id)
-      let nextQueue = [...queue]
-      let nextIdx = queueIndex + 1
-      if (existing !== -1 && existing !== queueIndex) {
-        const [moved] = nextQueue.splice(existing, 1)
-        nextQueue.splice(nextIdx, 0, moved)
-        if (existing < queueIndex) nextIdx -= 1
-      } else if (existing === -1) {
-        // De-dupe: never queue the same file twice.
-        nextQueue.splice(nextIdx, 0, track)
+      if (track.id === currentTrack.id) return
+      // Remove the scheduled track first: moving a history item shifts the
+      // current index. Never confuse the insertion slot with the playing slot.
+      const existing = queue.find((t) => t.id === track.id)
+      const nextQueue = queue.filter((t) => t.id !== track.id)
+      const currentIdx = nextQueue.findIndex((t) => t.id === currentTrack.id)
+      if (currentIdx < 0) return
+      nextQueue.splice(currentIdx + 1, 0, existing || track)
+      syncShuffle(nextQueue.length, currentIdx, get().shuffle)
+      if (get().shuffle) {
+        const insertedIdx = currentIdx + 1
+        shuffleOrder = [currentIdx, insertedIdx,
+          ...shuffleOrder.filter((i) => i !== currentIdx && i !== insertedIdx)]
+        orderPos = 0
       }
-      syncShuffle(nextQueue.length, nextIdx, get().shuffle)
-      set({ queue: nextQueue, queueIndex: nextIdx })
+      set({ queue: nextQueue, queueIndex: currentIdx })
       get().precacheNextTracks()
       persistSession()
     },
@@ -567,7 +571,7 @@ export const usePlayerStore = create((set, get) => {
         // close the gap, so the remaining order (and the current track's slot)
         // is untouched.
         shuffleOrder = shuffleOrder.filter((i) => i !== idx).map((i) => (i > idx ? i - 1 : i))
-        if (orderPos >= shuffleOrder.length) orderPos = shuffleOrder.length - 1
+        orderPos = shuffleOrder.indexOf(newCur)
         set({ queue: nextQueue, queueIndex: newCur })
         if (newCur !== queueIndex && audioElement) {
           audioElement.setAttribute('data-track-id', String(nextQueue[newCur]?.id))
@@ -769,22 +773,29 @@ export const usePlayerStore = create((set, get) => {
     },
 
     setVolume: (val) => {
+      if (!Number.isFinite(val)) return
       const clamped = Math.max(0, Math.min(1, val))
+      if (clamped > 0) lastAudibleVolume = clamped
       localStorage.setItem('tmusic_volume', clamped.toString())
       const { audioElement } = get()
-      if (audioElement) audioElement.volume = clamped
+      if (audioElement) {
+        audioElement.volume = clamped
+        audioElement.muted = clamped === 0
+      }
       set({ volume: clamped, isMuted: clamped === 0 })
     },
 
     toggleMute: () => {
       const { isMuted, volume, audioElement } = get()
       if (isMuted) {
-        const restored = volume || 0.8
-        if (audioElement) audioElement.volume = restored
+        const restored = volume > 0 ? volume : lastAudibleVolume
+        if (audioElement) { audioElement.volume = restored; audioElement.muted = false }
+        localStorage.setItem('tmusic_volume', restored.toString())
         set({ isMuted: false, volume: restored })
       } else {
-        if (audioElement) audioElement.volume = 0
-        set({ isMuted: true, volume: 0 })
+        if (volume > 0) lastAudibleVolume = volume
+        if (audioElement) audioElement.muted = true
+        set({ isMuted: true }) // Keep the user's audible volume.
       }
     },
 

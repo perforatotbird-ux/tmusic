@@ -205,10 +205,7 @@ async def catalog_albums(
     if search in ("null", "undefined") or not (search or "").strip():
         search = None
     if artist_id is not None:
-        albums = AlbumRepository.list_by_artist_id(db, artist_id, limit=limit, offset=offset)
-        if search:
-            needle = search.strip().lower()
-            albums = [a for a in albums if needle in (a.title or "").lower()]
+        albums = AlbumRepository.list_by_artist_id(db, artist_id, limit=limit, offset=offset, search=search)
     else:
         albums = AlbumRepository.list_albums(db, search=search, limit=limit, offset=offset)
     result = []

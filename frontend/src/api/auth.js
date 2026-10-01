@@ -10,6 +10,13 @@ export const authApi = {
 
   getMe: () => request('/api/auth/me'),
 
+  changePassword: (currentPassword, newPassword) =>
+    request('/api/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    }),
+
   logout: () =>
     request('/api/auth/logout', {
       method: 'POST',

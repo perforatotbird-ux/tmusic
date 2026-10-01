@@ -12,6 +12,7 @@ from app.models.auth import AppUser
 from app.models.vfs import VFile
 from app.schemas.playlist import (
     PlaylistCreate,
+    PlaylistMirror,
     PlaylistDetail,
     PlaylistItemAdd,
     PlaylistReorder,
@@ -42,7 +43,7 @@ def _tracks_payload(rows) -> List[PlaylistTrack]:
 
 
 @router.get("", response_model=List[PlaylistSummary])
-async def list_playlists(db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
+def list_playlists(db: Session = Depends(get_db), user: AppUser = Depends(get_current_user)):
     rows = playlist_service.list_playlists(db, user.id)
     return [
         PlaylistSummary(
@@ -57,23 +58,37 @@ async def list_playlists(db: Session = Depends(get_db), user: AppUser = Depends(
 
 
 @router.post("", response_model=PlaylistSummary)
-async def create_playlist(
+def create_playlist(
     body: PlaylistCreate,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
-    pl = playlist_service.create_playlist(db, user.id, body.name)
+    pl = playlist_service.create_playlist(db, user.id, body.name, body.initial_file_id)
     return PlaylistSummary(
         id=pl.id,
         name=pl.name,
-        track_count=0,
+        track_count=1 if body.initial_file_id is not None else 0,
         created_at=pl.created_at,
         updated_at=pl.updated_at,
     )
 
 
+@router.post("/mirror", response_model=PlaylistDetail)
+def mirror_playlist(
+    body: PlaylistMirror,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    pl = playlist_service.mirror(db, user.id, body.name, body.file_ids)
+    rows = playlist_service.playlist_tracks(db, pl.id)
+    return PlaylistDetail(
+        id=pl.id, name=pl.name, track_count=len(rows),
+        created_at=pl.created_at, updated_at=pl.updated_at, tracks=_tracks_payload(rows),
+    )
+
+
 @router.get("/{playlist_id}", response_model=PlaylistDetail)
-async def get_playlist(
+def get_playlist(
     playlist_id: int,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
@@ -93,7 +108,7 @@ async def get_playlist(
 
 
 @router.delete("/{playlist_id}")
-async def delete_playlist(
+def delete_playlist(
     playlist_id: int,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
@@ -105,7 +120,7 @@ async def delete_playlist(
 
 
 @router.post("/{playlist_id}/items", response_model=PlaylistDetail)
-async def add_item(
+def add_item(
     playlist_id: int,
     body: PlaylistItemAdd,
     db: Session = Depends(get_db),
@@ -130,7 +145,7 @@ async def add_item(
 
 
 @router.delete("/{playlist_id}/items/{item_id}")
-async def remove_item(
+def remove_item(
     playlist_id: int,
     item_id: int,
     db: Session = Depends(get_db),
@@ -143,7 +158,7 @@ async def remove_item(
 
 
 @router.put("/{playlist_id}/items/order", response_model=PlaylistDetail)
-async def reorder_items(
+def reorder_items(
     playlist_id: int,
     body: PlaylistReorder,
     db: Session = Depends(get_db),

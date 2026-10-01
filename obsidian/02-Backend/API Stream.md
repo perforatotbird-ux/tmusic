@@ -78,3 +78,11 @@ Prefix: `/api/stream` · Router: `backend/app/api/stream_router.py` · Service: 
 - [[Модели БД]]
 
 [[00-Главная]]
+
+## Logic fixes: representation и encrypted size
+
+Main/share/Subsonic используют один response builder, выбирающий raw или cached MP3 до headers. MIME, filename, total size и Range всегда от выбранного representation; появление cache после выбора не подменяет source. Для encrypted raw сначала читается/caches 32-byte header, расчёт по реальному block_size. Если header недоступен — 503 до response body. В track cards size может быть null до первого header resolution; default 1 MiB не используется как точный размер. См. [[Ревью бизнес-логики 2026-10-01]].
+
+## Error-handling preflight
+
+Main/share/Subsonic builder получает первый непустой chunk до response.start (timeout 30 секунд, не буферизация всего трека). Upstream failure/empty body -> безопасный 503 до headers. После headers неожиданный EOF/exception не заменяется на HTTPException: body прерывается, structured server log фиксирует track_id/remaining bytes; audio onError в App показывает notice/останавливает или пропускает track. Generator/source закрывается при completion/failure/cancellation/disconnect. Content-Length/Range остаются привязаны к выбранной representation. Живой Telegram/proxy/device тест ещё не выполнен.

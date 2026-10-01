@@ -73,6 +73,8 @@ export function LibraryPanel({ section, onRefreshKey }) {
   const [favorites, setFavorites] = useState([])
   const [newName, setNewName] = useState('')
   const [busy, setBusy] = useState(false)
+  const [panelError, setPanelError] = useState(null)
+  const [refreshTick, setRefreshTick] = useState(0)
 
   // Playlist detail (reorder)
   const [openPlId, setOpenPlId] = useState(null)
@@ -93,6 +95,7 @@ export function LibraryPanel({ section, onRefreshKey }) {
     }
     let cancelled = false
     ;(async () => {
+      setPanelError(null)
       try {
         const [pos, hist, pls, favs] = await Promise.all([
           playbackApi.listPositions(16),
@@ -107,18 +110,13 @@ export function LibraryPanel({ section, onRefreshKey }) {
         setPlaylists(pls || [])
         if (favs) setFavorites(favs.items || [])
       } catch {
-        if (!cancelled) {
-          setContinueItems([])
-          setRecentItems([])
-          setPlaylists([])
-          if (section === 'favorites') setFavorites([])
-        }
+        if (!cancelled) setPanelError('Не удалось обновить данные. Показанные данные могут быть устаревшими.')
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [isAuthenticated, section, onRefreshKey])
+  }, [isAuthenticated, section, onRefreshKey, refreshTick])
 
   useEffect(() => {
     if (section !== 'playlists') {
@@ -180,18 +178,22 @@ export function LibraryPanel({ section, onRefreshKey }) {
     const name = newName.trim()
     if (!name || busy) return
     setBusy(true)
+    setPanelError(null)
+    let created = false
     try {
       await playlistsApi.create(name)
+      created = true
       setNewName('')
       setPlaylists(await playlistsApi.list())
     } catch (e) {
-      console.error(e)
+      setPanelError(created ? 'Плейлист создан, но список не обновлён. Обновите список.' : 'Создание не подтверждено. Обновите список перед повтором.')
     } finally {
       setBusy(false)
     }
   }
 
   const handlePlayPlaylist = async (pl) => {
+    setPanelError(null)
     try {
       const detail = await playlistsApi.get(pl.id)
       const tracks = (detail?.tracks || []).map((t) => ({
@@ -206,11 +208,12 @@ export function LibraryPanel({ section, onRefreshKey }) {
         playQueue(tracks, 0, { title: detail.name, artistName: 'Плейлист', coverUrl: null })
       }
     } catch (e) {
-      console.error(e)
+      setPanelError(e?.message || 'Не удалось выполнить действие. Обновите список перед повтором.')
     }
   }
 
   const handleDeletePlaylist = async (pl) => {
+    setPanelError(null)
     try {
       await playlistsApi.remove(pl.id)
       setPlaylists((prev) => prev.filter((x) => x.id !== pl.id))
@@ -219,7 +222,7 @@ export function LibraryPanel({ section, onRefreshKey }) {
         setPlTracks([])
       }
     } catch (e) {
-      console.error(e)
+      setPanelError(e?.message || 'Не удалось выполнить действие. Обновите список перед повтором.')
     }
   }
 
@@ -235,7 +238,7 @@ export function LibraryPanel({ section, onRefreshKey }) {
       const detail = await playlistsApi.get(pl.id)
       setPlTracks(detail?.tracks || [])
     } catch {
-      setPlTracks([])
+      setPanelError('Не удалось загрузить треки плейлиста.')
     } finally {
       setPlLoading(false)
     }
@@ -249,12 +252,12 @@ export function LibraryPanel({ section, onRefreshKey }) {
       setPlTracks(tracks)
       setPlaylists(await playlistsApi.list())
     } catch (e) {
-      console.error(e)
+      setPanelError(e?.message || 'Не удалось выполнить действие. Обновите список перед повтором.')
       try {
         const detail = await playlistsApi.get(openPlId)
         setPlTracks(detail?.tracks || [])
       } catch {
-        /* ignore */
+        setPanelError('Порядок не подтверждён, обновление тоже не удалось. Повторите обновление списка.')
       }
     } finally {
       setReorderBusy(false)
@@ -294,6 +297,10 @@ export function LibraryPanel({ section, onRefreshKey }) {
 
   return (
     <div className="tmusic-library-panel">
+      {panelError && <div role="alert" style={{ color: 'var(--danger)', marginBottom: 12 }}>
+        {panelError}
+        <button type="button" onClick={() => setRefreshTick((value) => value + 1)}>Обновить список</button>
+      </div>}
       {section === 'recent' && (
         <section>
           <div className="tmusic-panel-head">

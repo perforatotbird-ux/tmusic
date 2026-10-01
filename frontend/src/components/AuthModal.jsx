@@ -3,7 +3,7 @@ import { useAuthStore } from '../store/authStore'
 import { Lock, AlertCircle, X } from 'lucide-react'
 
 export function AuthModal() {
-  const { isAuthModalOpen, loginWithPassword, isLoading, error, setAuthModalOpen } = useAuthStore()
+  const { isAuthModalOpen, loginWithPassword, isLoading, error, setAuthModalOpen, logoutPending, logoutBusy, logout } = useAuthStore()
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
 
@@ -45,6 +45,7 @@ export function AuthModal() {
       >
         <button
           onClick={() => setAuthModalOpen(false)}
+          disabled={logoutPending || logoutBusy}
           aria-label="Закрыть"
           style={{
             position: 'absolute',
@@ -89,6 +90,7 @@ export function AuthModal() {
 
         {error && (
           <div
+            role="alert"
             style={{
               backgroundColor: 'rgba(255, 107, 107, 0.1)',
               border: '1px solid var(--danger)',
@@ -108,6 +110,10 @@ export function AuthModal() {
           </div>
         )}
 
+        {logoutPending && <button type="button" onClick={() => logout()} disabled={logoutBusy}
+          style={{ marginBottom: 14, padding: 12 }}>
+          {logoutBusy ? 'Повторяем выход…' : 'Повторить выход'}
+        </button>}
         <form onSubmit={handlePasswordSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
           <input
             type="text"
@@ -145,7 +151,7 @@ export function AuthModal() {
           />
           <button
             type="submit"
-            disabled={isLoading}
+            disabled={isLoading || logoutPending || logoutBusy}
             style={{
               padding: '12px',
               minHeight: '44px',

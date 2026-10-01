@@ -16,6 +16,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.password_work import run_password_work
 from app.core.database import get_db
 from app.models.auth import AppUser
 from app.models.music import MusicAlbum, MusicArtist
@@ -218,7 +219,7 @@ async def _handle(
     f: Optional[str],
 ):
     method = (method or "").removesuffix(".view").strip()
-    user = _http_auth_user(
+    user = await run_password_work(_http_auth_user,
         request,
         db,
         params.get("u"),
@@ -523,13 +524,16 @@ async def _handle(
 
     if method in ("createPlaylist",):
         name = params.get("name") or "Playlist"
+        name = str(name).strip()
+        if not name or len(name) > 120:
+            return _respond(fail(10, "Playlist name must contain 1 to 120 characters."), f)
         playlist_id = params.get("playlistId")
         song_ids = request.query_params.getlist("songId") or request.query_params.getlist("songId[]")
         if playlist_id:
             kind, num = _parse_id(playlist_id)
-            pl = db.scalar(select(Playlist).where(Playlist.id == num, Playlist.user_id == user.id)) if num else None
+            pl = db.scalar(select(Playlist).where(Playlist.id == num, Playlist.user_id == user.id).with_for_update()) if num else None
         else:
-            new_pl = Playlist(user_id=user.id, name=str(name)[:120])
+            new_pl = Playlist(user_id=user.id, name=name)
             db.add(new_pl)
             db.commit()
             db.refresh(new_pl)
@@ -555,12 +559,15 @@ async def _handle(
 
     if method in ("updatePlaylist",):
         kind, num = _parse_id(params.get("playlistId"))
-        pl = db.scalar(select(Playlist).where(Playlist.id == num, Playlist.user_id == user.id)) if num else None
+        pl = db.scalar(select(Playlist).where(Playlist.id == num, Playlist.user_id == user.id).with_for_update()) if num else None
         if not pl:
             return _respond(fail(70, "Playlist not found."), f)
         name = params.get("name")
-        if name:
-            pl.name = str(name)[:120]
+        if name is not None:
+            name = str(name).strip()
+            if not name or len(name) > 120:
+                return _respond(fail(10, "Playlist name must contain 1 to 120 characters."), f)
+            pl.name = name
         song_ids = request.query_params.getlist("songId") or request.query_params.getlist("songId[]")
         if song_ids:
             db.query(PlaylistItem).filter(PlaylistItem.playlist_id == pl.id).delete()
@@ -575,7 +582,7 @@ async def _handle(
 
     if method in ("deletePlaylist",):
         kind, num = _parse_id(params.get("id"))
-        pl = db.scalar(select(Playlist).where(Playlist.id == num, Playlist.user_id == user.id)) if num else None
+        pl = db.scalar(select(Playlist).where(Playlist.id == num, Playlist.user_id == user.id).with_for_update()) if num else None
         if not pl:
             return _respond(fail(70, "Playlist not found."), f)
         db.delete(pl)
@@ -587,26 +594,7 @@ async def _handle(
         if num is None:
             return _respond(fail(70, "Media not found."), f)
         track = stream_service.get_track_or_404(db, num)
-        total_size = stream_service.get_track_size(track)
-        if total_size <= 0:
-            return _respond(fail(0, "Invalid media size."), f)
-        range_header = request.headers.get("Range")
-        start, end, content_length = stream_service.parse_range_header(range_header, total_size)
-        media_type = track.mime_type or "audio/mpeg"
-        headers = {
-            "Accept-Ranges": "bytes",
-            "Content-Range": f"bytes {start}-{end}/{total_size}",
-            "Content-Length": str(content_length),
-            "Cache-Control": "private, max-age=3600",
-            "Content-Disposition": f'inline; filename="{track.id}.bin"',
-        }
-        gen = stream_service.get_stream_generator(track, start, content_length)
-        return StreamingResponse(
-            gen,
-            status_code=206 if range_header else 200,
-            media_type=media_type,
-            headers=headers,
-        )
+        return await stream_service.build_stream_response(request, track)
 
     if method in ("getCoverArt",):
         kind, num = _parse_id(params.get("id"))
@@ -695,12 +683,12 @@ async def _handle(
                     timestamp=(time_ms // 1000) if time_ms > 0 else None,
                 )
             except Exception:
-                pass
+                logger.exception("Last.fm scrobble failed; local history remains saved")
         else:
             try:
                 lastfm_service.update_now_playing(artist, track, album)
             except Exception:
-                pass
+                logger.exception("Last.fm now-playing failed")
         return ok()
 
     if method in ("getLyrics",):

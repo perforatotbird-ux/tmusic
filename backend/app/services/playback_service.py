@@ -3,6 +3,7 @@ T-Music Playback Service
 Resume positions + listening history business logic.
 """
 import logging
+import math
 from typing import List, Optional, Tuple
 
 from sqlalchemy import Select, func, select
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models.playback import ListeningHistory, PlaybackPosition, UserFavorite
 from app.models.vfs import VFile
+from app.schemas.playback import MAX_HISTORY_DURATION_SEC
 from app.utils.time import utcnow
 
 logger = logging.getLogger("tmusic.playback")
@@ -95,6 +97,11 @@ class PlaybackService:
         track_duration_sec: Optional[float],
         completed: bool,
     ) -> ListeningHistory:
+        for duration in (duration_played_sec, track_duration_sec):
+            if duration is not None and (
+                not math.isfinite(duration) or not 0 <= duration <= MAX_HISTORY_DURATION_SEC
+            ):
+                raise ValueError("History duration must be finite and between 0 and 86400 seconds.")
         row = ListeningHistory(
             user_id=user_id,
             file_id=file_id,
@@ -176,16 +183,17 @@ class PlaybackService:
     def list_favorites(
         db: Session, user_id: int, limit: int = 500, offset: int = 0
     ) -> Tuple[List[Tuple[UserFavorite, Optional[VFile]]], int]:
-        base = select(UserFavorite).where(UserFavorite.user_id == user_id)
+        filters = (
+            UserFavorite.user_id == user_id,
+            VFile.is_trash.is_(False),
+            VFile.mime_type.like("audio/%"),
+        )
+        base = select(UserFavorite.id).join(VFile, VFile.id == UserFavorite.file_id).where(*filters)
         total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
         stmt = (
             select(UserFavorite, VFile)
             .outerjoin(VFile, VFile.id == UserFavorite.file_id)
-            .where(
-                UserFavorite.user_id == user_id,
-                VFile.is_trash == False,  # noqa: E712
-                VFile.mime_type.like("audio/%"),
-            )
+            .where(*filters)
             .order_by(UserFavorite.created_at.desc())
             .limit(limit)
             .offset(offset)

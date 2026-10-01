@@ -11,6 +11,7 @@ import {
   onEnded as playbackOnEnded,
 } from './services/playbackProgress'
 import { AuthModal } from './components/AuthModal'
+import { PasswordChangeModal } from './components/PasswordChangeModal'
 import { MusicLibrary } from './components/MusicLibrary'
 import { MusicLibraryPlayer } from './components/MusicLibraryPlayer'
 import { CoverPicker } from './components/CoverPicker'
@@ -20,12 +21,20 @@ const log = createLogger('app')
 
 export function App() {
   const audioRef = useRef(null)
+  const favoriteError = useFavoritesStore((state) => state.error)
   const [coverTarget, setCoverTarget] = useState(null)
+  const [passwordChangeOpen, setPasswordChangeOpen] = useState(false)
   // Track id we've already bound restore/metadata for (store owns src/play).
   const boundTrackIdRef = useRef(null)
   const errorTrackRef = useRef({ id: null, count: 0 })
 
-  const { checkAuth, setAuthModalOpen } = useAuthStore()
+  const { user, checkAuth, setAuthModalOpen } = useAuthStore()
+
+  useEffect(() => {
+    const openPasswordChange = () => setPasswordChangeOpen(true)
+    window.addEventListener('tmusic:change-password', openPasswordChange)
+    return () => window.removeEventListener('tmusic:change-password', openPasswordChange)
+  }, [])
   const {
     currentTrack,
     currentRelease,
@@ -322,8 +331,20 @@ export function App() {
       {/* Persistent Audio Player */}
       <MusicLibraryPlayer />
 
+      {favoriteError && <div role="alert" style={{ position: 'fixed', bottom: 100, left: 16,
+        right: 16, zIndex: 9998, padding: 12, background: 'var(--bg-card)', color: 'var(--danger)' }}>
+        {favoriteError}
+        <button type="button" onClick={() => useFavoritesStore.getState().load({ force: true })}>Обновить избранное</button>
+        <button type="button" onClick={() => useFavoritesStore.getState().clearError()}>Закрыть</button>
+      </div>}
       {/* Authentication Modal */}
       <AuthModal />
+      {user && (passwordChangeOpen || user.password_change_required) && (
+        <PasswordChangeModal
+          required={Boolean(user.password_change_required)}
+          onClose={() => setPasswordChangeOpen(false)}
+        />
+      )}
 
       {/* Cover Art Picker Modal */}
       {coverTarget && (

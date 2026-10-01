@@ -10,6 +10,7 @@ Design:
 - Integrates with existing fast_streamer + DecryptionService for Telegram downloads
 """
 import asyncio
+import heapq
 import json
 import logging
 import re
@@ -22,6 +23,7 @@ from app.core.rate_limiter import limiter
 
 from app.core.config import settings
 from app.utils.ffmpeg_transcoder import (
+    communicate_with_cleanup,
     TranscodeStatus,
     needs_transcoding,
     make_cache_key,
@@ -41,6 +43,22 @@ PRIORITY_PLAYING = 0
 PRIORITY_PREFETCH = 1
 MAX_QUEUED_TRANSCODES = 100
 MAX_USER_ACTIVE_TRANSCODES = 50
+
+
+class TranscodePriorityQueue(asyncio.PriorityQueue):
+    """Single-event-loop heap supporting atomic in-place promotion."""
+    def _init(self, maxsize):
+        super()._init(maxsize)
+        self._entries = self._queue
+
+    def promote(self, file_id: int, priority: int) -> bool:
+        for i, (old_priority, timestamp, queued_id) in enumerate(self._entries):
+            if queued_id == file_id:
+                if priority < old_priority:
+                    self._entries[i] = (priority, timestamp, queued_id)
+                    heapq.heapify(self._entries)
+                return True
+        return False  # Already acquired by a worker: do not enqueue again.
 
 
 @dataclass
@@ -96,7 +114,7 @@ class TranscodingService:
         """Spawn background worker tasks. Called from app lifespan."""
         if self._started:
             return
-        self._queue = asyncio.PriorityQueue(maxsize=MAX_QUEUED_TRANSCODES)
+        self._queue = TranscodePriorityQueue(maxsize=MAX_QUEUED_TRANSCODES)
         num_workers = num_workers or settings.TRANSCODE_WORKERS
         self._started = True
         for i in range(num_workers):
@@ -154,6 +172,7 @@ class TranscodingService:
                 existing.requester_user_ids.add(requester_user_id)
             # If playing track is requested as prefetch, upgrade priority
             if priority == PRIORITY_PLAYING and existing.priority == PRIORITY_PREFETCH:
+                self._queue.promote(track.id, PRIORITY_PLAYING)
                 existing.priority = PRIORITY_PLAYING
                 logger.info("Upgraded priority for file %d (now playing)", track.id)
             return existing.status
@@ -250,7 +269,7 @@ class TranscodingService:
         if cached:
             return TranscodeStatus.READY
 
-        return TranscodeStatus.PENDING
+        return job.status if job and job.status == TranscodeStatus.FAILED else TranscodeStatus.PENDING
 
     def get_result(self, file_id: int) -> Optional[Dict[str, Any]]:
         """Get detailed transcode result — cached path, size, duration."""
@@ -322,88 +341,87 @@ class TranscodingService:
             except asyncio.CancelledError:
                 break
 
-            # Get or create the job
-            job = self._jobs.get(file_id)
-            if job is None:
-                # Prefetch job — create from DB lookup
-                from app.core.database import SessionLocal
-                from app.repositories.file_repository import FileRepository
-                from app.utils.ffmpeg_transcoder import needs_transcoding
-
-                db = SessionLocal()
-                try:
-                    track = FileRepository.get_by_id(db, file_id)
-                    if not track:
-                        self._queue.task_done()
-                        continue
-
-                    if not needs_transcoding(track.name, track.mime_type):
-                        self._queue.task_done()
-                        continue
-
-                    cache_key = make_cache_key(
-                        file_id=track.id,
-                        file_name=track.name,
-                        file_size=track.size or 0,
-                        file_mtime=track.updated_at.timestamp() if track.updated_at else time.time(),
-                    )
-                    job = TranscodeJob(
-                        file_id=track.id,
-                        file_name=track.name,
-                        file_size=track.size or 0,
-                        is_encrypted=bool(track.is_encrypted),
-                        mime_type=track.mime_type,
-                        priority=priority,
-                        cache_key=cache_key,
-                    )
-                    self._jobs[file_id] = job
-                finally:
-                    db.close()
-
-            # Double-check the file still needs transcoding
-            # (it might have been cached between enqueue and processing)
-            already_cached = get_cached_transcode_path(job.cache_key)
-            if already_cached:
-                job.status = TranscodeStatus.READY
-                job.mp3_size = Path(already_cached).stat().st_size
-                job.finished_at = time.time()
-                self._notify({
-                    "event": "transcode_complete",
-                    "file_id": file_id,
-                    "cache_key": job.cache_key,
-                    "mp3_size": job.mp3_size,
-                }, job.requester_user_ids)
-                self._queue.task_done()
-                continue
-
-            job.status = TranscodeStatus.PROCESSING
-            job.started_at = time.time()
-
-            self._notify({
-                "event": "transcode_started",
-                "file_id": file_id,
-                "file_name": job.file_name,
-                "priority": "high" if priority == PRIORITY_PLAYING else "prefetch",
-                "timestamp": time.time(),
-            }, job.requester_user_ids)
-
+            job = None
             try:
-                await self._transcode_track(job)
-                self._queue.task_done()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.exception("Transcoding failed for file %d: %s", file_id, e)
-                job.status = TranscodeStatus.FAILED
-                job.error = str(e)
-                job.finished_at = time.time()
+                # Get or create the job
+                job = self._jobs.get(file_id)
+                if job is None:
+                    # Prefetch job — create from DB lookup
+                    from app.core.database import SessionLocal
+                    from app.repositories.file_repository import FileRepository
+                    from app.utils.ffmpeg_transcoder import needs_transcoding
+
+                    db = SessionLocal()
+                    try:
+                        track = FileRepository.get_by_id(db, file_id)
+                        if not track:
+                            continue
+
+                        if not needs_transcoding(track.name, track.mime_type):
+                            continue
+
+                        cache_key = make_cache_key(
+                            file_id=track.id,
+                            file_name=track.name,
+                            file_size=track.size or 0,
+                            file_mtime=track.updated_at.timestamp() if track.updated_at else time.time(),
+                        )
+                        job = TranscodeJob(
+                            file_id=track.id,
+                            file_name=track.name,
+                            file_size=track.size or 0,
+                            is_encrypted=bool(track.is_encrypted),
+                            mime_type=track.mime_type,
+                            priority=priority,
+                            cache_key=cache_key,
+                        )
+                        self._jobs[file_id] = job
+                    finally:
+                        db.close()
+
+                # Double-check the file still needs transcoding
+                # (it might have been cached between enqueue and processing)
+                already_cached = get_cached_transcode_path(job.cache_key)
+                if already_cached:
+                    job.status = TranscodeStatus.READY
+                    job.mp3_size = Path(already_cached).stat().st_size
+                    job.finished_at = time.time()
+                    self._notify({
+                        "event": "transcode_complete",
+                        "file_id": file_id,
+                        "cache_key": job.cache_key,
+                        "mp3_size": job.mp3_size,
+                    }, job.requester_user_ids)
+                    continue
+
+                job.status = TranscodeStatus.PROCESSING
+                job.started_at = time.time()
+
                 self._notify({
-                    "event": "transcode_failed",
+                    "event": "transcode_started",
                     "file_id": file_id,
-                    # Keep internal ffmpeg/filesystem details in server logs.
-                    "error": "transcode_failed",
+                    "file_name": job.file_name,
+                    "priority": "high" if priority == PRIORITY_PLAYING else "prefetch",
                     "timestamp": time.time(),
                 }, job.requester_user_ids)
+
+                await self._transcode_track(job)
+            except asyncio.CancelledError:
+                if job is not None:
+                    job.status = TranscodeStatus.FAILED
+                    job.error = "service_shutdown"
+                raise
+            except Exception:
+                logger.exception("Transcoding job failed for file %d", file_id)
+                if job is not None:
+                    job.status = TranscodeStatus.FAILED
+                    job.error = "transcode_failed"
+                    job.finished_at = time.time()
+                    self._notify({
+                        "event": "transcode_failed", "file_id": file_id,
+                        "error": "transcode_failed", "timestamp": time.time(),
+                    }, job.requester_user_ids)
+            finally:
                 self._queue.task_done()
 
         logger.info("Worker %s stopped", name)
@@ -547,8 +565,8 @@ class TranscodingService:
                 stderr=asyncio.subprocess.PIPE,
             )
 
-            stdout_data, stderr_data = await asyncio.wait_for(
-                proc.communicate(),
+            stdout_data, stderr_data = await communicate_with_cleanup(
+                proc,
                 timeout=600,  # 10 minute timeout for large files
             )
         finally:

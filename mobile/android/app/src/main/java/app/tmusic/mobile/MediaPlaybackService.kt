@@ -13,6 +13,9 @@ import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.Handler
+import android.os.Looper
+import android.webkit.CookieManager
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
@@ -137,6 +140,7 @@ class MediaPlaybackService : Service() {
                 val newCoverUrl = intent.getStringExtra(EXTRA_COVER_URL) ?: ""
                 if (newCoverUrl != currentCoverUrl) {
                     currentCoverUrl = newCoverUrl
+                    currentCoverBitmap = null
                     loadCoverBitmap(newCoverUrl)
                 }
                 updateMediaSessionMetadata()
@@ -243,24 +247,40 @@ class MediaPlaybackService : Service() {
     }
 
     private fun loadCoverBitmap(urlStr: String) {
-        if (urlStr.isBlank() || urlStr == lastLoadedCoverUrl) return
-        lastLoadedCoverUrl = urlStr
-
+        if (urlStr.isBlank() || (urlStr == lastLoadedCoverUrl && currentCoverBitmap != null)) return
+        // Query WebView cookies on the service thread, not after following redirects.
+        val cookie = try {
+            CookieManager.getInstance().getCookie(urlStr)
+        } catch (_: Exception) {
+            // An unavailable WebView cookie store must not interrupt playback controls.
+            return
+        }
         thread {
+            var connection: HttpURLConnection? = null
             try {
                 val url = URL(urlStr)
-                val connection = url.openConnection() as HttpURLConnection
+                if (url.protocol != "http" && url.protocol != "https") return@thread
+                connection = url.openConnection() as HttpURLConnection
                 connection.connectTimeout = 5000
                 connection.readTimeout = 5000
                 connection.doInput = true
-                connection.connect()
-                val inputStream = connection.inputStream
-                val bitmap = BitmapFactory.decodeStream(inputStream)
-                currentCoverBitmap = bitmap
-                updateMediaSessionMetadata()
-                updateNotification()
-            } catch (e: Exception) {
-                // Ignore cover loading errors (notification still shows title and artist)
+                // Do not forward the session cookie to a redirect destination.
+                connection.instanceFollowRedirects = false
+                if (!cookie.isNullOrBlank()) connection.setRequestProperty("Cookie", cookie)
+                if (connection.responseCode != HttpURLConnection.HTTP_OK) return@thread
+                val bitmap = connection.inputStream.use { BitmapFactory.decodeStream(it) } ?: return@thread
+                Handler(Looper.getMainLooper()).post {
+                    if (currentCoverUrl == urlStr) {
+                        currentCoverBitmap = bitmap
+                        lastLoadedCoverUrl = urlStr // Cache only successful current-track loads.
+                        updateMediaSessionMetadata()
+                        updateNotification()
+                    }
+                }
+            } catch (_: Exception) {
+                // Metadata/controls remain usable; do not cache a failed URL.
+            } finally {
+                connection?.disconnect()
             }
         }
     }
