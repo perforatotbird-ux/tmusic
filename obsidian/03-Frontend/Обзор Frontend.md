@@ -92,4 +92,10 @@ Docker multi-stage собирает `dist` внутри контейнера.
 - [[Docker]]
 - [[00-Главная]]
 
+## Граничные значения API и очереди
+
+`api/client.js` разбирает Retry-After как секунды или HTTP-date через `utils/retryAfter.js`. Missing/malformed значение: fallback 60 секунд; прошедшая дата: 0; UI wait cap: 300 секунд. NaN/Infinity не передаются в timer. После ожидания возвращается ошибка 429, автоматического replay нет.
+
+`npm test` запускает Node-регрессии в tests/ без новых пакетов. Play-next сохраняет currentTrack/queueIndex и порядок next в shuffle. См. [[Ревью граничных значений 2026-10-01]].
+
 [[00-Главная]]
