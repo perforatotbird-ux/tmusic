@@ -53,7 +53,20 @@ Security:
 | cap_add | `NET_BIND_SERVICE` |
 | read_only | `false` (cache/data writable) |
 
-PostgreSQL доступен в optional profile `db` (`docker compose --profile db up -d`); для production обычно используй внешний managed/host PostgreSQL.
+PostgreSQL доступен в optional profile `db`. Пароль в Compose отсутствует: сервис читает `/run/secrets/postgres_password` через `POSTGRES_PASSWORD_FILE`. Файл-источник `.secrets/postgres_password` исключён из Git и Docker build context; контейнер приложения этот secret не получает. Порт опубликован только на `127.0.0.1:5432`, внутри Compose БД доступна как `db:5432`.
+
+До первого запуска профиля:
+
+```powershell
+python scripts/init_db_secret.py
+# В приватном music.env заполнить DATABASE_URL для db:5432.
+# Пароль взять из локального secret-файла, не вставлять в команды/документацию.
+docker compose --profile db up -d --build
+```
+
+Скрипт создаёт случайный пароль, не выводит его и отказывается перезаписывать существующий файл. См. [[PostgreSQL]] и [[Аудит секретов 2026-10-01]]. Для внешней БД профиль `db` и локальный secret-файл не нужны.
+
+> `POSTGRES_PASSWORD_FILE` используется образом PostgreSQL при первичной инициализации пустого volume. Для существующей БД новая запись в файле **не меняет пароль роли**. Не удалять `tmusic_pgdata` ради смены пароля.
 
 ---
 

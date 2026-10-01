@@ -17,3 +17,6 @@ data
 __pycache__
 .pytest_cache
 .venv
+
+# Local Docker secret files must never be tracked or baked into images.
+.secrets/

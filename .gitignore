@@ -69,3 +69,6 @@ mobile/android/app/src/main/res/xml/config.xml
 # Ignore large FFmpeg binaries
 backend/app/utils/ffmpeg/*.dll
 backend/app/utils/ffmpeg/*.exe
+
+# Local Docker secret files must never be tracked or baked into images.
+.secrets/

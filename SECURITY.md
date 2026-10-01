@@ -125,3 +125,12 @@ Runbook: `obsidian/02-Backend/Импорт VFS из SQL.md`.
 - **Транскодер:** расширение временного файла — allowlist `[a-z0-9]{1,10}` (`safe_src_ext`), иначе `audio`. Crafted-имя трека вида `x.mp3/../../evil` больше не выводит запись за пределы `TRANSCODE_CACHE_DIR`.
 - **Тесты как спецификация безопасности:** `test_subsonic.py` переписан под token-only `/rest` (панельный пароль в `p=` — явный regression-тест на отказ); route-тесты переведены на `app.openapi()` (вложенность `app.routes` поменялась в FastAPI 0.14x).
 - **Проверено:** 124/124 pytest зелёных как на новом стеке (FastAPI 0.141.1 + Starlette 1.7.0), так и на старом; `pip-audit` — 0 findings; `ruff` — без новых замечаний.
+
+
+## PostgreSQL secrets и история Git (2026-10-01)
+
+- Optional Compose profile `db` использует `POSTGRES_PASSWORD_FILE` и локальный Docker secret `.secrets/postgres_password`, а не встроенный пароль. Файл исключён из Git и Docker build context; Unix-права создаваемого файла — 0600.
+- Публикация порта PostgreSQL ограничена `127.0.0.1:5432`; приложение внутри Compose подключается к `db:5432`.
+- `scripts/init_db_secret.py` создаёт случайный пароль только для нового развёртывания, без вывода значения и без перезаписи файла. `DATABASE_URL` остаётся в приватном `music.env`.
+- Старый fallback-пароль обнаружен в доступной истории Git. Его действительность не проверялась; удалить из HEAD недостаточно. Ротация на рабочих стендах и force-push для очистки истории не выполнены автоматически.
+- Для существующего PostgreSQL volume сменить пароль роли интерактивно (`\password`), обновить приватные конфиги и проверить отказ для старого значения. Не удалять volume. См. runbook в Obsidian `PostgreSQL` и `Аудит секретов 2026-10-01`.

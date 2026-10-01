@@ -6,6 +6,7 @@
 |------|------|
 | `music.env` | Runtime-конфиг (секреты). **В git не попадает.** |
 | `music.env.example` | Шаблон с CHANGE_ME и комментариями |
+| `.secrets/postgres_password` | Локальный Docker secret для optional db; исключён из Git и Docker image |
 
 Загрузка: `pydantic-settings` → `backend/app/core/config.py` → `Settings`.  
 `BASE_DIR` = корень репозитория; `ENV_FILE = BASE_DIR / "music.env"`.
@@ -28,7 +29,8 @@
 ### Database
 | Ключ | Описание |
 |------|----------|
-| DATABASE_URL | **Обязателен.** `postgresql://user:pass@host:port/tgmusic` |
+| DATABASE_URL | **Обязателен.** `postgresql://user:pass@host:port/tgmusic`; для Compose профиль db — хост db:5432 |
+| POSTGRES_PASSWORD_FILE | Только контейнер PostgreSQL: /run/secrets/postgres_password; не ключ Settings приложения |
 
 ### Security
 | Ключ | Default | Описание |
@@ -89,6 +91,12 @@
 | DISCOGS_CONSUMER_SECRET |
 
 ---
+
+## PostgreSQL secret для Compose
+
+`python scripts/init_db_secret.py` создаёт случайный секрет в `.secrets/postgres_password`, без вывода значения и без перезаписи существующего файла. Для Compose приложение читает свою строку подключения из приватного `music.env`; пароль в ней должен совпадать с secret-файлом. См. [[Docker]] и [[PostgreSQL]].
+
+Не переносить реальные строки подключения в эту базу. Для существующего volume смена файла не заменяет ротацию роли через `psql`.
 
 ## Fail-fast правила (config.py)
 

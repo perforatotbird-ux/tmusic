@@ -70,6 +70,19 @@ start_tmusic.bat
 - либо вручную: `python scripts/init_admin.py` (интерактивно) или `python scripts/init_admin.py --password "..."`;
 - вход только по логину и паролю: `POST /api/auth/login` (быстрый PIN-вход удалён).
 
+### Optional PostgreSQL через Docker Compose
+
+```powershell
+python scripts/init_db_secret.py
+# Заполните DATABASE_URL в приватном music.env для Compose-хоста db:5432.
+# Используйте пароль из локального .secrets/postgres_password, не из примера.
+docker compose --profile db up -d --build
+```
+
+В Compose нет встроенного пароля: PostgreSQL читает Docker secret через `POSTGRES_PASSWORD_FILE`. Порт БД опубликован только на `127.0.0.1:5432`. `.secrets/` исключён из Git и образа; скрипт не печатает пароль и не перезаписывает существующий файл.
+
+**Для уже созданного volume:** новый secret-файл не меняет пароль роли. Ротация выполняется отдельно через интерактивный `psql` (`\password tmusic`), затем обновляется приватная конфигурация. Не удаляйте volume ради смены пароля. Подробности — `obsidian/05-Инфраструктура/PostgreSQL.md`.
+
 ### 3. Telegram Кластер и Сессии
 При миграции (`python scripts/migrate_data.py`) все активные аккаунты кластера Telegram автоматически переносятся в таблицу `tg_accounts` базы данных `tgmusic`. **Ключи (`session_string`, `api_hash`) хранятся в базе в зашифрованном виде (Fernet, ключ — `SESSION_SECRET`).** При запуске сервер расшифровывает сессии и инициализирует всех клиентов параллельно в оперативной памяти; незашифрованные записи автоматически перешифровываются при старте (или вручную: `python scripts/secure_tg_accounts.py`).
 
