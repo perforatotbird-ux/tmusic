@@ -44,7 +44,7 @@
 | COOKIE_SECURE | false | true при HTTPS |
 | TRUST_PROXY_HEADERS | false | true только за trusted proxy |
 | ALLOWED_ORIGINS | JSON list | CORS; никогда `"*"` с credentials |
-| ADMIN_PASSWORD_HASH | optional | Argon2id PHC или bounded bcrypt; one-shot применение каждого нового значения |
+| ADMIN_PASSWORD_HASH | optional | Argon2id PHC или bounded bcrypt. **Зафиксирован (пароль `123`), не менять при тестах** — [[Пароль администратора]] |
 | PASSWORD_ARGON2_MEMORY_KIB | 65536 | KiB на KDF, границы 19456–131072 |
 | PASSWORD_ARGON2_TIME_COST | 3 | Iterations, границы 2–6 |
 | PASSWORD_ARGON2_PARALLELISM | 1 | Lanes, границы 1–4 |
@@ -110,7 +110,23 @@
 
 ---
 
+## Пароль администратора — запрет на изменение
+
+**Пароль админа всегда `123`** (решение владельца 2026-10-02). Эта строка —
+единственный источник истины и она **не должна переписываться при тестировании**.
+
+| Правило | Реализация |
+|---|---|
+| Тесты не трогают `ADMIN_PASSWORD_HASH` | `backend/tests/password_guard.py` + autouse-фикстура `protect_admin_password` в `conftest.py` |
+| Тесты не трогают `app_settings.admin_bootstrap_hash` | та же фикстура + `bootstrap.py` не применяет изменённый env-хэш |
+| Хэш применяется один раз | `ensure_admin_bootstrap` не перезаписывает существующий активный аккаунт |
+
+Попытка правки валит прогон с `PasswordMutationError`. Подробно:
+[[Пароль администратора]].
+
 ## Генерация хэша администратора
+
+Менять только по явному решению владельца — пароль зафиксирован на `123`.
 
 ```powershell
 python scripts/init_admin.py --hash-only "your-password"

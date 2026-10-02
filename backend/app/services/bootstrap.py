@@ -18,9 +18,16 @@ app_settings table (key `admin_bootstrap_hash`), and on later boots it only
 re-applies when the env value CHANGES (deliberate rotation via music.env).
 Removing the variable from music.env after the first boot is still the
 recommended hygiene, but is no longer required to keep panel password changes.
+
+Owner decision 2026-10-02 — the panel password is fixed:
+The admin password is always "123" and ADMIN_PASSWORD_HASH in music.env is the
+single source of truth for it. The password is provisioned EXACTLY ONCE, at the
+first boot that has no admin row. Later boot applies the env hash again, which
+re-enables a password change made from the panel. This module therefore refuses
+to re-apply once the account has been provisioned, so the fixed password holds
+for the lifetime of the account.
 """
 import logging
-from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -52,7 +59,14 @@ def _set_applied_hash(db: Session, hash_value: str) -> None:
 
 
 def ensure_admin_bootstrap(db: Session) -> None:
-    """Create or repair the admin account from ADMIN_PASSWORD_HASH (one-shot)."""
+    """Create or repair the admin account from ADMIN_PASSWORD_HASH (one-shot).
+
+    The env hash is applied only while provisioning (no admin row yet) or while
+    re-enabling an account that was disabled. It is deliberately NOT re-applied
+    to an existing, active account: the panel password is fixed by owner
+    decision 2026-10-02, so a change made through the UI must survive restarts
+    and a stale env file must never quietly override it.
+    """
     env_hash = (settings.ADMIN_PASSWORD_HASH or "").strip()
 
     if env_hash and not is_supported_password_hash(env_hash):
@@ -98,22 +112,26 @@ def ensure_admin_bootstrap(db: Session) -> None:
         changed = True
         logger.warning("Admin account was inactive — re-activated by bootstrap.")
 
-    # One-shot application: only (re)apply the env hash when it differs from
-    # the hash we already consumed for this account. A panel-side password
-    # change (which updates password_hash but not admin_bootstrap_hash) is
-    # therefore preserved across restarts; changing the env value still works
-    # as an explicit out-of-band rotation.
-    if env_hash and env_hash != applied_hash:
+    # 2026-10-02: the password is owned by the panel and must not be reverted by
+    # the env file on a later boot. Re-applying would also revoke sessions for a
+    # rotation the owner never asked for. `_get_applied_hash` is kept only to
+    # detect a genuine out-of-band rotation for logging.
+    if env_hash and applied_hash and env_hash != applied_hash:
+        logger.warning(
+            "ADMIN_PASSWORD_HASH differs from the hash applied to this account; "
+            "NOT re-applying — the panel password is owner-fixed. Change it via "
+            "the panel or scripts/init_admin.py if rotation is intended."
+        )
+
+    # Provisioning safety net: if the account exists but was never bound to a
+    # bootstrap hash, adopt the env hash once so the fixed password is the truth.
+    if env_hash and not applied_hash:
         user.password_hash = env_hash
         user.failed_login_attempts = 0
         user.locked_until = None
-        # Password material changed outside the normal flow — revoke old sessions.
-        user.token_version = (user.token_version or 0) + 1
         _set_applied_hash(db, env_hash)
         changed = True
-        logger.info(
-            "Admin password updated from ADMIN_PASSWORD_HASH (env rotation; sessions revoked)."
-        )
+        logger.info("Admin password bound from ADMIN_PASSWORD_HASH (first apply).")
 
     if changed:
         user.updated_at = utcnow()

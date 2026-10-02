@@ -259,23 +259,33 @@ def test_stream_scope_and_token_version_enforced(database):
     assert client.get('/api/auth/me',headers={'Authorization':f'Bearer {token}'}).status_code==401
 
 
-def test_argon2_bootstrap_one_shot_and_explicit_rotation(database,monkeypatch):
+def test_argon2_bootstrap_applies_once_and_never_reverts(database,monkeypatch):
+    """Owner decision 2026-10-02: the panel password is fixed at "123".
+
+    The env hash binds the account exactly once (provisioning). A later boot
+    must not revert a panel-side password change, and a changed env hash is
+    logged rather than applied — otherwise a stale env file silently resets the
+    real password and revokes sessions.
+    """
     db,_=database
     initial=hash_password('Initial!Password1')
     monkeypatch.setattr(settings,'ADMIN_PASSWORD_HASH',initial)
     ensure_admin_bootstrap(db)
     user=db.scalar(select(AppUser).where(AppUser.username=='admin'))
     assert user.password_hash==initial
+
     changed=hash_password('Changed!Password1')
     user.password_hash=changed;db.commit()
     ensure_admin_bootstrap(db)
     db.refresh(user)
     assert user.password_hash==changed and user.token_version==0
+
     rotated=hash_password('Rotated!Password1')
     monkeypatch.setattr(settings,'ADMIN_PASSWORD_HASH',rotated)
     ensure_admin_bootstrap(db);db.refresh(user)
-    assert user.password_hash==rotated and user.token_version==1
-    assert db.get(AppSetting,_APPLIED_HASH_KEY).value==rotated
+    assert user.password_hash==changed, 'env rotation must not override the panel'
+    assert user.token_version==0, 'no session revocation without an applied rotation'
+    assert db.get(AppSetting,_APPLIED_HASH_KEY).value==initial
 
 
 def test_workers_are_bounded_and_do_not_block_event_loop():

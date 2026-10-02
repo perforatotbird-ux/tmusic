@@ -237,8 +237,13 @@ def test_bootstrap_preserves_panel_password_change():
         cfg.settings.ADMIN_PASSWORD_HASH = original
 
 
-def test_bootstrap_reapplies_on_env_rotation():
-    """A CHANGED env hash is a deliberate rotation: it re-applies."""
+def test_bootstrap_does_not_reapply_changed_env_hash():
+    """Owner decision 2026-10-02: the panel password is fixed at "123".
+
+    A changed env hash is logged and IGNORED. Re-applying would silently
+    overwrite whatever the panel holds and revoke sessions for a rotation the
+    owner never asked for.
+    """
     import app.services.bootstrap as bs
     from datetime import datetime
 
@@ -299,11 +304,47 @@ def test_bootstrap_reapplies_on_env_rotation():
     try:
         cfg.settings.ADMIN_PASSWORD_HASH = new_env_hash
         bs.ensure_admin_bootstrap(db)
-        assert user.password_hash == new_env_hash
-        assert user.token_version == 1  # sessions revoked on rotation
-        assert db.store[_APPLIED] == new_env_hash
+        # Password and sessions stay untouched.
+        assert user.password_hash == old_env_hash
+        assert user.token_version == 0
+        assert db.store[_APPLIED] == old_env_hash
     finally:
         cfg.settings.ADMIN_PASSWORD_HASH = original
+
+
+def test_bootstrap_binds_env_hash_once_when_account_never_had_one(monkeypatch):
+    """First apply: an account bound to no bootstrap hash adopts the env one."""
+    import app.services.bootstrap as bs
+    from datetime import datetime
+
+    import bcrypt
+
+    env_hash = bcrypt.hashpw(b"synthetic-first-apply", bcrypt.gensalt(rounds=4)).decode()
+    user = SimpleNamespace(
+        username="admin",
+        password_hash=bcrypt.hashpw(b"panel-side", bcrypt.gensalt(rounds=4)).decode(),
+        is_active=True,
+        failed_login_attempts=3,
+        locked_until=datetime.utcnow(),
+        token_version=0,
+        updated_at=datetime.utcnow(),
+    )
+    store = {}
+    db = SimpleNamespace(
+        execute=lambda q: SimpleNamespace(scalar_one_or_none=lambda: user),
+        get=lambda model, key: None,
+        add=lambda obj: store.__setitem__(obj.key, obj.value),
+        commit=lambda: None,
+    )
+
+    import app.core.config as cfg
+    monkeypatch.setattr(cfg.settings, "ADMIN_PASSWORD_HASH", env_hash)
+    bs.ensure_admin_bootstrap(db)
+
+    assert user.password_hash == env_hash
+    assert user.failed_login_attempts == 0
+    assert user.locked_until is None
+    assert store[bs._APPLIED_HASH_KEY] == env_hash
 
 
 # ─── Subsonic dedicated-token-only auth ──────────────────────────────────────
