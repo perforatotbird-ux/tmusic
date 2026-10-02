@@ -365,9 +365,12 @@ input[type="range"].tm-scrub-input {
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 18px;
 }
+/* auto-fit (not auto-fill) collapses the empty trailing tracks, so an odd
+   count — the normal case for «В кэше» — leaves the last card centered in
+   the row instead of stranded in column 1. */
 .tmusic-grid-artists {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 18px;
 }
 
@@ -1120,7 +1123,7 @@ input[type="range"].tm-scrub-input {
     gap: 14px;
   }
   .tmusic-grid-artists {
-    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
     gap: 14px;
   }
   .tmusic-topbar {
@@ -1209,8 +1212,10 @@ input[type="range"].tm-scrub-input {
     grid-template-columns: repeat(2, 1fr);
     gap: 12px;
   }
+  /* auto-fit keeps the lone trailing card centered (auto-fill would leave an
+     empty second column and push it off to the left). */
   .tmusic-grid-artists {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
     gap: 12px;
   }
 

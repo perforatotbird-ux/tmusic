@@ -79,6 +79,40 @@ def _normalize(node: Dict[str, Any]) -> Optional[dict]:
     }
 
 
+def _search_and_pick(
+    artist: str,
+    track: str,
+    duration: Optional[int],
+    timeout: float,
+) -> Optional[dict]:
+    """LRCLIB /api/search, best hit wins: synced first, exact artist, then
+    shortest duration gap."""
+    query = f"{artist} {track}".strip() if artist and artist != "Unknown" else track
+    hits = _get("search", {"q": query}, timeout)
+    if not isinstance(hits, list) or not hits:
+        return None
+
+    def score(node: dict) -> tuple:
+        has_sync = 0 if _text(node.get("syncedLyrics")) else 1
+        artist_match = 0
+        if artist and artist != "Unknown":
+            artist_match = 0 if _text(node.get("artistName")).lower() == artist.lower() else 1
+        dur = _duration(node.get("duration"))
+        dur_gap = 9999.0
+        if duration is not None and dur is not None:
+            try:
+                dur_gap = abs(float(dur) - float(duration))
+            except (ValueError, TypeError):
+                dur_gap = 9999.0
+        return (has_sync, artist_match, dur_gap)
+
+    for node in sorted((node for node in hits if isinstance(node, dict)), key=score):
+        normalized = _normalize(node)
+        if normalized:
+            return normalized
+    return None
+
+
 def _lookup_upstream(
     artist: str,
     track: str,
@@ -87,45 +121,43 @@ def _lookup_upstream(
     duration: Optional[int],
     timeout: float,
 ) -> Optional[dict]:
-    """Exact /api/get then /api/search against LRCLIB. No caching here."""
-    if artist and artist != "Unknown":
-        data = _get(
-            "get",
-            {
-                "artist_name": artist,
-                "track_name": track,
-                "album_name": album or parsed_album,
-                "duration": duration,
-            },
-            timeout,
+    """Staged lookup against LRCLIB. No caching here.
+
+    LRCLIB's /api/get matches EXACTLY on every parameter supplied, so a single
+    request carrying a wrong album or a slightly-off title 404s even when the
+    song exists. Each step therefore drops a constraint rather than loosening
+    all of them at once:
+
+      1. artist + title + album  (exact, cheapest to rule out)
+      2. artist + title           (album was wrong or absent upstream)
+      3. /api/search on "artist title"  (title spelled differently)
+      4. /api/search on title alone     (artist unknown or unverifiable)
+    """
+    if not track:
+        return None
+    known_artist = bool(artist) and artist != "Unknown"
+    album_hint = album or parsed_album
+
+    if known_artist:
+        attempts = (
+            {"artist_name": artist, "track_name": track,
+             "album_name": album_hint, "duration": duration},
+            {"artist_name": artist, "track_name": track, "duration": duration},
         )
-        if data:
-            normalized = _normalize(data)
-            if normalized:
-                return normalized
+        for params in attempts:
+            data = _get("get", params, timeout)
+            if data:
+                normalized = _normalize(data)
+                if normalized:
+                    return normalized
 
-    query = f"{artist} {track}".strip() if artist and artist != "Unknown" else track
-    hits = _get("search", {"q": query}, timeout)
-    if isinstance(hits, list) and hits:
-        # Prefer synced lyrics, then exact artist match, then shortest duration gap.
-        def score(node: dict) -> tuple:
-            has_sync = 0 if _text(node.get("syncedLyrics")) else 1
-            artist_match = 0
-            if artist and artist != "Unknown":
-                artist_match = 0 if _text(node.get("artistName")).lower() == artist.lower() else 1
-            dur = _duration(node.get("duration"))
-            dur_gap = 9999.0
-            if duration is not None and dur is not None:
-                try:
-                    dur_gap = abs(float(dur) - float(duration))
-                except (ValueError, TypeError):
-                    dur_gap = 9999.0
-            return (has_sync, artist_match, dur_gap)
+    found = _search_and_pick(artist, track, duration, timeout)
+    if found:
+        return found
 
-        for node in sorted((node for node in hits if isinstance(node, dict)), key=score):
-            normalized = _normalize(node)
-            if normalized:
-                return normalized
+    # Last resort: the title alone, for tracks whose filename gave no artist.
+    if known_artist and artist:
+        return _search_and_pick("", track, duration, timeout)
     return None
 
 

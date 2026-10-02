@@ -5,6 +5,7 @@ import { useAuthStore } from '../store/authStore'
 import { resolveReleaseCoverUrl } from '../utils/cover'
 import { metadataApi } from '../api/metadata'
 import { parseLrc, findLrcIndex, plainLines } from '../utils/lrc'
+import { buildLyricsQuery } from '../utils/lyricsQuery'
 import {
   Play,
   Pause,
@@ -161,6 +162,7 @@ export function MusicLibraryPlayer() {
   const [lyrics, setLyrics] = useState(null) // LyricsResponse | null
   const [lyricsLoading, setLyricsLoading] = useState(false)
   const [lyricsError, setLyricsError] = useState(null)
+  const [lyricsQuery, setLyricsQuery] = useState(null) // last {artist, track} actually queried
   const lyricsSeq = useRef(0)
   const lyricsScrollRef = useRef(null)
   const [swipeY, setSwipeY] = useState(0)
@@ -239,28 +241,21 @@ export function MusicLibraryPlayer() {
     ;(async () => {
       try {
         const release = usePlayerStore.getState().currentRelease
-        const artistName = release?.artistName
-        const artist =
-          artistName && artistName !== 'T-Music' && artistName !== 'Недавнее'
-            ? artistName
-            : null
-        const base = trackName.replace(/\.[^/.]+$/, '')
-        // When artist comes from the release context, strip "Artist - " from the title hint.
-        let trackHint = base
-        if (artist && base.includes(' - ')) {
-          trackHint = base.split(' - ').slice(1).join(' - ').trim()
-        }
-        const res = await metadataApi.lyrics({
-          artist,
-          track: artist ? trackHint : undefined,
-          duration: usePlayerStore.getState().duration || null,
+        // Derive artist + title from the real filename; the catalog artist wins.
+        const query = buildLyricsQuery({
           fileName: trackName,
+          releaseArtist: release?.artistName,
+          album: release?.title,
+          duration: usePlayerStore.getState().duration || null,
         })
+        const res = await metadataApi.lyrics(query)
         if (seq !== lyricsSeq.current) return
+        setLyricsQuery({ artist: query.artist, track: query.track })
         setLyrics(res?.found ? res : null)
       } catch (e) {
         if (seq !== lyricsSeq.current) return
         setLyrics(null)
+        setLyricsQuery(null)
         setLyricsError(e?.message || 'Не удалось загрузить текст')
       } finally {
         if (seq === lyricsSeq.current) setLyricsLoading(false)
@@ -1035,6 +1030,19 @@ export function MusicLibraryPlayer() {
                     {!lyricsLoading && !lyricsError && !lyrics && (
                       <div style={{ color: 'var(--dim)', fontSize: '13px' }}>
                         Текст не найден для этого трека
+                        {lyricsQuery && (
+                          <div
+                            style={{
+                              marginTop: '6px',
+                              fontSize: '11.5px',
+                              opacity: 0.75,
+                              wordBreak: 'break-word',
+                            }}
+                          >
+                            Искали: {lyricsQuery.artist ? `${lyricsQuery.artist} — ` : ''}
+                            {lyricsQuery.track}
+                          </div>
+                        )}
                       </div>
                     )}
                     {!lyricsLoading &&

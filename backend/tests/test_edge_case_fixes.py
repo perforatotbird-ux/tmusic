@@ -120,14 +120,32 @@ def test_subsonic_rejects_whitespace_playlist_name(database, monkeypatch, method
 
 
 def test_lyrics_filter_null_before_sort_and_validate_strings(monkeypatch):
-    monkeypatch.setattr(lyrics_service, '_get', Mock(side_effect=[None, [None, 'bad', 1, {'plainLyrics':[]}, {'syncedLyrics':'[00:01]Lyrics', 'artistName':{}, 'duration':'Infinity'}]]))
+    """Malformed search hits (null / str / int / wrong-typed fields) must be
+    filtered out without raising, and the one valid node still wins.
+
+    The lookup retries /api/get with fewer constraints before searching, so the
+    stub is keyed on `path` rather than a positional side_effect list.
+    """
+    def fake_get(path, params, timeout):
+        if path == 'get':
+            return None
+        return [None, 'bad', 1, {'plainLyrics':[]},
+                {'syncedLyrics':'[00:01]Lyrics', 'artistName':{}, 'duration':'Infinity'}]
+
+    monkeypatch.setattr(lyrics_service, '_get', fake_get)
     result = lyrics_service._lookup_upstream('Artist','Track',None,None,None,1)
     assert result['synced'] == '[00:01]Lyrics'
     assert result['artist'] is None and result['duration_sec'] is None
 
 
 def test_lyrics_malformed_exact_response_falls_back(monkeypatch):
-    monkeypatch.setattr(lyrics_service, '_get', Mock(side_effect=[['not-a-dict'], [{'plainLyrics':'Valid'}]]))
+    """A non-dict /api/get answer must fall through to search, not blow up."""
+    def fake_get(path, params, timeout):
+        if path == 'get':
+            return ['not-a-dict']
+        return [{'plainLyrics':'Valid'}]
+
+    monkeypatch.setattr(lyrics_service, '_get', fake_get)
     assert lyrics_service._lookup_upstream('Artist','Track',None,None,None,1)['plain'] == 'Valid'
 
 
