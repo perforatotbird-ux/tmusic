@@ -20,11 +20,22 @@ ENV_PATH = PROJECT_ROOT / "music.env"
 ADMIN_HASH_KEY = "ADMIN_PASSWORD_HASH"
 _ADMIN_HASH_LINE = re.compile(r"^[ \t]*ADMIN_PASSWORD_HASH[ \t]*=.*$", re.MULTILINE)
 
+# The owner-fixed panel password. Kept as a module constant only: it is the
+# value every test must see in the database, and it is already public in the
+# project notes. No hash of it is ever stored here.
+OWNER_ADMIN_PASSWORD = "123"
+
 MESSAGE = (
     'REFUSED: the admin password must stay "123" (owner decision 2026-10-02). '
     "Tests may not modify ADMIN_PASSWORD_HASH in music.env, nor the "
     "app_settings.admin_bootstrap_hash row. The bootstrap password is managed "
-    "in music.env only - see obsidian/05-Инфраструктура/music.env.md."
+    "in music.env only - see obsidian/05-Инфраструкность/music.env.md."
+)
+
+DB_PASSWORD_MESSAGE = (
+    'REFUSED: the admin row in the database no longer accepts "123" '
+    "(owner decision 2026-10-02). A test wrote its own password into the live "
+    "admin account. Restore it with: python scripts/restore_admin_password.py"
 )
 
 

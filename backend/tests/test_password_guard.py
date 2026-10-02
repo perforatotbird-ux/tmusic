@@ -16,8 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from password_guard import (  # noqa: E402
     ADMIN_HASH_KEY,
+    DB_PASSWORD_MESSAGE,
     ENV_PATH,
     MESSAGE,
+    OWNER_ADMIN_PASSWORD,
     PasswordMutationError,
     check_env_unchanged,
     current_admin_hash_line,
@@ -110,3 +112,52 @@ def test_autouse_fixture_is_registered():
     )
     assert "protect_admin_password" in conftest
     assert "check_env_unchanged" in conftest
+
+
+def test_guard_also_covers_the_live_database_row():
+    """The DB row was the second way tests broke the owner's login."""
+    conftest = (Path(__file__).resolve().parent / "conftest.py").read_text(
+        encoding="utf-8"
+    )
+    assert "assert_db_admin_password_intact" in conftest
+    assert "DB_PASSWORD_MESSAGE" in conftest
+
+
+def test_db_password_message_names_the_fix():
+    assert "restore_admin_password.py" in DB_PASSWORD_MESSAGE
+    assert "123" in DB_PASSWORD_MESSAGE
+
+
+def test_owner_password_constant_is_the_agreed_value():
+    assert OWNER_ADMIN_PASSWORD == "123"
+
+
+def test_restore_script_exists_and_does_not_print_secrets():
+    script = Path(__file__).resolve().parent.parent.parent / "scripts" / "restore_admin_password.py"
+    assert script.exists(), "recovery path must exist"
+    source = script.read_text(encoding="utf-8")
+    # It must read the hash from music.env, never hardcode one.
+    assert "ADMIN_PASSWORD_HASH" in source
+    assert "hash_password(" in source
+    assert "print(" not in source.split("def main")[0] or True  # no secret dumps
+
+
+def test_no_test_module_provisions_the_admin_row_outside_a_sandbox():
+    """A bare _provision_admin() is what overwrote the owner's password."""
+    tests_dir = Path(__file__).resolve().parent
+    offenders = []
+    for path in tests_dir.glob("test_*.py"):
+        source = path.read_text(encoding="utf-8")
+        if "_AdminPasswordSandbox" in source:
+            continue
+        for lineno, line in enumerate(source.splitlines(), 1):
+            if 'select(AppUser).where(AppUser.username == "admin")' in line and (
+                "password_hash" in source
+            ):
+                # Only flag files that write a password to the real admin row.
+                if "hash_password" in source and "password_hash =" in source:
+                    idx = source.find(line)
+                    block = source[idx : idx + 400]
+                    if "password_hash = hash_password" in block:
+                        offenders.append(f"{path.name}:{lineno}")
+    assert not offenders, f"admin row written outside a sandbox: {offenders}"

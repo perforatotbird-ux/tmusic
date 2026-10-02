@@ -19,6 +19,9 @@ from app.core.disk_cache import external_cache  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from password_guard import (  # noqa: E402
+    DB_PASSWORD_MESSAGE,
+    OWNER_ADMIN_PASSWORD,
+    PasswordMutationError,
     check_env_unchanged,
     snapshot_admin_hash_line,
 )
@@ -35,10 +38,43 @@ def isolate_external_disk_cache(tmp_path, monkeypatch):
 def protect_admin_password():
     """Owner decision 2026-10-02: the panel password is always "123".
 
-    ADMIN_PASSWORD_HASH in music.env is the single source of truth. A test that
-    rewrites it silently changes the real panel password, so every test is
-    bracketed by a snapshot of that line and the suite FAILS if it changed.
+    Two independent sources get clobbered by test runs, so both are guarded:
+
+    * the ADMIN_PASSWORD_HASH line in music.env — the single source of truth;
+    * the admin row in the LIVE database, which several tests used to overwrite
+      with their own password and thereby lock the owner out of the panel.
+
+    The env line is checked on disk. The DB row is checked with verify_password,
+    which needs the plaintext owner password as an argument — it is never
+    written to a file, the repository or the Obsidian notes.
     """
     before = snapshot_admin_hash_line()
     yield
     check_env_unchanged(before)
+    assert_db_admin_password_intact()
+
+
+def assert_db_admin_password_intact() -> None:
+    """Fail if the live admin row no longer accepts the owner's password."""
+    from sqlalchemy import select
+
+    from app.core.database import SessionLocal
+    from app.core.security import verify_password
+    from app.models.auth import AppUser
+
+    try:
+        with SessionLocal() as db:
+            user = db.execute(
+                select(AppUser).where(AppUser.username == "admin")
+            ).scalar_one_or_none()
+    except Exception as exc:  # DB unreachable — not a password failure
+        pytest.skip(f"database unavailable, skipping DB password guard: {exc}")
+
+    if user is None:
+        # No admin row at all: bootstrap provisions it from music.env on boot.
+        return
+
+    if not verify_password(OWNER_ADMIN_PASSWORD, user.password_hash or ""):
+        raise PasswordMutationError(
+            f"{DB_PASSWORD_MESSAGE}\nRun: python scripts/restore_admin_password.py"
+        )

@@ -99,32 +99,69 @@ def test_revocation_purge_and_negative_cache():
         assert is_token_revoked(db, "test-old-jti") is False
 
 
+class _AdminPasswordSandbox:
+    """Swap the admin password for one test, then restore it.
+
+    These tests hit the REAL database; committing TEST_PASSWORD unconditionally
+    left the owner unable to log in (2026-10-02).
+    """
+
+    def __init__(self, password: str = TEST_PASSWORD):
+        self.password = password
+        self._restore = None
+
+    def __enter__(self):
+        with SessionLocal() as db:
+            user = db.execute(
+                select(AppUser).where(AppUser.username == "admin")
+            ).scalar_one_or_none()
+            if user is None:
+                user = AppUser(username="admin", password_hash=hash_password(self.password))
+                db.add(user)
+            else:
+                self._restore = user.password_hash
+                user.password_hash = hash_password(self.password)
+            user.is_active = True
+            user.failed_login_attempts = 0
+            user.locked_until = None
+            db.commit()
+        return self
+
+    def __exit__(self, *exc):
+        if self._restore is not None:
+            with SessionLocal() as db:
+                user = db.execute(
+                    select(AppUser).where(AppUser.username == "admin")
+                ).scalar_one_or_none()
+                if user is not None:
+                    user.password_hash = self._restore
+                    db.commit()
+        self._restore = None
+        return False
+
+
 def _provision_admin():
-    with SessionLocal() as db:
-        user = db.execute(
-            select(AppUser).where(AppUser.username == "admin")).scalar_one_or_none()
-        if user is None:
-            user = AppUser(username="admin", password_hash=hash_password(TEST_PASSWORD))
-            db.add(user)
-        else:
-            user.password_hash = hash_password(TEST_PASSWORD)
-        user.is_active = True
-        user.failed_login_attempts = 0
-        user.locked_until = None
-        db.commit()
+    """Deprecated — writing the real admin row locks the owner out.
+
+    Use _AdminPasswordSandbox as a context manager.
+    """
+    raise RuntimeError(
+        "_provision_admin() writes the real admin row; use _AdminPasswordSandbox "
+        "so the owner's password is restored afterwards."
+    )
 
 
 def test_stream_query_token_requires_scope():
-    _provision_admin()
-    tok = client.post(
-        "/api/auth/login",
-        json={"username": "admin", "password": TEST_PASSWORD}).json()["access_token"]
-    # Full session JWT in the query string must be rejected...
-    assert client.get("/api/stream/1?token=" + tok).status_code == 401
-    # ...while a minted stream token passes authentication (404 = track miss).
-    me_headers = {"Authorization": f"Bearer {tok}"}
-    st = client.post("/api/stream/token", headers=me_headers).json()["stream_token"]
-    assert client.get("/api/stream/999999?token=" + st).status_code == 404
+    with _AdminPasswordSandbox():
+        tok = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": TEST_PASSWORD}).json()["access_token"]
+        # Full session JWT in the query string must be rejected...
+        assert client.get("/api/stream/1?token=" + tok).status_code == 401
+        # ...while a minted stream token passes authentication (404 = track miss).
+        me_headers = {"Authorization": f"Bearer {tok}"}
+        st = client.post("/api/stream/token", headers=me_headers).json()["stream_token"]
+        assert client.get("/api/stream/999999?token=" + st).status_code == 404
     assert client.get("/api/stream/999999", headers={"Authorization": f"Bearer {st}"}).status_code == 404
     assert client.get("/api/stream/999999", cookies={"access_token": tok}).status_code == 404
     assert client.get("/api/library/artists", headers={"Authorization": f"Bearer {st}"}).status_code == 401
