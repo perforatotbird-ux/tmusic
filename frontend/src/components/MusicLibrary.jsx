@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { libraryApi, bustCatalogCache } from '../api/library'
 import { streamApi } from '../api/stream'
 import { adminApi } from '../api/admin'
@@ -6,6 +6,12 @@ import { metadataApi } from '../api/metadata'
 import { playbackApi } from '../api/playback'
 import { missingCoverKeys, probedCoverKeys, markCoverProbed, parseCoverKey } from '../services/coverMissing'
 import { resolveCoverUrl } from '../utils/cover'
+import {
+  groupCachedTracks,
+  cachedArtistCard,
+  cachedAlbumCard,
+  isCachedArtistCardId,
+} from '../utils/cachedBrowse'
 import { AlbumDetail } from './AlbumDetail'
 import { LibraryPanel } from './HomeExtraPanels'
 import { FolderBrowser } from './FolderBrowser'
@@ -137,14 +143,15 @@ const FAVORITES_KIND = 'favorites'
 const FAVORITES_CARD_ID = 'tmusic:favorites'
 
 const CACHED_KIND = 'cached'
-const CACHED_CARD_ID = 'tmusic:cached'
 
 const SECTIONS = [
   { id: 'artist', label: 'Исполнители', icon: Users, isAlbum: false },
   { id: 'albums', label: 'Альбомы', icon: Disc, isAlbum: true },
   { id: 'compilation', label: 'Сборники', icon: Layers, isAlbum: true },
   { id: FAVORITES_KIND, label: 'Любимые', icon: Star, isAlbum: true },
-  { id: CACHED_KIND, label: 'В кэше', icon: HardDrive, isAlbum: true },
+  // The cache is browsed as Artist → Album → Track, so this view shows artist
+  // cards even though every real card in it is a release.
+  { id: CACHED_KIND, label: 'В кэше', icon: HardDrive, isAlbum: false },
   { id: 'standalone_album', label: 'Отдельные релизы', icon: Disc, isAlbum: true },
   { id: 'genre_collection', label: 'Коллекции', icon: FolderHeart, isAlbum: true },
   { id: 'all', label: 'Все категории', icon: Layers, isAlbum: false },
@@ -167,18 +174,6 @@ function favoritesCard(trackCount) {
 }
 
 const FAVORITES_RELEASE = { title: 'Любимые', artistName: 'Сборник', coverUrl: null }
-
-function cachedCard(trackCount) {
-  return {
-    id: CACHED_CARD_ID,
-    title: 'Кэш устройства',
-    kind: 'compilation',
-    track_count: trackCount,
-    is_cached: true,
-  }
-}
-
-const CACHED_RELEASE = { title: 'Кэш устройства', artistName: 'Офлайн-память', coverUrl: null }
 
 function favoriteToTrack(row) {
   return {
@@ -311,11 +306,21 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   const isCachedView = viewKind === CACHED_KIND && mobileTab !== 'search'
 
   const cachedQuery = (debouncedSearch || search || '').trim().toLowerCase()
-  const cachedTracks =
-    isCachedView && cachedQuery
-      ? cachedTracksList.filter((r) => (r.title || r.name || '').toLowerCase().includes(cachedQuery))
-      : cachedTracksList
+  const cachedTracks = cachedQuery
+    ? cachedTracksList.filter((r) =>
+        `${r.title || ''} ${r.artist || ''} ${r.album || ''}`.toLowerCase().includes(cachedQuery)
+      )
+    : cachedTracksList
   const cachedCount = cachedTracks.length
+
+  // Artist → Album → Track tree rebuilt from the flat IndexedDB rows. The
+  // groups are looked up by card id when a cached artist is opened.
+  const cachedArtistGroups = useMemo(() => groupCachedTracks(cachedTracks), [cachedTracks])
+  const cachedGroupById = useMemo(() => {
+    const map = new Map()
+    for (const group of cachedArtistGroups) map.set(cachedArtistCard(group).id, group)
+    return map
+  }, [cachedArtistGroups])
 
   useEffect(() => {
     if (!isFavoritesView) return undefined
@@ -351,10 +356,10 @@ export function MusicLibrary({ onOpenCoverPicker }) {
 
   useEffect(() => {
     if (!isCachedView) return
-    setItems([cachedCard(cachedCount)])
+    setItems(cachedArtistGroups.map(cachedArtistCard))
     setHasMore(false)
     setIsLoading(false)
-  }, [isCachedView, cachedCount])
+  }, [isCachedView, cachedArtistGroups])
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -581,6 +586,27 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   }
 
   const openArtist = async (artistId) => {
+    // «В кэше» artists have no catalog row to fetch — the group is already in
+    // memory, so open it directly instead of hitting a 404.
+    if (isCachedArtistCardId(artistId)) {
+      const group = cachedGroupById.get(artistId)
+      if (!group) return
+      setSimilarArtists([])
+      setDetailError(null)
+      setSelectedArtist({
+        id: artistId,
+        display_name: group.name,
+        kind: 'artist',
+        bio: null,
+        album_count: group.albums.length,
+        albums: group.albums.map(cachedAlbumCard),
+        children: [],
+        image_url: group.coverUrl || undefined,
+        is_cached_group: true,
+      })
+      window.scrollTo(0, 0)
+      return
+    }
     setIsLoading(true)
     setDetailError(null)
     try {
@@ -637,17 +663,15 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       if (tracks.length > 0) playQueue(tracks, 0, FAVORITES_RELEASE)
       return
     }
-    if (album.is_cached) {
-      const tracks = cachedTracks.map((c) => ({
-        id: c.file_id,
-        name: c.title || c.name || `Трек ${c.file_id}`,
-        stream_url: `/api/stream/${c.file_id}`,
-        folder_id: c.folder_id ?? null,
-        mime_type: c.mime_type || 'audio/mpeg',
-        size: c.size ?? null,
-        duration: c.duration ?? null,
-      }))
-      if (tracks.length > 0) playQueue(tracks, 0, CACHED_RELEASE)
+    // Album inside a «В кэше» artist — the tracklist is already local.
+    if (album.is_cached_album) {
+      const tracks = album.cached_tracks || []
+      if (tracks.length === 0) return
+      playQueue(tracks, 0, {
+        title: album.title,
+        artistName: (artist && artist.display_name) || album.title || 'Кэш устройства',
+        coverUrl: resolveCoverUrl(album, artist, null),
+      })
       return
     }
     // UI-21: a double-tap must not enqueue twice while the tracklist is fetching.
@@ -684,22 +708,10 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       setPlayerExpanded(true)
       return
     }
-    if (album.is_cached) {
-      const tracks = cachedTracks.map((c) => ({
-        id: c.file_id,
-        name: c.title || c.name || `Трек ${c.file_id}`,
-        stream_url: `/api/stream/${c.file_id}`,
-        folder_id: c.folder_id ?? null,
-        mime_type: c.mime_type || 'audio/mpeg',
-        size: c.size ?? null,
-        duration: c.duration ?? null,
-      }))
-      if (tracks.length === 0) {
-        useOfflineStore.getState().setStorageModalOpen(true)
-        return
-      }
-      prepareQueue(tracks, 0, CACHED_RELEASE)
-      setPlayerExpanded(true)
+    // Cached album: open the tracklist sheet with the local tracks instead of
+    // preparing a queue — there is no folder_id to stream from.
+    if (album.is_cached_album) {
+      setSelectedAlbum({ album, artist })
       return
     }
     try {
@@ -865,6 +877,21 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   // ─── End admin card curation ─────────────────────────────────────────────
 
   const handlePlayAllArtist = async (artist) => {
+    // «В кэше» artist: every cached track of the group, no server round-trip.
+    if (artist?.is_cached_group) {
+      const group = cachedGroupById.get(artist.id)
+      const tracks = group ? group.albums.flatMap((a) => a.tracks) : []
+      if (tracks.length === 0) {
+        useOfflineStore.getState().setStorageModalOpen(true)
+        return
+      }
+      playQueue(tracks, 0, {
+        title: artist.display_name,
+        artistName: artist.display_name,
+        coverUrl: resolveCoverUrl(artist, null, null),
+      })
+      return
+    }
     try {
       const tracks = await streamApi.getFolderTracks(artist.folder_id, true)
       if (tracks && tracks.length > 0) {
@@ -997,7 +1024,8 @@ export function MusicLibrary({ onOpenCoverPicker }) {
             ? { outline: '2px dashed var(--accent)', outlineOffset: '3px', borderRadius: '14px' }
             : {}),
           opacity: isDragging ? 0.45 : 1,
-          cursor: album.is_favorites || album.is_cached ? 'pointer' : isAdmin ? 'grab' : undefined,
+          cursor:
+            album.is_favorites || album.is_cached_album ? 'pointer' : isAdmin ? 'grab' : undefined,
         }}
       >
         <div className="tmusic-card-cover-wrap">
@@ -1034,7 +1062,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         </div>
         <div className="tmusic-card-title">{title}</div>
         <div className="tmusic-card-sub">
-          {album.is_favorites || album.is_cached
+          {album.is_favorites || album.is_cached_album
             ? `${album.track_count} ${tracksWord(album.track_count)}`
             : album.year || (album.album_count ? `${album.album_count} альб.` : 'Релиз')}
         </div>
@@ -1299,7 +1327,9 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                     backgroundColor: 'var(--bg-card)',
                     border: '1px solid var(--line-bright)',
                     color: 'var(--ink)',
-                    display: isAdmin ? 'flex' : 'none',
+                    // A cached artist is not a catalog row — there is nothing
+                    // to write a custom cover back to.
+                    display: isAdmin && !selectedArtist.is_cached_group ? 'flex' : 'none',
                     alignItems: 'center',
                     justifyContent: 'center',
                     cursor: 'pointer',
@@ -1911,8 +1941,9 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         <AlbumDetail
           album={selectedAlbum.album}
           artist={selectedAlbum.artist}
+          cachedTracks={selectedAlbum.album.is_cached_album ? selectedAlbum.album.cached_tracks : null}
           onClose={() => setSelectedAlbum(null)}
-          onOpenCoverPicker={isAdmin ? onOpenCoverPicker : null}
+          onOpenCoverPicker={isAdmin && !selectedAlbum.album.is_cached_album ? onOpenCoverPicker : null}
         />
       )}
 

@@ -44,7 +44,11 @@ function stripExt(name) {
   return (name || 'Без названия').replace(/\.[^/.]+$/, '')
 }
 
-export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }) {
+/**
+ * `cachedTracks` short-circuits the folder fetch: a «В кэше» album has no
+ * catalog folder_id, its tracklist already lives on the device.
+ */
+export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker, cachedTracks = null }) {
   const [tracks, setTracks] = useState([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -144,6 +148,12 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
   }, [onClose, playlistTarget, trackMenu])
 
   useEffect(() => {
+    if (cachedTracks) {
+      setTracks(cachedTracks)
+      setError(null)
+      setIsLoading(false)
+      return undefined
+    }
     let cancelled = false
     const mySeq = ++loadSeq.current
     setIsLoading(true)
@@ -168,7 +178,7 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
     return () => {
       cancelled = true
     }
-  }, [album?.folder_id, album?.is_tracks])
+  }, [album?.folder_id, album?.is_tracks, cachedTracks])
 
   const openPlaylistPicker = async (track) => {
     setTrackMenu(null)
