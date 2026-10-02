@@ -15,7 +15,7 @@ const tick = () => new Promise(setImmediate)
 const source = (name) => fs.readFileSync(path.join(__dirname, '../src', name), 'utf8')
 function load(name, context = {}) {
   vm.createContext(context)
-  const text = source(name).replace(/^import .*\n/gm, '').replace(/export /g, '')
+  const text = source(name).replace(/^import .*\r?\n/gm, '').replace(/export /g, '')
     .replace('const useAuthStore =', 'globalThis.store =')
     .replace('const useFavoritesStore =', 'globalThis.store =')
   vm.runInContext(text, context)

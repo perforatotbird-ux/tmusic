@@ -4,7 +4,7 @@ const source=name=>fs.readFileSync(path.join(__dirname,'../src',name),'utf8')
 const noop=()=>{}, logger={info:noop,debug:noop,warn:noop,error:noop}
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b});return {promise,resolve,reject}}
 const tick=()=>new Promise(setImmediate)
-function load(name,ctx={},storeName){vm.createContext(ctx);let text=source(name).replace(/^import .*\n/gm,'').replace(/export /g,'');if(storeName)text=text.replace(`const ${storeName} =`,'globalThis.store =');vm.runInContext(text,ctx);return ctx}
+function load(name,ctx={},storeName){vm.createContext(ctx);let text=source(name).replace(/^import .*\r?\n/gm,'').replace(/export /g,'');if(storeName)text=text.replace(`const ${storeName} =`,'globalThis.store =');vm.runInContext(text,ctx);return ctx}
 function auth(api,storage){return load('store/authStore.js',{create,authApi:api,sessionStorage:storage,createLogger:()=>logger,bustCache:noop,usePlayerStore:{getState:()=>({reset:noop,hydrate:noop})},useFavoritesStore:{getState:()=>({reset:noop})}},'useAuthStore').store}
 function storage(){const values=new Map();return {getItem:k=>values.get(k)??null,setItem:(k,v)=>values.set(k,v),removeItem:k=>values.delete(k)}}
 function client(fetch){return load('api/client.js',{fetch,createLogger:()=>logger,retryAfterSeconds:()=>1,performance:{now:()=>0},document:{cookie:''},window:{dispatchEvent:noop},CustomEvent:function(){},setTimeout:(f)=>f()})}

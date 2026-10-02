@@ -3,7 +3,8 @@
  * Shows avatar (or letter badge), role, and a dropdown with:
  * avatar upload (file or URL), admin panel entry, logout/login.
  */
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   ShieldCheck,
   KeyRound,
@@ -20,11 +21,13 @@ import {
   Wifi,
   History,
   ListMusic,
-  Star,
   Plus,
+  HardDrive,
 } from 'lucide-react'
 import { authApi } from '../api/auth'
 import { IS_NATIVE, openServerDiscovery } from '../services/nativeBridge'
+import { useOfflineStore } from '../store/offlineStore'
+import { useConfirm } from './ui/useConfirm'
 
 export const ROLE_LABEL = { admin: 'Администратор', editor: 'Редактор', user: 'Слушатель' }
 
@@ -102,7 +105,6 @@ const menuSectionLabel = {
 const LIB_SECTIONS = [
   { id: 'recent', label: 'Недавнее', icon: History },
   { id: 'playlists', label: 'Плейлисты', icon: ListMusic },
-  { id: 'favorites', label: 'Любимые', icon: Star },
 ]
 
 export function ProfileMenu({
@@ -123,6 +125,32 @@ export function ProfileMenu({
   const [error, setError] = useState(null)
   const wrapRef = useRef(null)
   const fileRef = useRef(null)
+  const menuRef = useRef(null)
+  // UI-31: the dropdown was absolutely positioned inside the topbar's stacking
+  // context (z-index 7000), so it rendered *under* the player bar (8400) and
+  // could overflow a 320px screen. We now portal it to <body> and anchor it
+  // with fixed coordinates computed from the trigger.
+  const [menuPos, setMenuPos] = useState(null)
+  const { confirm, confirmDialog } = useConfirm()
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setMenuPos(null)
+      return undefined
+    }
+    const update = () => {
+      const r = wrapRef.current?.getBoundingClientRect()
+      if (!r) return
+      setMenuPos({ top: r.bottom + 10, right: Math.max(12, window.innerWidth - r.right) })
+    }
+    update()
+    window.addEventListener('resize', update)
+    window.addEventListener('scroll', update, true)
+    return () => {
+      window.removeEventListener('resize', update)
+      window.removeEventListener('scroll', update, true)
+    }
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -133,7 +161,9 @@ export function ProfileMenu({
       }
     }
     const onClick = (e) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target)) {
+      const inTrigger = wrapRef.current?.contains(e.target)
+      const inMenu = menuRef.current?.contains(e.target)
+      if (!inTrigger && !inMenu) {
         setOpen(false)
         setAvatarMode(false)
       }
@@ -189,7 +219,12 @@ export function ProfileMenu({
   }
 
   const handleReset = async () => {
-    if (!confirm('Убрать аватар?')) return
+    const ok = await confirm({
+      title: 'Убрать аватар',
+      message: 'Убрать аватар?',
+      confirmLabel: 'Убрать',
+    })
+    if (!ok) return
     setBusy(true)
     try {
       await authApi.resetAvatar()
@@ -203,22 +238,26 @@ export function ProfileMenu({
 
   return (
     <div ref={wrapRef} style={{ position: 'relative' }}>
+      {confirmDialog}
       <ProfileCircle user={user} onClick={() => (user ? setOpen((o) => !o) : onLogin?.())} />
 
-      {open && user && (
+      {open && user && menuPos && createPortal(
         <div
+          ref={menuRef}
           role="menu"
           style={{
-            position: 'absolute',
-            top: 'calc(100% + 10px)',
-            right: 0,
-            width: 280,
+            position: 'fixed',
+            top: menuPos.top,
+            right: menuPos.right,
+            width: 'min(280px, calc(100vw - 24px))',
+            maxHeight: 'calc(100dvh - 96px)',
+            overflowY: 'auto',
             background: 'var(--bg-card)',
             border: '1px solid var(--line-bright)',
             borderRadius: 14,
             boxShadow: '0 18px 50px rgba(0,0,0,0.6)',
             padding: 12,
-            zIndex: 8000,
+            zIndex: 'var(--z-menu)',
           }}
         >
           {/* Identity */}
@@ -261,7 +300,7 @@ export function ProfileMenu({
 
           {!avatarMode ? (
             <>
-              {/* Library sections (recent / playlists / favorites) */}
+              {/* Library sections (recent / playlists) */}
               {onSelectSection && (
                 <>
                   <div style={menuSectionLabel}>Библиотека</div>
@@ -346,6 +385,16 @@ export function ProfileMenu({
                 type="button"
                 onClick={() => {
                   close()
+                  useOfflineStore.getState().setStorageModalOpen(true)
+                }}
+                style={menuBtn}
+              >
+                <HardDrive size={15} style={{ color: 'var(--accent)' }} /> Данные и память (Кэш)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  close()
                   onLogout?.()
                 }}
                 style={{ ...menuBtn, color: 'var(--danger)' }}
@@ -401,7 +450,7 @@ export function ProfileMenu({
                   onClick={handleUrl}
                   style={{
                     background: 'var(--accent)',
-                    color: '#141210',
+                    color: 'var(--on-accent)',
                     border: 'none',
                     borderRadius: 8,
                     minWidth: 44,
@@ -442,22 +491,24 @@ export function ProfileMenu({
               </div>
             </div>
           )}
-        </div>
+        </div>,
+        document.body
       )}
 
-      {open && !user && (
+      {open && !user && menuPos && createPortal(
         <div
+          ref={menuRef}
           style={{
-            position: 'absolute',
-            top: 'calc(100% + 10px)',
-            right: 0,
-            width: 220,
+            position: 'fixed',
+            top: menuPos.top,
+            right: menuPos.right,
+            width: 'min(220px, calc(100vw - 24px))',
             background: 'var(--bg-card)',
             border: '1px solid var(--line-bright)',
             borderRadius: 14,
             boxShadow: '0 18px 50px rgba(0,0,0,0.6)',
             padding: 12,
-            zIndex: 8000,
+            zIndex: 'var(--z-menu)',
           }}
         >
           <button
@@ -469,14 +520,15 @@ export function ProfileMenu({
             style={{
               ...menuBtn,
               background: 'var(--accent)',
-              color: '#141210',
+              color: 'var(--on-accent)',
               justifyContent: 'center',
               fontWeight: 800,
             }}
           >
             <LogIn size={15} /> Войти в T-Music
           </button>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )

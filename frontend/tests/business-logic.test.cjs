@@ -17,7 +17,7 @@ function player({ native = true, storedVolume = '0.9' } = {}) {
     AbortController, fetch: async () => ({ ok: true, status: 206, arrayBuffer: async () => new ArrayBuffer(0) }),
     Math: Object.assign(Object.create(Math), { random: () => 0.9999 }) }
   vm.createContext(context)
-  vm.runInContext(src('store/playerStore.js').replace(/^import .*\n/gm, '').replace('export const usePlayerStore =', 'globalThis.usePlayerStore ='), context)
+  vm.runInContext(src('store/playerStore.js').replace(/^import .*\r?\n/gm, '').replace('export const usePlayerStore =', 'globalThis.usePlayerStore ='), context)
   return { store: context.usePlayerStore, events, timers, logs, storage }
 }
 const tracks = [1,2,3,4].map((id) => ({ id, name: `Synthetic${id}.mp3` }))
@@ -92,7 +92,7 @@ function media(state = 'paused') {
     window: { location: { href: 'https://synthetic.example/music' } },
     getNativeBridge: () => ({ setPlaybackState: (s) => nativeStates.push(s), updateMetadata: (...args) => metadata.push(args) }),
     navigator: { mediaSession: { playbackState: state } }, MediaMetadata: function (data) { return data }, console }
-  vm.createContext(context); vm.runInContext(src('services/mediaSession.js').replace(/^import .*\n/gm,'').replace(/export /g,''),context)
+  vm.createContext(context); vm.runInContext(src('services/mediaSession.js').replace(/^import .*\r?\n/gm,'').replace(/export /g,''),context)
   return { context, nativeStates, metadata }
 }
 for (const state of ['paused','none','playing']) {

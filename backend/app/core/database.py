@@ -93,6 +93,9 @@ def ensure_trigram_indexes() -> None:
         "ON music_artists USING gin (lower(display_name) gin_trgm_ops)",
         "CREATE INDEX IF NOT EXISTS idx_albums_title_trgm "
         "ON music_albums USING gin (lower(title) gin_trgm_ops)",
+        "CREATE INDEX IF NOT EXISTS idx_vfiles_name_trgm "
+        "ON vfiles USING gin (lower(name) gin_trgm_ops) "
+        "WHERE is_trash = false AND mime_type LIKE 'audio/%'",
     )
 
 

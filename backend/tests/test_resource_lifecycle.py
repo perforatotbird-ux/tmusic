@@ -5,7 +5,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import httpx2
+import httpx
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import create_engine, text
@@ -59,7 +59,7 @@ async def test_database_released_before_long_response(monkeypatch, tmp_path, pat
     monkeypatch.setattr(router.transcoding_service, 'unsubscribe', lambda uid, q: unsubscribe.append(uid))
     app = FastAPI(); app.include_router(router.router); app.include_router(share_router.router)
     try:
-        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url='http://test') as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
             task = asyncio.create_task(client.get(path))
             try:
                 await asyncio.wait_for(entered.wait(), 3)

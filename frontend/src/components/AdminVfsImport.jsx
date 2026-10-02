@@ -22,6 +22,7 @@ import {
   X,
 } from 'lucide-react'
 import { adminApi } from '../api/admin'
+import { useConfirm } from './ui/useConfirm'
 
 function formatBytes(value) {
   if (!value && value !== 0) return '—'
@@ -70,6 +71,7 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
   const [progress, setProgress] = useState(null)
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
+  const { confirm, confirmDialog } = useConfirm()
 
   const pollRef = useRef(null)
   const importEpoch = useRef(0)
@@ -343,12 +345,15 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
   const handleRunImport = async () => {
     if (!staged?.import_id || pollRef.current) return
     const summary = preview?.summary || {}
-    const confirmed = window.confirm(
-      `Импортировать ${formatNumber(summary.files_imported || 0)} новых треков в T-Music?\n\n` +
+    const confirmed = await confirm({
+      title: 'Запустить импорт',
+      message:
+        `Импортировать ${formatNumber(summary.files_imported || 0)} новых треков в T-Music?\n\n` +
         `Папок будет создано: ${summary.folders_create || 0}\n` +
         `Папок будет объединено: ${summary.folders_reuse || 0}\n` +
-        `Существующие дубликаты (${summary.files_skipped || 0} файлов) будут пропущены.`
-    )
+        `Существующие дубликаты (${summary.files_skipped || 0} файлов) будут пропущены.`,
+      confirmLabel: 'Импортировать',
+    })
     if (!confirmed) return
 
     if (importBusy) return
@@ -674,6 +679,7 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
         gap: 12,
       }}
     >
+      {confirmDialog}
       {/* Title */}
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         <div>
@@ -716,7 +722,15 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
               </span>
               <span style={{ color: 'var(--dim)' }}>{formatBytes(file.size)}</span>
               {!uploadBusy && (
-                <X size={15} style={{ cursor: 'pointer' }} onClick={() => setFile(null)} />
+                <button
+                  type="button"
+                  onClick={() => setFile(null)}
+                  aria-label="Убрать выбранный файл"
+                  title="Убрать файл"
+                  style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--ink)', display: 'inline-flex' }}
+                >
+                  <X size={15} />
+                </button>
               )}
             </div>
           )}
@@ -728,7 +742,7 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
               disabled={disabled || uploadBusy || !file}
               style={{
                 background: 'var(--accent)',
-                color: '#141210',
+                color: 'var(--on-accent)',
                 border: 0,
                 borderRadius: 8,
                 minHeight: 38,
@@ -1004,7 +1018,15 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
                         style={{ ...inputStyle, minHeight: 30, padding: '4px 8px 4px 26px', fontSize: 11.5, width: '100%' }}
                       />
                       {targetSearch && (
-                        <X size={13} style={{ position: 'absolute', right: 8, color: 'var(--dim)', cursor: 'pointer' }} onClick={() => setTargetSearch('')} />
+                        <button
+                          type="button"
+                          onClick={() => setTargetSearch('')}
+                          aria-label="Очистить фильтр приёмника"
+                          title="Очистить"
+                          style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--dim)', display: 'inline-flex' }}
+                        >
+                          <X size={13} />
+                        </button>
                       )}
                     </div>
                   </div>
@@ -1158,6 +1180,12 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
                       </span>
                     </div>
                     <div
+                      role="progressbar"
+                      aria-label="Прогресс импорта"
+                      aria-valuemin={0}
+                      aria-valuemax={progress.total || 0}
+                      aria-valuenow={progress.current || 0}
+                      aria-valuetext={`${progress.current || 0} из ${progress.total || 0}`}
                       style={{
                         height: 6,
                         borderRadius: 3,
@@ -1191,7 +1219,7 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
                     }
                     style={{
                       background: 'var(--accent)',
-                      color: '#141210',
+                      color: 'var(--on-accent)',
                       border: 0,
                       borderRadius: 8,
                       minHeight: 40,

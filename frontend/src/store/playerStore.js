@@ -3,6 +3,8 @@ import { streamApi } from '../api/stream'
 import { setMediaPlaybackState } from '../services/mediaSession'
 import { IS_NATIVE } from '../services/nativeBridge'
 import { createLogger } from '../utils/logger'
+import { useOfflineStore } from './offlineStore'
+import { getCachedTrack } from '../services/offlineStorageService'
 
 const log = createLogger('player')
 
@@ -11,6 +13,18 @@ const prefetchAborts = new Map()
 
 /** Retry timers for Android autoplay blocks after background/lockscreen. */
 const resumeTimers = new Set()
+
+let activeBlobUrl = null
+function cleanupBlobUrl() {
+  if (activeBlobUrl) {
+    try {
+      URL.revokeObjectURL(activeBlobUrl)
+    } catch {
+      /* ignore */
+    }
+    activeBlobUrl = null
+  }
+}
 
 // ─── Background Transcoding SSE Listener ─────────────────────────────────────────────────
 let transcodeEventSource = null
@@ -31,7 +45,7 @@ function initTranscodeSSE() {
 
       if (data.event === 'transcode_complete' && track) {
         const msg = `Готово: "${track.title || track.name}" теперь в MP3 320kbps`
-        usePlayerStore.setState({ notice: { kind: 'info', text: msg } })
+        usePlayerStore.getState().pushNotice({ kind: 'info', text: msg })
         pendingTranscodeNotifications.add(data.file_id)
         const timer = setTimeout(() => {
           transcodeNotificationTimers.delete(timer)
@@ -40,10 +54,10 @@ function initTranscodeSSE() {
         transcodeNotificationTimers.add(timer)
       } else if (data.event === 'transcode_started' && track) {
         const msg = `Транскодинг: "${track.title || track.name}"`
-        usePlayerStore.setState({ notice: { kind: 'info', text: msg } })
+        usePlayerStore.getState().pushNotice({ kind: 'info', text: msg })
       } else if (data.event === 'transcode_failed' && track) {
         const msg = `Ошибка транскодинга: "${track.title || track.name}"`
-        usePlayerStore.setState({ notice: { kind: 'error', text: msg } })
+        usePlayerStore.getState().pushNotice({ kind: 'error', text: msg })
       } else if (data.event === 'transcode_prefetch' && track) {
         log.debug('Started prefetching transcode for track', { id: data.file_id })
       }
@@ -80,11 +94,31 @@ function rememberPrecached(id) {
   }
 }
 
+function getOfflineStoreState() {
+  try {
+    if (typeof useOfflineStore !== 'undefined' && typeof useOfflineStore.getState === 'function') {
+      return useOfflineStore.getState()
+    }
+  } catch {}
+  return null
+}
+
+function fetchCachedTrackSafe(fileId) {
+  try {
+    if (typeof getCachedTrack === 'function') {
+      return getCachedTrack(fileId)
+    }
+  } catch {}
+  return Promise.resolve(null)
+}
+
 const storedVolume = parseFloat(localStorage.getItem('tmusic_volume') || '0.9')
 const initialVolume = Number.isFinite(storedVolume) ? Math.max(0, Math.min(1, storedVolume)) : 0.9
 const SESSION_KEY = 'tmusic_session'
 const DURATIONS_KEY = 'tmusic_durations'
 const SESSION_QUEUE_CAP = 600
+/** UI-22: max simultaneously visible toasts. */
+const MAX_NOTICES = 3
 // First two upcoming tracks: 2 MB each (server PRECACHE_CHUNK_BYTES). The
 // third: a small chunk, cheap insurance against a Telegram stall.
 const PRECACHE_FULL_BYTES = 2 * 1024 * 1024
@@ -167,33 +201,24 @@ export const usePlayerStore = create((set, get) => {
     clearRecovery(!autoplay)
     const generation = audioGeneration
 
-    const url = streamApi.getStreamUrl(fileId)
-    const key = String(fileId)
+    const isOffline = typeof navigator !== 'undefined' && !navigator.onLine
+    const offlineState = getOfflineStoreState()
+    const isCached = offlineState ? offlineState.cachedTrackIds.has(Number(fileId)) : false
 
-    // Re-bind src when track id changed (or forced) — keep the same <audio> node
-    // so Android does not drop the Media Session between playlist items.
-    if (forceLoad || audio.getAttribute('data-track-id') !== key) {
-      audio.src = url
-      audio.setAttribute('data-track-id', key)
-      try {
-        audio.load()
-      } catch {
-        /* ignore */
-      }
-      // The ONE file being requested now: ask the backend to transcode it at
-      // PLAYING priority (idempotent — a job that is already queued/running
-      // is left alone). Everything else is enqueued only after playback has
-      // actually started (prefetchNextTranscodes, App.jsx handlePlaying).
-      streamApi.triggerTranscode(fileId).catch((err) => {
-        log.debug('triggerTranscode failed', { id: fileId, error: err.message })
+    if (isOffline && !isCached) {
+      log.warn('Track is not cached for offline playback', { id: fileId })
+      get().setNotice({
+        kind: 'error',
+        text: 'Трек не закеширован для воспроизведения офлайн',
       })
+      usePlayerStore.setState({ isPlaying: false, isBuffering: false })
+      return
     }
 
-    if (!autoplay) return
+    const key = String(fileId)
+    const needsLoad = forceLoad || audio.getAttribute('data-track-id') !== key
 
-    setMediaPlaybackState('playing')
-
-    const tryPlay = () => {
+    function tryPlay() {
       if (generation !== audioGeneration || get().currentTrack?.id !== fileId) return
       if (!get().isPlaying) return
       const p = audio.play()
@@ -215,22 +240,90 @@ export const usePlayerStore = create((set, get) => {
       }
     }
 
-    if (audio.readyState >= 2) {
-      tryPlay()
-    } else {
-      const onCanPlay = () => {
-        if (readyCleanup) readyCleanup()
+    function fallbackStream() {
+      if (generation !== audioGeneration || get().currentTrack?.id !== fileId) return
+      const url = streamApi.getStreamUrl(fileId)
+      audio.src = url
+      audio.setAttribute('data-track-id', key)
+      audio.removeAttribute('data-is-cached')
+      usePlayerStore.setState({ isPlayingFromCache: false })
+      try {
+        audio.load()
+      } catch {
+        /* ignore */
+      }
+      streamApi.triggerTranscode(fileId).catch((err) => {
+        log.debug('triggerTranscode failed', { id: fileId, error: err.message })
+      })
+
+      // Auto-cache played track if configured in offline settings
+      const offlineSettings = offlineState?.settings
+      if (offlineSettings?.autoCacheOnPlay && offlineSettings?.cacheAudio) {
+        const track = get().currentTrack
+        if (track && track.id === fileId) {
+          offlineState.cacheTrack(track).catch(() => {})
+        }
+      }
+
+      if (autoplay && get().isPlaying) {
+        triggerPlayback()
+      }
+    }
+
+    function triggerPlayback() {
+      if (audio.readyState >= 2) {
+        tryPlay()
+      } else {
+        const onCanPlay = () => {
+          if (readyCleanup) readyCleanup()
+          tryPlay()
+        }
+        readyCleanup = () => {
+          audio.removeEventListener('canplay', onCanPlay)
+          audio.removeEventListener('loadeddata', onCanPlay)
+          readyCleanup = null
+        }
+        audio.addEventListener('canplay', onCanPlay)
+        audio.addEventListener('loadeddata', onCanPlay)
         tryPlay()
       }
-      readyCleanup = () => {
-        audio.removeEventListener('canplay', onCanPlay)
-        audio.removeEventListener('loadeddata', onCanPlay)
-        readyCleanup = null
-      }
-      audio.addEventListener('canplay', onCanPlay)
-      audio.addEventListener('loadeddata', onCanPlay)
-      tryPlay()
     }
+
+    if (needsLoad) {
+      cleanupBlobUrl()
+
+      if (isCached) {
+        fetchCachedTrackSafe(fileId).then((cached) => {
+          if (generation !== audioGeneration || get().currentTrack?.id !== fileId) return
+          if (cached && cached.blob) {
+            activeBlobUrl = URL.createObjectURL(cached.blob)
+            audio.src = activeBlobUrl
+            audio.setAttribute('data-track-id', key)
+            audio.setAttribute('data-is-cached', 'true')
+            usePlayerStore.setState({ isPlayingFromCache: true })
+            try {
+              audio.load()
+            } catch {
+              /* ignore */
+            }
+            if (autoplay && get().isPlaying) {
+              triggerPlayback()
+            }
+          } else {
+            fallbackStream()
+          }
+        }).catch(() => fallbackStream())
+      } else {
+        fallbackStream()
+      }
+    } else {
+      if (autoplay && get().isPlaying) {
+        triggerPlayback()
+      }
+    }
+
+    if (!autoplay) return
+    setMediaPlaybackState('playing')
   }
 
   /** Resume on next user gesture / tab visible if OS blocked autoplay. */
@@ -339,17 +432,23 @@ export const usePlayerStore = create((set, get) => {
     shuffle: false,
     repeat: 'off', // 'off' | 'all' | 'one'
     isPlayerExpanded: false,
-    notice: null, // { kind: 'error' | 'info', text }
+    // UI-22: was a single slot — a new message silently overwrote the previous
+    // one (e.g. "transcode done" vanished 200ms later when the stream errored).
+    // Now a bounded stack so nothing is lost; rendered by <ToastHost>.
+    notices: [], // [{ id, kind: 'error' | 'info', text }]
+    noticeSeq: 0,
     durations: durationsCache, // fileId -> seconds (learned at runtime)
     audioElement: null,
+    isPlayingFromCache: false,
     _watchdogId: null,
 
     startTranscodeEvents: () => initTranscodeSSE(),
     stopTranscodeEvents: () => stopTranscodeSSE(),
     dispose: () => {
+      cleanupBlobUrl()
       if (get().currentTrack && get().queue.length) persistSession(true)
       get().reset({ preserveSession: true })
-      set({ audioElement: null })
+      set({ audioElement: null, isPlayingFromCache: false })
     },
     setAudioElement: (el) => {
       const previous = get().audioElement
@@ -364,8 +463,22 @@ export const usePlayerStore = create((set, get) => {
       set({ audioElement: el })
     },
     setPlayerExpanded: (expanded) => set({ isPlayerExpanded: expanded }),
-    setNotice: (notice) => set({ notice }),
-    dismissNotice: () => set({ notice: null }),
+    setNotice: (notice) => {
+      if (!notice) return
+      get().pushNotice(notice)
+    },
+    pushNotice: (notice) => {
+      if (!notice?.text) return null
+      const seq = (get().noticeSeq || 0) + 1
+      const entry = { id: `n${seq}`, kind: notice.kind || 'info', text: notice.text }
+      // Cap at 3 visible toasts; drop the oldest (FIFO).
+      set({ notices: [...get().notices, entry].slice(-MAX_NOTICES), noticeSeq: seq })
+      return entry.id
+    },
+    dismissNotice: (id) => {
+      if (id == null) return set({ notices: [] })
+      return set({ notices: get().notices.filter((n) => n.id !== id) })
+    },
 
     /** Audio reported a real duration — remember for lists/queue. */
     rememberDuration: (fileId, seconds) => {
@@ -451,7 +564,7 @@ export const usePlayerStore = create((set, get) => {
         duration: 0,
         bufferedUpTo: 0,
         _watchdogId: null,
-        notice: null,
+        notices: [],
       })
     },
 
@@ -916,9 +1029,10 @@ export const usePlayerStore = create((set, get) => {
         ...full.map((i) => ({ i, bytes: PRECACHE_FULL_BYTES })),
         ...tiny.map((i) => ({ i, bytes: PRECACHE_TAIL_BYTES })),
       ]
+      const offlineState = getOfflineStoreState()
       for (const { i, bytes } of plan) {
         const track = queue[i]
-        if (!track || precachedTracks.has(track.id) || prefetchAborts.has(track.id)) continue
+        if (!track || precachedTracks.has(track.id) || prefetchAborts.has(track.id) || (offlineState && offlineState.cachedTrackIds.has(Number(track.id)))) continue
         rememberPrecached(track.id)
 
         const ctrl = new AbortController()

@@ -18,6 +18,26 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
+  /* UI-06/UI-12: single named stacking scale. Previously ~8 components picked
+     ad-hoc numbers, producing collisions (album overlay and bottom nav both at
+     8500) and inversions (toast 8000 under player 8400). */
+  --z-topbar: 7000;
+  --z-player: 8400;
+  --z-nav: 8500;
+  --z-sheet: 8600;         /* album bottom-sheet: must clear the bottom nav */
+  --z-menu: 8800;          /* portaled dropdowns (profile menu): above player/nav */
+  --z-offline: 9000;
+  --z-picker: 9200;        /* CoverPicker: above the fullscreen player */
+  --z-nowplaying: 9500;
+  --z-modal: 10000;
+  --z-password: 10100;     /* mandatory password change wins over everything */
+  --z-toast: 11000;
+  --offline-banner-h: 0px; /* set by App.jsx while the offline banner is up */
+  /* UI-34: semantic colours that were hardcoded as hex literals in JSX. */
+  --info: #38bdf8;
+  --warn: #f59e0b;
+  --on-accent: #141210;
+  --accent-star: var(--accent);
 }
 
 * {
@@ -234,11 +254,23 @@ input[type="range"].tm-scrub-input {
   transform: translateY(6px);
   transition: opacity 0.2s ease, transform 0.2s ease;
 }
-@media (hover: hover) {
-  .tmusic-card:hover .tmusic-card-play-btn {
+/* UI-10: on touch devices `mouseenter` never fires, so the button stayed at
+   opacity 0 — invisible but still hit-testable. Tapping the cover corner
+   started playback instead of opening the album. Show it always there. */
+@media (hover: none) {
+  .tmusic-card-play-btn {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
+}
+/* Keyboard: without :focus-within the button (and its focus ring) stayed
+   invisible when tabbed to — WCAG 2.4.7 / 1.4.11. */
+.tmusic-card:hover .tmusic-card-play-btn,
+.tmusic-card:focus-within .tmusic-card-play-btn {
+  opacity: 1;
+  transform: translateY(0);
+}
+@media (hover: hover) {
   .tmusic-card:hover {
     transform: translateY(-3px);
   }
@@ -409,7 +441,7 @@ input[type="range"].tm-scrub-input {
   margin: 4px 0 18px;
 }
 
-/* Library panel (recent / playlists / favorites) opened from the avatar menu */
+/* Library panel (recent / playlists) opened from the avatar menu */
 .tmusic-lib-section-wrap {
   margin-bottom: 16px;
 }
@@ -653,7 +685,7 @@ input[type="range"].tm-scrub-input {
   padding-bottom: var(--safe-bottom);
   padding-left: max(20px, var(--safe-left));
   padding-right: max(20px, var(--safe-right));
-  z-index: 8000;
+  z-index: var(--z-player);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -809,7 +841,9 @@ input[type="range"].tm-scrub-input {
   inset: 0;
   background-color: rgba(10, 9, 8, 0.7);
   backdrop-filter: blur(6px);
-  z-index: 8500;
+  /* UI-06: was 8500 — identical to the bottom nav, which won on DOM order and
+     covered the bottom of this bottom-anchored sheet. */
+  z-index: var(--z-sheet);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1153,7 +1187,7 @@ input[type="range"].tm-scrub-input {
     width: 100%;
     max-width: 100%;
     flex: 1;
-    justify-content: space-around;
+    justify-content: center;
   }
 }
 
@@ -1165,8 +1199,9 @@ input[type="range"].tm-scrub-input {
 
   /* Main Container responsive padding to account for floating player + bottom nav */
   .tmusic-main {
-    padding: 10px 12px;
-    padding-bottom: calc(var(--bottom-nav-h) + 72px + var(--safe-bottom) + 12px) !important;
+    /* UI-20: only left/right/top here — the bottom reservation lives on the
+       root so the two don't stack into ~238px of dead space. */
+    padding: 10px 12px 0 12px;
   }
 
   /* 2-column cards grid */
@@ -1339,7 +1374,7 @@ input[type="range"].tm-scrub-input {
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
     border-top: 1px solid var(--line);
-    z-index: 8500;
+    z-index: var(--z-nav);
     align-items: center;
     justify-content: space-around;
   }
@@ -1382,7 +1417,12 @@ input[type="range"].tm-scrub-input {
     padding: 0 12px;
     gap: 8px;
     cursor: pointer;
-    z-index: 8400;
+    z-index: var(--z-player);
+  }
+  /* UI-20: --player-bar-h stayed 74px on mobile where the bar is actually 56px,
+     so every calc() reserving space below content overshot. */
+  :root {
+    --player-bar-h: 56px;
   }
   .tmusic-player-minibar {
     display: block;
@@ -1477,7 +1517,8 @@ input[type="range"].tm-scrub-input {
     border-right: none;
     border-bottom: none;
     animation: tmusic-sheet-up 0.24s ease;
-    padding-bottom: max(16px, var(--safe-bottom));
+    /* UI-06: reserve room for the bottom nav that overlays this sheet's foot. */
+    padding-bottom: calc(var(--bottom-nav-h) + var(--safe-bottom) + 16px);
   }
   .tmusic-track-row {
     min-height: 56px;
@@ -1511,7 +1552,8 @@ input[type="range"].tm-scrub-input {
 /* ─── Small phones (≤380px) ─────────────────────────────────────────────── */
 @media (max-width: 380px) {
   .tmusic-main {
-    padding: 8px 8px;
+    /* UI-20: never touch padding-bottom here — it is owned by the root. */
+    padding: 8px 8px 0 8px;
   }
   .tmusic-topbar .title-zine {
     font-size: 15px !important;
@@ -1739,7 +1781,7 @@ audio {
   bottom: calc(var(--player-bar-h) + 20px + var(--safe-bottom));
   left: 50%;
   transform: translateX(-50%);
-  z-index: 9600;
+  z-index: var(--z-toast);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1818,7 +1860,10 @@ audio {
 
 /* Per-track queue menu (⋮) inside album/folder lists */
 .tm-track-menu {
-  z-index: 9650;
+  /* UI-12: 9650 was an illusion — the menu lives inside the album overlay's
+     stacking context (backdrop-filter creates one), so the raw number could
+     never beat siblings outside it. 30 is enough within that context. */
+  z-index: 30;
   min-width: 210px;
   background: var(--bg-surface);
   border: 1px solid var(--line-bright);
@@ -1897,3 +1942,235 @@ input[type="range"]:focus-visible {
     bottom: calc(var(--bottom-nav-h) + 56px + var(--safe-bottom) + 16px);
   }
 }
+
+/* ─── Offline & Telegram-style Cache Badges and Modal ─────────────────────── */
+.tmusic-badge-cached {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+  user-select: none;
+}
+
+.tmusic-badge-caching {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+  user-select: none;
+}
+
+.tmusic-storage-modal {
+  animation: tmusic-modal-pop 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes tmusic-modal-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@media (max-width: 640px) {
+  .tmusic-storage-modal {
+    /* UI-17: vh resolves against the large viewport, so the modal's foot was cut
+       off whenever the mobile URL bar was visible. */
+    max-height: 94dvh !important;
+    border-radius: 18px 18px 0 0 !important;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   UI-19 · Touch targets
+   ~18 controls were 18-36px: 26×26 queue buttons, 18×18 checkboxes, 30×30
+   playlist icons. A single global floor fixes them without touching layout;
+   `::before` grows the hit area of controls whose visual size must stay small.
+   ═══════════════════════════════════════════════════════════════════════════ */
+@media (hover: none) and (pointer: coarse) {
+  button,
+  [role="button"],
+  [role="tab"],
+  [role="menuitem"],
+  .tm-queue-mini,
+  .tmusic-panel-icon-btn,
+  .tmusic-np-btn,
+  .tmusic-toast-close {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  /* Icon buttons that must stay visually small still get a 44px target. */
+  .tm-queue-mini,
+  .tmusic-panel-icon-btn,
+  .tmusic-toast-close {
+    position: relative;
+  }
+  .tm-queue-mini::before,
+  .tmusic-panel-icon-btn::before,
+  .tmusic-toast-close::before {
+    content: "";
+    position: absolute;
+    inset: -8px;
+  }
+  input[type="checkbox"] {
+    width: 24px;
+    height: 24px;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   UI-33 · Volume slider
+   A 12px thumb on a 4px rail (52px wide in the mini player) is almost
+   impossible to grab on a phone. Give it the same 24px hit box the scrubber
+   already has, painting the thin rail via the track pseudo-element.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.tm-volume input[type="range"],
+.tm-compact-volume input[type="range"] {
+  height: 24px;
+  background: transparent;
+  border-radius: 999px;
+}
+.tm-volume input[type="range"]::-webkit-slider-runnable-track,
+.tm-compact-volume input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--line-bright);
+}
+.tm-volume input[type="range"]::-moz-range-track,
+.tm-compact-volume input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--line-bright);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   UI-16 · Long lists
+   Artist albums, children, favourites (up to 500), folder tracks (500) and the
+   queue render every row at once. `content-visibility` lets the browser skip
+   layout/paint for off-screen rows — a cheap first step before real pagination.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.tmusic-grid > *,
+.tmusic-track-row,
+.tm-queue-row,
+.tmusic-panel-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 72px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   UI-36 · Selectable text
+   `user-select: none` on body blocked copying artist names, queue track titles
+   and admin paths. Text nodes opt back in; drag handles stay unselectable.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.tmusic-card-sub,
+.tmusic-artist-card-name,
+.tm-queue-row-title,
+.tmusic-panel-row-sub,
+code,
+pre,
+.tmusic-album-head h1,
+.tmusic-lyrics-line {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   UI-32 · 641-900px player bar
+   Mobile overrides only kicked in at ≤640px, so between 641 and 900 the fixed
+   180px info column + 560px centre squeezed the scrubber down to a few pixels.
+   ═══════════════════════════════════════════════════════════════════════════ */
+@media (min-width: 641px) and (max-width: 900px) {
+  .tmusic-player-info {
+    width: auto;
+    min-width: 120px;
+    flex: 0 1 auto;
+  }
+  .tmusic-player-center {
+    max-width: none;
+  }
+  .tm-compact-volume {
+    display: none;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   UI-30 · Long unbreakable strings
+   `overflow-x: hidden` on body was *clipping* file paths and URLs rather than
+   wrapping them, making them unreadable and uncopyable.
+   ═══════════════════════════════════════════════════════════════════════════ */
+code,
+.tmusic-mono,
+.tmusic-path {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+/* UI-18: inline `outline: none` in JSX outranks any stylesheet selector, so
+   these inputs had no visible focus at all. Belt-and-braces override. */
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent) !important;
+  outline-offset: 2px !important;
+}
+
+/* UI-20: content reserved space twice (root 98px + main 140px = 238px). The
+   main-level reservation is authoritative; drop the root one on mobile. */
+@media (max-width: 640px) {
+  .tmusic-library-root,
+  .tmusic-app-root {
+    padding-bottom: 0 !important;
+  }
+}
+
+/* UI-10: search track row action buttons must be reachable on touch devices
+   where :hover never fires. Reveal on hover/focus (desktop) but always show on
+   coarse pointers, and keep the active (favourite) state visible. */
+.tm-search-track-row:focus-within .tm-search-action-btn,
+.tm-search-track-row:hover .tm-search-action-btn {
+  opacity: 1;
+}
+.tm-search-action-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dim);
+  border-radius: 8px;
+  min-width: 36px;
+  min-height: 36px;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+.tm-search-action-btn[data-active='true'] {
+  opacity: 1;
+  color: var(--accent);
+}
+@media (hover: none) {
+  .tm-search-action-btn {
+    opacity: 1;
+  }
+}
+

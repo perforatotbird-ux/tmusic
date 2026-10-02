@@ -3,6 +3,7 @@ import { libraryApi, bustCatalogCache } from '../api/library'
 import { streamApi } from '../api/stream'
 import { adminApi } from '../api/admin'
 import { metadataApi } from '../api/metadata'
+import { playbackApi } from '../api/playback'
 import { missingCoverKeys, probedCoverKeys, markCoverProbed, parseCoverKey } from '../services/coverMissing'
 import { resolveCoverUrl } from '../utils/cover'
 import { AlbumDetail } from './AlbumDetail'
@@ -12,6 +13,7 @@ import { AdminPanel } from './AdminPanel'
 import { ProfileMenu, roleLabel } from './ProfileMenu'
 import { usePlayerStore } from '../store/playerStore'
 import { useAuthStore } from '../store/authStore'
+import { useFavoritesStore } from '../store/favoritesStore'
 import {
   Search,
   Disc,
@@ -33,7 +35,13 @@ import {
   Unlink,
   Plus,
   AlertTriangle,
+  Star,
+  HardDrive,
 } from 'lucide-react'
+import { useOfflineStore } from '../store/offlineStore'
+import { useSearchStore } from '../store/searchStore'
+import { UnifiedSearchModal } from './search/UnifiedSearchModal'
+import { ClickableRow } from './ui/ClickableRow'
 
 // Deterministic hue generator based on string hash for generative badges
 function hashHue(str) {
@@ -125,16 +133,71 @@ function ImgWithFallback({ name, kind = 'artist', src, alt = '', style = {}, siz
   )
 }
 
+const FAVORITES_KIND = 'favorites'
+const FAVORITES_CARD_ID = 'tmusic:favorites'
+
+const CACHED_KIND = 'cached'
+const CACHED_CARD_ID = 'tmusic:cached'
+
 const SECTIONS = [
   { id: 'artist', label: 'Исполнители', icon: Users, isAlbum: false },
   { id: 'albums', label: 'Альбомы', icon: Disc, isAlbum: true },
   { id: 'compilation', label: 'Сборники', icon: Layers, isAlbum: true },
+  { id: FAVORITES_KIND, label: 'Любимые', icon: Star, isAlbum: true },
+  { id: CACHED_KIND, label: 'В кэше', icon: HardDrive, isAlbum: true },
   { id: 'standalone_album', label: 'Отдельные релизы', icon: Disc, isAlbum: true },
   { id: 'genre_collection', label: 'Коллекции', icon: FolderHeart, isAlbum: true },
   { id: 'all', label: 'Все категории', icon: Layers, isAlbum: false },
 ]
 
 const SECTIONS_BY_ID = Object.fromEntries(SECTIONS.map((s) => [s.id, s]))
+
+// «Любимые» — виртуальный сборник: карточка стоит в каталоге рядом с настоящими
+// сборниками, но треки берёт из избранного пользователя, а не из folder_id.
+const FAVORITES_LIMIT = 500
+
+function favoritesCard(trackCount) {
+  return {
+    id: FAVORITES_CARD_ID,
+    title: 'Любимые',
+    kind: 'compilation',
+    track_count: trackCount,
+    is_favorites: true,
+  }
+}
+
+const FAVORITES_RELEASE = { title: 'Любимые', artistName: 'Сборник', coverUrl: null }
+
+function cachedCard(trackCount) {
+  return {
+    id: CACHED_CARD_ID,
+    title: 'Кэш устройства',
+    kind: 'compilation',
+    track_count: trackCount,
+    is_cached: true,
+  }
+}
+
+const CACHED_RELEASE = { title: 'Кэш устройства', artistName: 'Офлайн-память', coverUrl: null }
+
+function favoriteToTrack(row) {
+  return {
+    id: row.file_id,
+    name: row.file_name || `Трек ${row.file_id}`,
+    stream_url: row.stream_url || `/api/stream/${row.file_id}`,
+    folder_id: row.folder_id ?? null,
+    mime_type: row.mime_type || 'audio/mpeg',
+    size: row.size ?? null,
+  }
+}
+
+function tracksWord(n) {
+  const mod10 = n % 10
+  const mod100 = n % 100
+  if (mod10 === 1 && mod100 !== 11) return 'трек'
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return 'трека'
+  return 'треков'
+}
 
 // Card kinds for the admin "create object" form (same catalog kinds as AdminCatalog).
 const CARD_KINDS = [
@@ -154,7 +217,16 @@ const LIB_PAGE_SIZE = 200
 
 export function MusicLibrary({ onOpenCoverPicker }) {
   const [items, setItems] = useState([])
+  // UI-05: a network/server failure must NOT be disguised as "nothing found".
+  // This state holds the failure message; the grid renders it as an alert with a
+  // retry button (never as an empty grid).
+  const [loadError, setLoadError] = useState(null)
+  // UI-21: guard the album play button so a double-tap can't enqueue twice.
+  const [playBusyId, setPlayBusyId] = useState(null)
   const [selectedArtist, setSelectedArtist] = useState(null)
+  // UI-05: when an artist detail fetch fails, keep the user informed instead of
+  // silently dropping them back into an empty catalog.
+  const [detailError, setDetailError] = useState(null) // { id, message } | null
   const [similarArtists, setSimilarArtists] = useState([])
   const [similarLoading, setSimilarLoading] = useState(false)
   const [selectedAlbum, setSelectedAlbum] = useState(null) // { album, artist } — AlbumDetail sheet
@@ -173,9 +245,12 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       return 'covers'
     }
   })
-  // Top bar section: catalog is default; recent/playlists/favorites open panels
-  const [libSection, setLibSection] = useState(null) // null | 'recent' | 'playlists' | 'favorites'
+  // Top bar section: catalog is default; recent/playlists open panels
+  const [libSection, setLibSection] = useState(null) // null | 'recent' | 'playlists'
   const [showAdmin, setShowAdmin] = useState(false)
+  // Треки раздела «Любимые»: виртуальный сборник строится на клиенте,
+  // поэтому сырые строки избранного живут отдельно от каталожных items.
+  const [favoriteRows, setFavoriteRows] = useState([])
   // Bumped when the cover manifest arrives so the grid re-renders with fresh
   // missing-cover knowledge (the registry itself is not React state).
   const [, setManifestTick] = useState(0)
@@ -185,6 +260,9 @@ export function MusicLibrary({ onOpenCoverPicker }) {
 
   const { playQueue, prepareQueue, setPlayerExpanded, currentTrack, currentRelease, isPlaying } = usePlayerStore()
   const { user, isAuthenticated, logout, setAuthModalOpen, checkAuth } = useAuthStore()
+  // Избранное переключают из плеера и альбома; подписка на ids держит счётчик
+  // на карточке-сборнике живым без повторного открытия раздела.
+  const favoriteIds = useFavoritesStore((s) => s.ids)
 
   // Catalog curation (rename / covers / collections) is admin-only.
   const isAdmin = user?.role === 'admin' || user?.username === 'admin'
@@ -199,6 +277,10 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   const currentSection = SECTIONS_BY_ID[viewKind] || SECTIONS[0]
   const isAlbumSection = currentSection.isAlbum
   const folderMode = viewMode === 'folders'
+  // «Любимые» — виртуальный сборник: на бэкенде такого kind нет, поэтому любой
+  // каталожный запрос уходит как 'all', а карточка показывается только в каталоге.
+  const isFavoritesView = viewKind === FAVORITES_KIND && mobileTab !== 'search'
+  const requestKind = viewKind === FAVORITES_KIND ? 'all' : viewKind
 
   const setLibraryViewMode = (mode) => {
     setViewMode(mode)
@@ -215,6 +297,64 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     const t = setTimeout(() => setDebouncedSearch(search), 300)
     return () => clearTimeout(t)
   }, [search])
+
+  // «Любимые» — виртуальный сборник: вместо каталожного запроса тянем избранное
+  // и кладём в items одну синтетическую карточку с числом треков.
+  const favoritesQuery = (debouncedSearch || search || '').trim().toLowerCase()
+  const favoriteTracks =
+    isFavoritesView && favoritesQuery
+      ? favoriteRows.filter((r) => (r.file_name || '').toLowerCase().includes(favoritesQuery))
+      : favoriteRows
+  const favoritesCount = favoriteTracks.length
+
+  const cachedTracksList = useOfflineStore((s) => s.cachedTracksList)
+  const isCachedView = viewKind === CACHED_KIND && mobileTab !== 'search'
+
+  const cachedQuery = (debouncedSearch || search || '').trim().toLowerCase()
+  const cachedTracks =
+    isCachedView && cachedQuery
+      ? cachedTracksList.filter((r) => (r.title || r.name || '').toLowerCase().includes(cachedQuery))
+      : cachedTracksList
+  const cachedCount = cachedTracks.length
+
+  useEffect(() => {
+    if (!isFavoritesView) return undefined
+    if (!isAuthenticated) {
+      setFavoriteRows([])
+      setIsLoading(false)
+      return undefined
+    }
+    let cancelled = false
+    setIsLoading(true)
+    ;(async () => {
+      try {
+        const res = await playbackApi.listFavorites(FAVORITES_LIMIT)
+        if (!cancelled) setFavoriteRows(res?.items || [])
+      } catch (e) {
+        console.error('Failed to load favorites:', e)
+        if (!cancelled) setFavoriteRows([])
+      } finally {
+        if (!cancelled) setIsLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [isFavoritesView, isAuthenticated, user?.id])
+
+  // Зависимость — число, а не массив: свежий массив на каждый рендер зациклил бы setItems.
+  useEffect(() => {
+    if (!isFavoritesView) return
+    setItems([favoritesCard(favoritesCount)])
+    setHasMore(false)
+  }, [isFavoritesView, favoritesCount])
+
+  useEffect(() => {
+    if (!isCachedView) return
+    setItems([cachedCard(cachedCount)])
+    setHasMore(false)
+    setIsLoading(false)
+  }, [isCachedView, cachedCount])
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -238,6 +378,20 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     }
     window.addEventListener('tmusic:vfs-imported', handleVfsImported)
     return () => window.removeEventListener('tmusic:vfs-imported', handleVfsImported)
+  }, [isAuthenticated, viewKind, debouncedSearch])
+
+  // UI-08 / UI-25: after an admin edits a cover/title (or any catalog mutation),
+  // refresh the grid without a full page reload — keeps playback alive.
+  useEffect(() => {
+    const handleCatalogChanged = () => {
+      bustCatalogCache()
+      if (isAuthenticated) {
+        loadStats()
+        loadData()
+      }
+    }
+    window.addEventListener('tmusic:catalog-changed', handleCatalogChanged)
+    return () => window.removeEventListener('tmusic:catalog-changed', handleCatalogChanged)
   }, [isAuthenticated, viewKind, debouncedSearch])
 
   // Prefetch cover existence for the current grid: images proven missing render
@@ -288,12 +442,16 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   }
 
   const loadData = async () => {
+    // Виртуальные сборники «Любимые» и «В кэше» не имеют kind на бэкенде — их items
+    // строят отдельные эффекты на клиенте, каталожный запрос здесь не нужен.
+    if (viewKind === FAVORITES_KIND || viewKind === CACHED_KIND) return
     const mySeq = ++loadSeq.current
     const key = catalogKeyRef.current
     moreRequestRef.current = null
     setLoadingMore(false)
     setIsLoading(true)
     setHasMore(false)
+    setLoadError(null)
     try {
       // Never send search=null — backend treats it as a literal filter.
       const searchVal = (debouncedSearch || search || '').trim()
@@ -322,6 +480,8 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     } catch (e) {
       console.error('Failed to load library catalog:', e)
       if (mySeq === loadSeq.current && key === catalogKeyRef.current) {
+        // UI-05: surface the failure instead of silently emptying the grid.
+        setLoadError(e?.message || 'Не удалось загрузить каталог. Проверьте подключение.')
         setItems([])
         setHasMore(false)
       }
@@ -372,7 +532,8 @@ export function MusicLibrary({ onOpenCoverPicker }) {
 
   // Панель под сеткой: счётчик + кнопка «Показать ещё».
   const renderLoadMore = () => {
-    if (items.length === 0) return null
+    // У виртуальных сборников одна карточка — счётчик «Показано» только мешал бы.
+    if (items.length === 0 || viewKind === FAVORITES_KIND || viewKind === CACHED_KIND) return null
     return (
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, padding: '18px 0 8px' }}>
         <div style={{ fontSize: 12, color: 'var(--dim)' }}>Показано: {items.length}{hasMore ? ' — есть ещё' : ''}</div>
@@ -409,6 +570,10 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   // filter (they show the whole kind), and the scroll returns to the grid head
   // so re-tapping the tab you are already on still gives feedback.
   const goToTab = (tab) => {
+    if (tab === 'search') {
+      useSearchStore.getState().openSearch()
+      return
+    }
     setMobileTab(tab)
     setSelectedArtist(null)
     if (MOBILE_TAB_KIND[tab]) setSearch('')
@@ -417,11 +582,13 @@ export function MusicLibrary({ onOpenCoverPicker }) {
 
   const openArtist = async (artistId) => {
     setIsLoading(true)
+    setDetailError(null)
     try {
       const detail = await libraryApi.getArtistDetail(artistId)
       setSelectedArtist(detail)
     } catch (e) {
       console.error('Failed to load artist detail:', e)
+      setDetailError({ id: artistId, message: e?.message || 'Не удалось загрузить артиста' })
     } finally {
       setIsLoading(false)
     }
@@ -465,6 +632,27 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   }
 
   const handlePlayAlbum = async (album, artist = null) => {
+    if (album.is_favorites) {
+      const tracks = favoriteTracks.map(favoriteToTrack)
+      if (tracks.length > 0) playQueue(tracks, 0, FAVORITES_RELEASE)
+      return
+    }
+    if (album.is_cached) {
+      const tracks = cachedTracks.map((c) => ({
+        id: c.file_id,
+        name: c.title || c.name || `Трек ${c.file_id}`,
+        stream_url: `/api/stream/${c.file_id}`,
+        folder_id: c.folder_id ?? null,
+        mime_type: c.mime_type || 'audio/mpeg',
+        size: c.size ?? null,
+        duration: c.duration ?? null,
+      }))
+      if (tracks.length > 0) playQueue(tracks, 0, CACHED_RELEASE)
+      return
+    }
+    // UI-21: a double-tap must not enqueue twice while the tracklist is fetching.
+    if (playBusyId) return
+    setPlayBusyId(album.id)
     try {
       const tracks = await streamApi.getFolderTracks(album.folder_id, !album.is_tracks)
       if (tracks && tracks.length > 0) {
@@ -479,12 +667,41 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       }
     } catch (e) {
       console.error('Failed to load tracks for album:', e)
+      // UI-05: a silent no-op looked like a dead button.
+      usePlayerStore.getState().pushNotice({ kind: 'warn', text: 'Не удалось запустить альбом. Попробуйте ещё раз.' })
+    } finally {
+      setPlayBusyId(null)
     }
   }
 
   // Cover tap → open the fullscreen player with the album loaded but NOT
   // playing (Spotify-style: the bar's play or the queue's item starts audio).
   const openAlbum = async (album, artist = null) => {
+    if (album.is_favorites) {
+      const tracks = favoriteTracks.map(favoriteToTrack)
+      if (tracks.length === 0) return
+      prepareQueue(tracks, 0, FAVORITES_RELEASE)
+      setPlayerExpanded(true)
+      return
+    }
+    if (album.is_cached) {
+      const tracks = cachedTracks.map((c) => ({
+        id: c.file_id,
+        name: c.title || c.name || `Трек ${c.file_id}`,
+        stream_url: `/api/stream/${c.file_id}`,
+        folder_id: c.folder_id ?? null,
+        mime_type: c.mime_type || 'audio/mpeg',
+        size: c.size ?? null,
+        duration: c.duration ?? null,
+      }))
+      if (tracks.length === 0) {
+        useOfflineStore.getState().setStorageModalOpen(true)
+        return
+      }
+      prepareQueue(tracks, 0, CACHED_RELEASE)
+      setPlayerExpanded(true)
+      return
+    }
     try {
       const tracks = await streamApi.getFolderTracks(album.folder_id, !album.is_tracks)
       if (!tracks || tracks.length === 0) return
@@ -676,8 +893,10 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         }
       : {}
 
+  // Синтетическая карточка «Любимые» не участвует в курировании: у неё нет
+  // ни folder_id, ни artist_id, поэтому ни тащить, ни ронять на неё нельзя.
   const albumCardDnd = (album) =>
-    isAdmin
+    isAdmin && !album.is_favorites
       ? {
           draggable: true,
           onDragStart: (e) => startAlbumDrag(e, album),
@@ -698,7 +917,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       ...(artist.children_count > 0 ? [`+${artist.children_count} влож.`] : []),
     ]
     return (
-      <div
+      <ClickableRow
         key={artist.id}
         onClick={() => openArtist(artist.id)}
         className="tmusic-artist-card"
@@ -751,11 +970,11 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         <div className="tmusic-artist-card-name">{artist.display_name}</div>
         <div className="tmusic-artist-card-sub">
           {viewKind === 'all' && artist.kind !== 'artist' && `${CARD_KIND_LABEL[artist.kind] || artist.kind} · `}
-          {subParts.join(' · ')}
-        </div>
-      </div>
-    )
-  }
+            {subParts.join(' · ')}
+          </div>
+        </ClickableRow>
+      )
+    }
 
   const renderAlbumCard = (album, artist = null) => {
     const cover = resolveCoverUrl(album, artist, null)
@@ -768,7 +987,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       currentRelease.title === title &&
       (!artist || currentRelease.artistName === artist.display_name)
     return (
-      <div
+      <ClickableRow
         key={album.id}
         onClick={() => openAlbum(album, artist)}
         className="tmusic-card"
@@ -778,7 +997,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
             ? { outline: '2px dashed var(--accent)', outlineOffset: '3px', borderRadius: '14px' }
             : {}),
           opacity: isDragging ? 0.45 : 1,
-          cursor: isAdmin ? 'grab' : undefined,
+          cursor: album.is_favorites || album.is_cached ? 'pointer' : isAdmin ? 'grab' : undefined,
         }}
       >
         <div className="tmusic-card-cover-wrap">
@@ -802,16 +1021,24 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               e.stopPropagation()
               handlePlayAlbum(album, artist)
             }}
+            disabled={playBusyId === album.id}
+            aria-busy={playBusyId === album.id || undefined}
             aria-label={`Воспроизвести ${title}`}
           >
-            <Play size={20} fill="#141210" style={{ marginLeft: '2px' }} />
+            {playBusyId === album.id ? (
+              <Loader2 size={18} className="animate-spin" />
+            ) : (
+              <Play size={20} fill="var(--bg)" style={{ marginLeft: '2px' }} />
+            )}
           </button>
         </div>
         <div className="tmusic-card-title">{title}</div>
         <div className="tmusic-card-sub">
-          {album.year || (album.album_count ? `${album.album_count} альб.` : 'Релиз')}
+          {album.is_favorites || album.is_cached
+            ? `${album.track_count} ${tracksWord(album.track_count)}`
+            : album.year || (album.album_count ? `${album.album_count} альб.` : 'Релиз')}
         </div>
-      </div>
+      </ClickableRow>
     )
   }
   // ─── End card renderers ──────────────────────────────────────────────────
@@ -833,9 +1060,11 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <div
+          {/* UI-43: the app wordmark is the single h1 — section labels below use h2. */}
+          <h1
             className="title-zine"
             style={{
+              margin: 0,
               fontSize: '20px',
               fontWeight: '900',
               letterSpacing: '0.04em',
@@ -843,7 +1072,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
             }}
           >
             T<span style={{ color: 'var(--accent)' }}>-</span>MUSIC
-          </div>
+          </h1>
           {stats && (
             <span
               className="tmusic-stats-badge"
@@ -861,7 +1090,11 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         </div>
 
         {/* Search Input */}
-        <div className="tmusic-search-wrap">
+        <div
+          className="tmusic-search-wrap"
+          onClick={() => useSearchStore.getState().openSearch(search)}
+          style={{ position: 'relative', cursor: 'pointer' }}
+        >
           <Search
             size={15}
             style={{
@@ -870,44 +1103,44 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               top: '50%',
               transform: 'translateY(-50%)',
               color: 'var(--dim)',
+              pointerEvents: 'none',
             }}
           />
           <input
             type="text"
-            placeholder={isAlbumSection ? 'Поиск по альбомам и релизам...' : 'Поиск по артистам...'}
+            readOnly
+            placeholder="Поиск по трекам, альбомам, артистам... (Ctrl+K или /)"
             value={search}
-            onChange={handleSearchChange}
+            onClick={() => useSearchStore.getState().openSearch(search)}
             style={{
               width: '100%',
-              padding: '10px 36px 10px 36px',
+              padding: '10px 42px 10px 36px',
               minHeight: '40px',
               borderRadius: '999px',
               backgroundColor: 'rgba(255,255,255,0.04)',
               border: '1px solid var(--line)',
               color: 'var(--ink)',
               fontSize: '14px',
-              outline: 'none',
+              cursor: 'pointer',
             }}
           />
-          {search && (
-            <button
-              onClick={clearSearch}
-              style={{
-                position: 'absolute',
-                right: '12px',
-                top: '50%',
-                transform: 'translateY(-50%)',
-                background: 'none',
-                border: 'none',
-                color: 'var(--dim)',
-                cursor: 'pointer',
-                padding: 0,
-                display: 'flex',
-              }}
-            >
-              <X size={14} />
-            </button>
-          )}
+          <span
+            style={{
+              position: 'absolute',
+              right: '12px',
+              top: '50%',
+              transform: 'translateY(-50%)',
+              fontSize: '11px',
+              fontWeight: 700,
+              padding: '2px 6px',
+              borderRadius: '6px',
+              backgroundColor: 'rgba(255, 255, 255, 0.08)',
+              color: 'var(--dim)',
+              pointerEvents: 'none',
+            }}
+          >
+            /
+          </span>
         </div>
 
         {/* Security / Account + view mode toggle (top-right, under SSL) */}
@@ -915,7 +1148,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
           <div className="tmusic-topbar-account-row">
             {/* Quick Search Button on Mobile */}
             <button
-              onClick={() => setMobileTab('search')}
+              onClick={() => useSearchStore.getState().openSearch()}
               className="tmusic-mobile-search-trigger"
               aria-label="Поиск"
               title="Поиск"
@@ -957,7 +1190,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                 style={{
                   padding: '4px 12px',
                   backgroundColor: 'var(--accent)',
-                  color: '#141210',
+                  color: 'var(--on-accent)',
                   borderRadius: '6px',
                   border: 'none',
                   fontWeight: '700',
@@ -1003,7 +1236,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
           </div>
         </div>
 
-        {/* Library panels (opened from the avatar menu): recent / playlists / favorites */}
+        {/* Library panels (opened from the avatar menu): recent / playlists */}
         {!showAdmin && libSection && !selectedArtist && mobileTab !== 'search' && (
           <div className="tmusic-lib-section-wrap">
             <LibraryPanel section={libSection} />
@@ -1088,11 +1321,11 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                 >
                   {(selectedArtist.kind || 'artist').toUpperCase()}
                 </div>
-                <h1 className="title-zine" style={{ fontSize: '32px', margin: '6px 0 12px 0' }}>
+                <h2 className="title-zine" style={{ fontSize: '32px', margin: '6px 0 12px 0' }}>
                   {selectedArtist.display_name}
-                </h1>
+                </h2>
                 {selectedArtist.bio && (
-                  <p style={{ color: '#b5ada2', fontSize: '13px', lineHeight: '1.6', marginBottom: '18px', maxWidth: '780px' }}>
+                  <p style={{ color: 'var(--dim)', fontSize: '13px', lineHeight: '1.6', marginBottom: '18px', maxWidth: '780px' }}>
                     {selectedArtist.bio}
                   </p>
                 )}
@@ -1140,7 +1373,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                     style={{
                       padding: '10px 20px',
                       backgroundColor: 'var(--accent)',
-                      color: '#141210',
+                      color: 'var(--on-accent)',
                       border: 'none',
                       borderRadius: '999px',
                       fontWeight: '800',
@@ -1151,7 +1384,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                       cursor: 'pointer',
                     }}
                   >
-                    <Play size={16} fill="#141210" /> Слушать всё
+                    <Play size={16} fill="currentColor" /> Слушать всё
                   </button>
                 </div>
               </div>
@@ -1244,15 +1477,20 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         ) : mobileTab === 'search' ? (
           /* ─── Mobile Search Screen ─────────────────────────────────────────── */
           <div className="tmusic-search-screen">
-            <div className="tmusic-search-screen-bar">
+            <div
+              className="tmusic-search-screen-bar"
+              onClick={() => useSearchStore.getState().openSearch()}
+              style={{ cursor: 'pointer' }}
+            >
               <Search size={18} className="tmusic-search-screen-icon" />
               <input
                 type="text"
-                placeholder="Поиск по всей медиатеке..."
+                readOnly
+                placeholder="Поиск по всей медиатеке... (треки, альбомы, артисты)"
                 value={search}
-                onChange={handleSearchChange}
-                autoFocus
+                onClick={() => useSearchStore.getState().openSearch()}
                 className="tmusic-search-screen-input"
+                style={{ cursor: 'pointer' }}
               />
               {search && (
                 <button onClick={clearSearch} className="tmusic-search-screen-clear" aria-label="Очистить поиск">
@@ -1348,6 +1586,44 @@ export function MusicLibrary({ onOpenCoverPicker }) {
            ) : (
             /* ─── Catalog: Медиатека (category strip) / Артисты / Альбомы ──────── */
             <div>
+              {/* UI-05: failed artist detail — never silently drop into an empty grid */}
+              {detailError && (
+                <div
+                  role="alert"
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '60px 20px',
+                    gap: '12px',
+                    color: 'var(--danger)',
+                    textAlign: 'center',
+                  }}
+                >
+                  <AlertTriangle size={36} />
+                  <div style={{ fontSize: '15px', fontWeight: '700', color: 'var(--ink)' }}>
+                    Не удалось загрузить артиста
+                  </div>
+                  <div style={{ fontSize: '13px', maxWidth: 320 }}>{detailError.message}</div>
+                  <button
+                    type="button"
+                    onClick={() => openArtist(detailError.id)}
+                    style={{
+                      marginTop: '6px',
+                      padding: '8px 18px',
+                      borderRadius: 8,
+                      border: '1px solid var(--line-bright)',
+                      background: 'var(--accent)',
+                      color: 'var(--bg)',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Повторить
+                  </button>
+                </div>
+              )}
               {/* Admin: create catalog cards (opened from the avatar menu) */}
             {isAdmin && !folderMode && (
               <div style={{ marginBottom: 14 }}>
@@ -1372,6 +1648,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                           if (e.key === 'Escape') setShowCreate(false)
                         }}
                         placeholder="Название"
+                        aria-label="Название новой карточки"
                         autoFocus
                         style={{
                           background: 'var(--bg)',
@@ -1389,6 +1666,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                         value={newCard.kind}
                         onChange={(e) => setNewCard((c) => ({ ...c, kind: e.target.value }))}
                         title="Тип карточки"
+                        aria-label="Тип новой карточки"
                         style={{
                           background: 'var(--bg)',
                           border: '1px solid var(--line)',
@@ -1409,6 +1687,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                         value={newCard.bio}
                         onChange={(e) => setNewCard((c) => ({ ...c, bio: e.target.value }))}
                         placeholder="Описание (необязательно)"
+                        aria-label="Описание новой карточки"
                         rows={1}
                         style={{
                           background: 'var(--bg)',
@@ -1429,7 +1708,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                         onClick={createCard}
                         style={{
                           background: 'var(--accent)',
-                          color: '#141210',
+                          color: 'var(--on-accent)',
                           border: 'none',
                           borderRadius: 8,
                           padding: '8px 14px',
@@ -1501,7 +1780,43 @@ export function MusicLibrary({ onOpenCoverPicker }) {
             )}
 
             {/* Catalog grid — always under bar/panel in covers mode */}
-            {!folderMode && (isLoading ? (
+            {!folderMode && (!isAuthenticated ? (
+              /* UI-24: not signed in — offer a login CTA, never a bare empty grid */
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: '80px 20px',
+                  gap: '14px',
+                  color: 'var(--dim)',
+                  textAlign: 'center',
+                }}
+              >
+                <ShieldCheck size={42} style={{ opacity: 0.4 }} />
+                <div style={{ fontSize: '16px', fontWeight: '700', color: 'var(--ink)' }}>Войдите, чтобы слушать</div>
+                <div style={{ fontSize: '13px', maxWidth: 320 }}>
+                  Медиатека доступна после входа в аккаунт.
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAuthModalOpen(true)}
+                  style={{
+                    marginTop: '6px',
+                    padding: '10px 22px',
+                    borderRadius: 8,
+                    border: '1px solid var(--line-bright)',
+                    background: 'var(--accent)',
+                    color: 'var(--bg)',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Войти
+                </button>
+              </div>
+            ) : isLoading ? (
               <div
                 style={{
                   display: 'flex',
@@ -1515,6 +1830,41 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               >
                 <Loader2 size={36} className="animate-spin" style={{ color: 'var(--accent)' }} />
                 <div style={{ fontSize: '14px', fontWeight: '600' }}>Загрузка каталога...</div>
+              </div>
+            ) : loadError ? (
+              /* UI-05: a fetch failure is an alert with retry, not an empty result */
+              <div
+                role="alert"
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  padding: '80px 20px',
+                  gap: '12px',
+                  color: 'var(--danger)',
+                  textAlign: 'center',
+                }}
+              >
+                <AlertTriangle size={40} />
+                <div style={{ fontSize: '16px', fontWeight: '700', color: 'var(--ink)' }}>Не удалось загрузить каталог</div>
+                <div style={{ fontSize: '13px', maxWidth: 320 }}>{loadError}</div>
+                <button
+                  type="button"
+                  onClick={() => loadData()}
+                  style={{
+                    marginTop: '6px',
+                    padding: '9px 20px',
+                    borderRadius: 8,
+                    border: '1px solid var(--line-bright)',
+                    background: 'var(--accent)',
+                    color: 'var(--bg)',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Повторить
+                </button>
               </div>
             ) : items.length === 0 ? (
               /* Empty State */
@@ -1565,6 +1915,17 @@ export function MusicLibrary({ onOpenCoverPicker }) {
           onOpenCoverPicker={isAdmin ? onOpenCoverPicker : null}
         />
       )}
+
+      {/* Unified Search Modal (Desktop / Mobile overlay) */}
+      <UnifiedSearchModal
+        onOpenArtist={openArtist}
+        onOpenAlbum={(alb) =>
+          setSelectedAlbum({
+            album: alb,
+            artist: { display_name: alb.artist_name, id: alb.artist_id },
+          })
+        }
+      />
 
       {/* Admin curation error toast (drag-and-drop / create failures) */}
       {actionError && (

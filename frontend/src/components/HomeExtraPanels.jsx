@@ -7,25 +7,23 @@ import {
   ListMusic,
   Play,
   Plus,
-  Star,
   Trash2,
   ListStart,
   ListEnd,
+  Check,
+  HardDrive,
 } from 'lucide-react'
 import { playbackApi } from '../api/playback'
 import { playlistsApi } from '../api/playlists'
 import { usePlayerStore } from '../store/playerStore'
 import { useAuthStore } from '../store/authStore'
+import { useOfflineStore } from '../store/offlineStore'
+import { ClickableRow } from './ui/ClickableRow'
 
 function formatTime(sec) {
   const s = Math.max(0, Math.floor(Number(sec) || 0))
   const m = Math.floor(s / 60)
   return `${m}:${String(s % 60).padStart(2, '0')}`
-}
-
-function fmtDur(sec) {
-  if (!sec || isNaN(sec)) return ''
-  return formatTime(sec)
 }
 
 function stripExt(name) {
@@ -37,7 +35,7 @@ const chipBtn = {
   alignItems: 'center',
   gap: '6px',
   background: 'var(--accent)',
-  color: '#141210',
+  color: 'var(--on-accent)',
   border: 'none',
   borderRadius: '999px',
   padding: '6px 12px',
@@ -62,15 +60,16 @@ const iconBtn = {
 }
 
 /**
- * Compact panels for the library top bar: 'recent' | 'playlists' | 'favorites'.
+ * Compact panels for the library top bar: 'recent' | 'playlists'.
+ * «Любимые» здесь больше не живут — они стали карточкой-сборником в каталоге.
  */
 export function LibraryPanel({ section, onRefreshKey }) {
   const { isAuthenticated } = useAuthStore()
   const { playQueue, playNext, addToQueue, setNotice } = usePlayerStore()
+  const cachedTrackIds = useOfflineStore((s) => s.cachedTrackIds)
   const [continueItems, setContinueItems] = useState([])
   const [recentItems, setRecentItems] = useState([])
   const [playlists, setPlaylists] = useState([])
-  const [favorites, setFavorites] = useState([])
   const [newName, setNewName] = useState('')
   const [busy, setBusy] = useState(false)
   const [panelError, setPanelError] = useState(null)
@@ -82,6 +81,8 @@ export function LibraryPanel({ section, onRefreshKey }) {
   const [plLoading, setPlLoading] = useState(false)
   const [dragIdx, setDragIdx] = useState(null)
   const [reorderBusy, setReorderBusy] = useState(false)
+  // UI-21: guard the playlist play button so a double-tap can't fetch+enqueue twice.
+  const [playBusyId, setPlayBusyId] = useState(null)
   const plTracksRef = useRef([])
   const dragActiveRef = useRef(false)
 
@@ -97,18 +98,16 @@ export function LibraryPanel({ section, onRefreshKey }) {
     ;(async () => {
       setPanelError(null)
       try {
-        const [pos, hist, pls, favs] = await Promise.all([
+        const [pos, hist, pls] = await Promise.all([
           playbackApi.listPositions(16),
           playbackApi.listHistory(16),
           playlistsApi.list(),
-          section === 'favorites' ? playbackApi.listFavorites(200) : Promise.resolve(null),
         ])
         if (cancelled) return
         const posItems = (pos?.items || []).filter((x) => x.position_sec >= 5)
         setContinueItems(posItems)
         setRecentItems(hist?.items || [])
         setPlaylists(pls || [])
-        if (favs) setFavorites(favs.items || [])
       } catch {
         if (!cancelled) setPanelError('Не удалось обновить данные. Показанные данные могут быть устаревшими.')
       }
@@ -136,15 +135,6 @@ export function LibraryPanel({ section, onRefreshKey }) {
     size: null,
   })
 
-  const asFavoriteTrack = (row) => ({
-    id: row.file_id,
-    name: row.file_name || `Трек ${row.file_id}`,
-    stream_url: row.stream_url || `/api/stream/${row.file_id}`,
-    folder_id: row.folder_id ?? null,
-    mime_type: row.mime_type || 'audio/mpeg',
-    size: row.size ?? null,
-  })
-
   const playRow = (row) => {
     const track = asTrack(row)
     playQueue([track], 0, {
@@ -161,16 +151,6 @@ export function LibraryPanel({ section, onRefreshKey }) {
     setNotice({
       kind: 'info',
       text: `«${stripExt(track.name)}» — ${mode === 'next' ? 'следующим' : 'в конец очереди'}`,
-    })
-  }
-
-  const playFavorites = (startIdx = 0) => {
-    if (!favorites.length) return
-    const tracks = favorites.map(asFavoriteTrack)
-    playQueue(tracks, startIdx, {
-      title: 'Любимые',
-      artistName: 'Избранное',
-      coverUrl: null,
     })
   }
 
@@ -193,6 +173,8 @@ export function LibraryPanel({ section, onRefreshKey }) {
   }
 
   const handlePlayPlaylist = async (pl) => {
+    if (playBusyId) return
+    setPlayBusyId(pl.id)
     setPanelError(null)
     try {
       const detail = await playlistsApi.get(pl.id)
@@ -209,6 +191,8 @@ export function LibraryPanel({ section, onRefreshKey }) {
       }
     } catch (e) {
       setPanelError(e?.message || 'Не удалось выполнить действие. Обновите список перед повтором.')
+    } finally {
+      setPlayBusyId(null)
     }
   }
 
@@ -315,14 +299,37 @@ export function LibraryPanel({ section, onRefreshKey }) {
               {rows.slice(0, 20).map((row, idx) => {
                 const track = asTrack(row)
                 return (
-                  <div
+                  <ClickableRow
                     key={`${row.file_id}-${row.updated_at || row.started_at || idx}`}
                     className="tmusic-panel-row"
                     onClick={() => playRow(row)}
                   >
                     <Play size={13} fill="var(--accent)" />
                     <div className="tmusic-panel-row-main">
-                      <div className="tmusic-panel-row-title">{track.name}</div>
+                      <div className="tmusic-panel-row-title" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span>{track.name}</span>
+                        {cachedTrackIds.has(Number(row.file_id)) && (
+                          <span
+                            className="tmusic-badge-cached"
+                            title="В кэше • Доступно офлайн"
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '2px',
+                              fontSize: '10px',
+                              fontWeight: '800',
+                              padding: '1px 5px',
+                              borderRadius: '5px',
+                              background: 'rgba(34, 197, 94, 0.15)',
+                              color: 'var(--success)',
+                              border: '1px solid rgba(34, 197, 94, 0.3)',
+                              flexShrink: 0,
+                            }}
+                          >
+                            <Check size={10} strokeWidth={3} /> Кэш
+                          </span>
+                        )}
+                      </div>
                       <div className="tmusic-panel-row-sub">
                         {typeof row.position_sec === 'number'
                           ? `${formatTime(row.position_sec)}${
@@ -351,67 +358,9 @@ export function LibraryPanel({ section, onRefreshKey }) {
                         <ListEnd size={13} />
                       </button>
                     </span>
-                  </div>
+                  </ClickableRow>
                 )
               })}
-            </div>
-          )}
-        </section>
-      )}
-
-      {section === 'favorites' && (
-        <section>
-          <div className="tmusic-panel-head">
-            <Star size={15} fill="var(--accent)" />
-            <span>Любимые</span>
-            <span className="tmusic-panel-count">{favorites.length}</span>
-            {favorites.length > 0 && (
-              <button style={{ ...chipBtn, marginLeft: 'auto' }} onClick={() => playFavorites(0)}>
-                <Play size={12} fill="#141210" /> Слушать
-              </button>
-            )}
-          </div>
-          {favorites.length === 0 ? (
-            <div className="tmusic-panel-empty">
-              Нажмите ★ на треке в альбоме или в плеере — он появится здесь
-            </div>
-          ) : (
-            <div className="tmusic-panel-list">
-              {favorites.slice(0, 50).map((row, idx) => (
-                <div
-                  key={`fav-${row.file_id}`}
-                  className="tmusic-panel-row"
-                  onClick={() => playFavorites(idx)}
-                >
-                  <Star size={13} fill="var(--accent)" />
-                  <div className="tmusic-panel-row-main">
-                    <div className="tmusic-panel-row-title">{row.file_name || `Трек ${row.file_id}`}</div>
-                    <div className="tmusic-panel-row-sub">
-                      {fmtDur(row.duration) ? `${fmtDur(row.duration)} · ` : ''}избранное
-                    </div>
-                  </div>
-                  <span className="tm-queue-actions" onClick={(e) => e.stopPropagation()}>
-                    <button
-                      type="button"
-                      className="tm-queue-mini"
-                      onClick={() => queueRow({ file_id: row.file_id, file_name: row.file_name }, 'next')}
-                      aria-label="Играть следующим"
-                      title="Играть следующим"
-                    >
-                      <ListStart size={13} />
-                    </button>
-                    <button
-                      type="button"
-                      className="tm-queue-mini"
-                      onClick={() => queueRow({ file_id: row.file_id, file_name: row.file_name }, 'queue')}
-                      aria-label="Добавить в очередь"
-                      title="Добавить в очередь"
-                    >
-                      <ListEnd size={13} />
-                    </button>
-                  </span>
-                </div>
-              ))}
             </div>
           )}
         </section>
@@ -456,13 +405,19 @@ export function LibraryPanel({ section, onRefreshKey }) {
                         {openPlId === pl.id ? ' • свернуть' : ' • порядок ↑↓'}
                       </div>
                     </button>
-                    <button style={chipBtn} onClick={() => handlePlayPlaylist(pl)}>
-                      <Play size={12} fill="#141210" /> Слушать
+                    <button
+                      style={chipBtn}
+                      onClick={() => handlePlayPlaylist(pl)}
+                      disabled={playBusyId === pl.id}
+                      aria-busy={playBusyId === pl.id || undefined}
+                    >
+                      <Play size={12} fill="currentColor" /> Слушать
                     </button>
                     <button
                       className="tmusic-panel-icon-btn"
                       onClick={() => handleDeletePlaylist(pl)}
                       title="Удалить"
+                      aria-label={`Удалить плейлист ${pl.name}`}
                     >
                       <Trash2 size={13} />
                     </button>
@@ -499,7 +454,7 @@ export function LibraryPanel({ section, onRefreshKey }) {
                               }}
                             >
                               <GripVertical size={13} style={{ color: 'var(--dim)', flexShrink: 0 }} />
-                              <div
+                              <ClickableRow
                                 className="tmusic-panel-row-main"
                                 onClick={() =>
                                   playQueue(
@@ -516,10 +471,31 @@ export function LibraryPanel({ section, onRefreshKey }) {
                                   )
                                 }
                               >
-                                <div className="tmusic-panel-row-title">
-                                  {idx + 1}. {t.file_name || `Трек ${t.file_id}`}
+                                <div className="tmusic-panel-row-title" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <span>{idx + 1}. {t.file_name || `Трек ${t.file_id}`}</span>
+                                  {cachedTrackIds.has(Number(t.file_id)) && (
+                                    <span
+                                      className="tmusic-badge-cached"
+                                      title="В кэше • Доступно офлайн"
+                                      style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '2px',
+                                        fontSize: '10px',
+                                        fontWeight: '800',
+                                        padding: '1px 5px',
+                                        borderRadius: '5px',
+                                        background: 'rgba(34, 197, 94, 0.15)',
+                                        color: 'var(--success)',
+                                        border: '1px solid rgba(34, 197, 94, 0.3)',
+                                        flexShrink: 0,
+                                      }}
+                                    >
+                                      <Check size={10} strokeWidth={3} /> Кэш
+                                    </span>
+                                  )}
                                 </div>
-                              </div>
+                              </ClickableRow>
                               <button
                                 type="button"
                                 style={iconBtn}

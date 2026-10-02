@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Аудит интерфейса T-Music — 2026-10-02</title>
+<style>
+  :root{
+    --bg:#12100e; --panel:#1c1916; --panel2:#221e1a; --line:#332e28;
+    --ink:#ECE7DD; --dim:#8B8377; --accent:#D4FF3F;
+    --crit:#ff5f56; --high:#ff9f43; --med:#ffd166; --low:#6bcB77; --info:#5aa9e6;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    font-size:15px; line-height:1.55; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1180px;margin:0 auto;padding:32px 24px 80px}
+
+  header.hero{border-bottom:1px solid var(--line);padding-bottom:26px;margin-bottom:26px}
+  h1{font-size:27px;margin:0 0 8px;letter-spacing:-.02em}
+  .sub{color:var(--dim);font-size:14px}
+  .sub code{font-family:var(--mono);font-size:12.5px;background:var(--panel2);padding:1px 6px;border-radius:4px;color:var(--ink)}
+
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:24px 0}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .stat .n{font-size:26px;font-weight:800;letter-spacing:-.02em}
+  .stat .l{font-size:11.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim);margin-top:2px}
+
+  .callout{border-left:3px solid var(--crit);background:rgba(255,95,86,.07);
+    border-radius:0 8px 8px 0;padding:14px 18px;margin:22px 0}
+  .callout h3{margin:0 0 8px;font-size:14px;color:var(--crit);text-transform:uppercase;letter-spacing:.06em}
+  .callout ol{margin:0;padding-left:20px}
+  .callout li{margin:5px 0;font-size:14px}
+  .callout code{font-family:var(--mono);font-size:12.5px;color:var(--accent)}
+
+  .toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:26px 0 16px;
+    padding-bottom:14px;border-bottom:1px solid var(--line)}
+  .toolbar .lbl{font-size:12px;color:var(--dim);margin-right:4px}
+  .chip{
+    background:var(--panel);border:1px solid var(--line);color:var(--dim);
+    border-radius:999px;padding:6px 14px;font-size:13px;cursor:pointer;
+    font-family:inherit;transition:.15s;
+  }
+  .chip:hover{border-color:var(--dim);color:var(--ink)}
+  .chip.on{background:var(--accent);border-color:var(--accent);color:#12100e;font-weight:700}
+  .chip .c{opacity:.6;margin-left:5px;font-size:11.5px}
+  .chip.on .c{opacity:.75}
+  #q{flex:1;min-width:180px;background:var(--panel);border:1px solid var(--line);
+    color:var(--ink);border-radius:8px;padding:8px 12px;font-size:13.5px;font-family:inherit}
+  #q:focus{outline:none;border-color:var(--accent)}
+
+  .f{border:1px solid var(--line);border-radius:11px;margin-bottom:12px;overflow:hidden;background:var(--panel)}
+  .f-h{display:flex;gap:12px;align-items:flex-start;padding:14px 16px;cursor:pointer;user-select:none}
+  .f-h:hover{background:var(--panel2)}
+  .sev{flex:0 0 auto;font-family:var(--mono);font-size:11px;font-weight:800;
+    padding:4px 9px;border-radius:5px;letter-spacing:.04em;white-space:nowrap}
+  .s-crit{background:rgba(255,95,86,.16);color:var(--crit)}
+  .s-high{background:rgba(255,159,67,.16);color:var(--high)}
+  .s-med{background:rgba(255,209,102,.14);color:var(--med)}
+  .s-low{background:rgba(107,203,119,.14);color:var(--low)}
+  .f-t{flex:1;min-width:0}
+  .f-id{font-family:var(--mono);font-size:11.5px;color:var(--dim);margin-bottom:2px}
+  .f-title{font-weight:650;font-size:14.5px;line-height:1.4}
+  .f-cat{font-size:11px;color:var(--dim);margin-top:5px}
+  .tag{display:inline-block;background:var(--panel2);border:1px solid var(--line);
+    border-radius:4px;padding:1px 7px;font-size:11px;color:var(--dim);margin-right:5px}
+  .chev{flex:0 0 auto;color:var(--dim);font-size:12px;transition:transform .2s;margin-top:3px}
+  .f.open .chev{transform:rotate(90deg)}
+  .f-b{display:none;padding:0 16px 16px;border-top:1px solid var(--line)}
+  .f.open .f-b{display:block}
+  .f-b h4{margin:16px 0 7px;font-size:11.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--dim)}
+  .f-b p{margin:0 0 12px;font-size:14px}
+  .loc{font-family:var(--mono);font-size:12.5px;background:var(--bg);border:1px solid var(--line);
+    border-radius:6px;padding:2px 7px;color:var(--accent);word-break:break-all}
+  pre{background:var(--bg);border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:0 8px 8px 0;padding:12px 14px;overflow-x:auto;margin:0 0 12px;
+    font-family:var(--mono);font-size:12.5px;line-height:1.6;color:#d8d2c6}
+  .fix{background:rgba(212,255,63,.07);border-left:3px solid var(--accent);
+    border-radius:0 8px 8px 0;padding:11px 14px;font-size:13.5px}
+  .fix b{color:var(--accent)}
+  table{width:100%;border-collapse:collapse;margin:0 0 12px;font-size:13px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+  td code{font-family:var(--mono);font-size:12px;color:var(--accent)}
+  .ok{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin-top:30px}
+  .ok h2{margin:0 0 12px;font-size:16px}
+  .ok ul{margin:0;padding-left:20px}
+  .ok li{margin:6px 0;font-size:13.5px;color:#cfc9bd}
+  .ok code{font-family:var(--mono);font-size:12px;color:var(--accent)}
+  .empty{text-align:center;color:var(--dim);padding:40px 0;font-size:14px}
+  footer{margin-top:34px;padding-top:18px;border-top:1px solid var(--line);color:var(--dim);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>Аудит интерфейса T-Music</h1>
+  <div class="sub">
+    <code>frontend/src</code> · 20 компонентов, 6 файлов поиска, 5 store, <code>index.css</code> (1955 строк) ·
+    2 октября 2026<br>
+    Направления: доступность (a11y) · адаптивность и CSS · UX-состояния и обратная связь.
+    Аудит выполнен read-only — код не изменялся.
+  </div>
+</header>
+
+<div class="stats">
+  <div class="stat"><div class="n" style="color:var(--crit)">8</div><div class="l">Critical</div></div>
+  <div class="stat"><div class="n" style="color:var(--high)">10</div><div class="l">High</div></div>
+  <div class="stat"><div class="n" style="color:var(--med)">15</div><div class="l">Medium</div></div>
+  <div class="stat"><div class="n" style="color:var(--low)">10</div><div class="l">Low</div></div>
+  <div class="stat"><div class="n">43</div><div class="l">Всего</div></div>
+</div>
+
+<div class="callout">
+  <h3>Что горит в первую очередь</h3>
+  <ol>
+    <li><code>AdminCatalog.jsx:600</code> — <code>ReferenceError: album is not defined</code>: клик по альбому в админке = гарантированный белый экран.</li>
+    <li>ErrorBoundary отсутствует полностью — любая ошибка рендера = белый экран без сообщения.</li>
+    <li><code>App.jsx:132</code> — глобальный перехват Space отменяет активацию <em>любой</em> кнопки с клавиатуры.</li>
+    <li>Ошибка сети на трёх экранах маскируется под «Ничего не найдено».</li>
+    <li>z-index 8500: нижняя навигация перекрывает альбомный шит на мобильном.</li>
+    <li><code>checkAuth</code> при обрыве сети вызывает <code>playerStore.reset()</code> — плеер и очередь уничтожены.</li>
+  </ol>
+</div>
+
+<div class="toolbar">
+  <span class="lbl">Фильтр</span>
+  <button class="chip on" data-sev="all">Все <span class="c">43</span></button>
+  <button class="chip" data-sev="crit">Critical <span class="c">8</span></button>
+  <button class="chip" data-sev="high">High <span class="c">10</span></button>
+  <button class="chip" data-sev="med">Medium <span class="c">15</span></button>
+  <button class="chip" data-sev="low">Low <span class="c">10</span></button>
+  <input id="q" placeholder="Поиск по файлу, тексту, ID…">
+</div>
+
+<div id="list"></div>
+
+<div class="ok">
+  <h2>Проверено и чисто — претензий нет</h2>
+  <ul>
+    <li><b>Слайдеры прогресса и громкости</b> — реальные <code>input[type=range]</code> с <code>aria-label</code> и <code>aria-valuetext</code> (<code>MusicLibraryPlayer.jsx:101-112</code>, <code>:143-152</code>); глобальный <code>:focus-visible</code> задан (<code>index.css:1877-1881</code>).</li>
+    <li><b>Оптимистичное избранное с откатом</b> — <code>favoritesStore.js:44-80</code>: точечный rollback только своего id, <code>role="alert"</code> с кнопками «Обновить»/«Закрыть». Лучший паттерн в проекте.</li>
+    <li><b>Индикаторы буферизации</b> — отрисованы во всех состояниях плеера (<code>MusicLibraryPlayer.jsx:423,492,597,790,966</code>).</li>
+    <li><b>AlbumDetail</b> — полный набор состояний: loading / error / «В этом релизе нет треков» (<code>:385-400</code>), Esc, клик по фону, lock скролла.</li>
+    <li><b>VFS-импорт</b> — confirm с summary, <code>importBusy</code>, polling-прогресс, disabled на всех контролах (<code>AdminVfsImport.jsx:343-394</code>).</li>
+    <li><b>Debounce в каталоге</b> (300 мс) и <b>abort в поиске</b> (<code>searchStore.js:122-133</code>) — гонка «медленный ранний ответ перезапишет новый» закрыта.</li>
+    <li><b>Горизонтальный скролл</b> предотвращён; <b>iOS auto-zoom</b> в инпутах решён через <code>font-size: max(16px,1rem)</code>.</li>
+    <li><b>Обязательная смена пароля</b> — при <code>required=true</code> модалку нельзя закрыть ни Esc, ни кликом по фону.</li>
+  </ul>
+</div>
+
+<footer>
+  Все находки подтверждены чтением исходников с указанием строк; выборочно перепроверены UI-01, UI-02, UI-03, UI-05, UI-06, UI-07, UI-09, UI-12.<br>
+  Код не изменялся, commit/push/deployment не выполнялись, CORS не затрагивался.
+  Полная версия — <code>obsidian/03-Frontend/Аудит интерфейса 2026-10-02.md</code>.
+</footer>
+
+</div>
+
+<script>
+const F = [
+{id:'UI-01',sev:'crit',cat:'Белый экран · Админка',t:'ReferenceError: album is not defined при клике по альбому',
+ loc:'components/AdminCatalog.jsx:600',
+ body:`<p>Переменная <code>album</code> существует <b>только</b> внутри колбэка <code>albums.map((album) =&gt; …)</code> (строки 567-596). Строка 600 находится вне него.</p>
+ <pre>// строка 600 — вне albums.map
+{menu?.type === 'album' &amp;&amp; menu.id === album.id &amp;&amp; menu.artistId === artist.id &amp;&amp; (
+  &lt;ActionMenu&gt; … &lt;/ActionMenu&gt;
+)}</pre>
+ <p>Клик по альбому (<span class="loc">:573</span>) делает <code>setMenu({type:'album',…})</code> → короткая схема <code>menu?.type === 'album'</code> становится истинной → вычисляется <code>menu.id === album.id</code> → <b>ReferenceError</b>. React 19 размонтирует всё дерево: чистый белый экран, плеер и сессия убиты, восстановление только по F5.</p>
+ <div class="fix"><b>Фикс:</b> вынести <code>ActionMenu</code> для альбома внутрь <code>albums.map</code>, либо рендерить по <code>menu.id</code> без обращения к <code>album</code>.</div>`},
+
+{id:'UI-02',sev:'crit',cat:'Надёжность',t:'Нет ни одного ErrorBoundary — любая ошибка рендера = белый экран',
+ loc:'main.jsx:16-20 · App.jsx:339',
+ body:`<p><code>grep -rn "ErrorBoundary|componentDidCatch|getDerivedStateFromError"</code> по всему <code>src</code> → <b>0 совпадений</b>. Есть только <code>installGlobalErrorLogging()</code> (<span class="loc">main.jsx:10</span>), который пишет лог на сервер, но UI не показывает.</p>
+ <p>Любая ошибка рендера (UI-01, <code>undefined.map</code>, неожиданный <code>null</code> из API) → белый экран без сообщения и без кнопки «Обновить». Пользователь теряет воспроизведение и не понимает причину.</p>
+ <div class="fix"><b>Фикс:</b> обернуть <code>&lt;App/&gt;</code> и <code>&lt;SharePage/&gt;</code> в <code>ErrorBoundary</code> с <code>componentDidCatch</code> → «Что-то пошло не так» + «Перезагрузить» + <code>log.error</code>.</div>`},
+
+{id:'UI-03',sev:'crit',cat:'Клавиатура · a11y',t:'Глобальный перехват Space отменяет активацию любой кнопки',
+ loc:'App.jsx:114-139',
+ body:`<p>Проверка <code>isTypingTarget</code> покрывает только поля ввода:</p>
+ <pre>const isTypingTarget = (el) =&gt; {
+  const tag = el.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable
+}
+…
+if (key === ' ' || key === 'Spacebar') { e.preventDefault(); … s.togglePlay() }</pre>
+ <p>При фокусе на <code>&lt;button&gt;</code> <code>preventDefault()</code> отменяет нативную активацию → <b>ни одна кнопка в приложении не нажимается клавишей Space</b> («Войти», «Закрыть», «Показать ещё»).</p>
+ <div class="fix"><b>Фикс (1 строка):</b> добавить <code>tag === 'BUTTON' || tag === 'A' || el.closest('[role="button"],[role="tab"],[role="menuitem"]')</code>.</div>`},
+
+{id:'UI-04',sev:'crit',cat:'Клавиатура · a11y',t:'Кликабельные div — каталог недоступен с клавиатуры',
+ loc:'10 мест: MusicLibrary, search/*, AlbumDetail, HomeExtraPanels, MusicLibraryPlayer, AdminCatalog, CoverPicker',
+ body:`<p>Карточки и строки реализованы как <code>&lt;div onClick&gt;</code> без <code>role</code>, <code>tabIndex</code> и <code>onKeyDown</code>. Это <b>единственный</b> способ выполнить действие → мышь-only.</p>
+ <table><tr><th>Файл:строка</th><th>Что недоступно</th></tr>
+ <tr><td><code>MusicLibrary.jsx:884-896</code></td><td>карточка артиста → весь раздел «Исполнители»</td></tr>
+ <tr><td><code>MusicLibrary.jsx:954-966</code></td><td>карточка альбома → переход в AlbumDetail</td></tr>
+ <tr><td><code>search/SearchArtistCard.jsx:20-34</code></td><td>результат поиска (исполнитель)</td></tr>
+ <tr><td><code>search/SearchAlbumCard.jsx:20-32</code></td><td>результат поиска (альбом)</td></tr>
+ <tr><td><code>search/SearchTrackItem.jsx:56-59</code></td><td>воспроизведение трека из поиска</td></tr>
+ <tr><td><code>AlbumDetail.jsx:409-423</code></td><td>воспроизведение трека из треклиста</td></tr>
+ <tr><td><code>HomeExtraPanels.jsx:295-299, :444-460</code></td><td>«Недавнее», треки плейлиста</td></tr>
+ <tr><td><code>MusicLibraryPlayer.jsx:1105-1113</code></td><td>выбор трека из очереди</td></tr>
+ <tr><td><code>AdminCatalog.jsx:509-524, :571-578</code></td><td>меню действий карточки/альбома</td></tr>
+ <tr><td><code>CoverPicker.jsx:238-261</code></td><td>загрузка файла — <code>input</code> в <code>display:none</code></td></tr></table>
+ <div class="fix"><b>Фикс:</b> общий примитив <code>&lt;ClickableRow role="button" tabIndex={0} onKeyDown={Enter/Space}&gt;</code> — применить в 10 местах.</div>`},
+
+{id:'UI-05',sev:'crit',cat:'Обработка ошибок',t:'Ошибка сети маскируется под «Ничего не найдено»',
+ loc:'MusicLibrary.jsx:455-461 · searchStore.js:182-185 · MusicLibrary.jsx:556-566, :605-639',
+ body:`<p>Три экрана подменяют ошибку пустым состоянием — пользователь уверен, что библиотека пуста, и начинает менять запрос.</p>
+ <pre>// MusicLibrary.jsx:455-461
+} catch (e) {
+  console.error('Failed to load library catalog:', e)
+  if (mySeq === loadSeq.current &amp;&amp; key === catalogKeyRef.current) {
+    setItems([]); setHasMore(false)          // → «Ничего не найдено»
+  }
+}</pre>
+ <table><tr><th>Файл:строка</th><th>Что видит пользователь</th></tr>
+ <tr><td><code>MusicLibrary.jsx:455-461</code></td><td>«Ничего не найдено. Попробуйте изменить поисковый запрос». Состояния <code>error</code> у компонента не существует.</td></tr>
+ <tr><td><code>searchStore.js:182-185</code></td><td>стор пишет <code>error</code>, но <code>UnifiedSearchModal</code> его <b>не деструктурирует</b> (grep → 0 совпадений) → «По запросу «X» не нашлось треков»</td></tr>
+ <tr><td><code>MusicLibrary.jsx:556-566</code></td><td><code>openArtist</code>: спиннер гаснет, <code>selectedArtist</code> остаётся <code>null</code> — пользователь снова в каталоге без объяснения</td></tr>
+ <tr><td><code>MusicLibrary.jsx:605-639, :671</code></td><td><code>handlePlayAlbum</code> / <code>openAlbum</code> — тихий no-op: ни спиннера, ни тоста, плеер не открывается</td></tr></table>
+ <div class="fix"><b>Фикс:</b> завести <code>loadError</code>, рендерить <code>role="alert"</code> + кнопку «Повторить». <b>Никогда не подменять ошибку пустым состоянием.</b></div>`},
+
+{id:'UI-06',sev:'crit',cat:'Мобильный · z-index',t:'Нижняя навигация перекрывает альбомный шит',
+ loc:'index.css:812 vs index.css:1342 · MusicLibrary.jsx:1756, :1812',
+ body:`<p>Оба элемента имеют <code>z-index: 8500</code>. При равном значении побеждает тот, кто позже в DOM: <code>&lt;AlbumDetail&gt;</code> (<span class="loc">:1756</span>) рендерится <b>до</b> <code>&lt;nav className="tmusic-bottom-nav"&gt;</code> (<span class="loc">:1812</span>).</p>
+ <p>Шит прижат к низу (<code>index.css:1465-1479</code>: <code>align-items: flex-end</code>) → навбар высотой <code>56px + safe-bottom</code> накрывает последнюю строку треклиста и подвал «N треков • тап — играть». Скролл не спасает: контент физически перекрыт.</p>
+ <div class="fix"><b>Фикс:</b> оверлей → <code>8600</code>, плюс <code>.tmusic-album-sheet { padding-bottom: calc(var(--bottom-nav-h) + var(--safe-bottom) + 16px) }</code>.</div>`},
+
+{id:'UI-07',sev:'crit',cat:'Плеер · Состояние',t:'Обрыв сети уничтожает плеер и очередь',
+ loc:'store/authStore.js:62-85 · playerStore.js:515-549',
+ body:`<p><code>checkAuth</code> не разбирает тип ошибки — голый <code>catch</code>:</p>
+ <pre>} catch {                    // без аргумента
+  if (generation === epoch &amp;&amp; sequence === checkSequence) get().clearLocalSession()
+}
+// clearLocalSession → usePlayerStore.getState().reset()</pre>
+ <p><code>playerStore.reset()</code> чистит <code>queue</code>, <code>currentTrack</code>, <code>notice</code>, останавливает аудио и удаляет <code>tmusic_session</code> из localStorage.</p>
+ <p>Триггеры <code>checkAuth</code>: монтирование приложения и <code>onProfileChanged</code> (<span class="loc">MusicLibrary.jsx:1130</span>, смена аватара). Один кратковременный обрыв сети при играющей музыке → <b>очередь потеряна, воспроизведение остановлено</b>, открывается модалка логина.</p>
+ <div class="fix"><b>Фикс:</b> различать 401 (→ <code>clearLocalSession</code>) и <code>network_error</code>/5xx (→ оставить состояние + баннер «Нет связи с сервером»).</div>`},
+
+{id:'UI-08',sev:'crit',cat:'Плеер',t:'Смена обложки делает window.location.reload()',
+ loc:'App.jsx:426',
+ body:`<p>Единственный <code>location.reload()</code> в проекте (проверено grep).</p>
+ <pre>&lt;CoverPicker
+  target={coverTarget}
+  onClose={() =&gt; setCoverTarget(null)}
+  onUpdated={() =&gt; window.location.reload()}   // ← убивает воспроизведение
+/&gt;</pre>
+ <p>Админ меняет обложку во время проигрывания → полная перезагрузка страницы: музыка останавливается,
+ Media Session сбрасывается, все модалки закрываются. Пользователь воспринимает это как «плеер сломался».</p>
+ <div class="fix"><b>Фикс:</b> <code>bustCatalogCache()</code> + диспатч <code>tmusic:catalog-changed</code>, на который <code>MusicLibrary</code> вызывает <code>loadData()</code> — обработчик уже существует для <code>tmusic:vfs-imported</code> (<span class="loc">MusicLibrary.jsx:361-371</span>).</div>`},
+
+{id:'UI-09',sev:'high',cat:'Отзывчивость',t:'Ответ 429 замораживает UI на 60-300 секунд',
+ loc:'api/client.js:131-136 · utils/retryAfter.js',
+ body:`<p>Клиент <b>спит внутри себя</b>, вместо того чтобы вернуть ошибку:</p>
+ <pre>const retryAfter = retryAfterSeconds(response.headers.get('Retry-After'))  // fallback 60, max 300
+const errorDetail = \`Слишком много запросов. Повторите через ${'${retryAfter}'} секунд.\`
+await new Promise(r =&gt; setTimeout(r, 1000 * retryAfter))
+throw new ApiError(errorDetail, { status: 429, code: 'rate_limited', retryAfter })</pre>
+ <p>Поиск крутит спиннер минуту, сердечко избранного висит в оптимистичном состоянии, админская кнопка
+ заблокирована. Никакого сообщения и обратного отсчёта — только тишина. А повторного запроса всё равно
+ не происходит: <code>sleep</code> → <code>throw</code>.</p>
+ <div class="fix"><b>Фикс:</b> пробрасывать <code>ApiError</code> с <code>retryAfter</code> сразу; в UI показывать «Слишком много запросов. Повторите через N с» + кнопку «Повторить».</div>`},
+
+{id:'UI-10',sev:'high',cat:'Мобильный · Тач',t:'Hover-only контролы недостижимы на тач-устройствах',
+ loc:'search/SearchTrackItem.jsx:211, :221 · index.css:214-236',
+ body:`<table><tr><th>Файл:строка</th><th>Проблема</th></tr>
+ <tr><td><code>SearchTrackItem.jsx:211</code></td><td><code>opacity: isFav || hovered ? 1 : 0</code> — звезда невидима, но hit-test сохраняется: клик вслепую</td></tr>
+ <tr><td><code>SearchTrackItem.jsx:221</code></td><td><code>{hovered &amp;&amp; (&lt;button …&gt;)}</code> — «в очередь» <b>не существует в DOM</b> без hover</td></tr>
+ <tr><td><code>index.css:214-225</code></td><td><code>.tmusic-card-play-btn { opacity: 0 }</code> + <code>@media (hover: hover)</code> — на телефоне невидима, но кликабельна → тап по углу обложки запускает play вместо открытия альбома</td></tr>
+ <tr><td><code>index.css:218-236</code></td><td>нет <code>:focus-within</code> → при Tab-фокусе кнопка остаётся <code>opacity: 0</code>, кольцо фокуса не рисуется</td></tr></table>
+ <p>В проекте уже есть правильный паттерн <code>@media (hover: none) { .tm-queue-actions { opacity: 1 } }</code> (<span class="loc">index.css:1888-1892</span>) — но он не распространён на инлайновые стили.</p>
+ <div class="fix"><b>Фикс:</b> безусловный рендер + скрытие через CSS; добавить <code>:focus-within</code> и <code>@media (hover: none)</code>.</div>`},
+
+{id:'UI-11',sev:'high',cat:'Модальные окна · a11y',t:'Модалки без диалоговой семантики, Esc, scroll-lock и focus-trap',
+ loc:'7 оверлеев',
+ body:`<table><tr><th>Компонент</th><th>role=dialog</th><th>aria-modal</th><th>Esc</th><th>Scroll-lock</th><th>Focus trap</th><th>Возврат фокуса</th></tr>
+ <tr><td><code>AuthModal.jsx:20-32</code></td><td>✗</td><td>✗</td><td>✗</td><td>✗</td><td>✗</td><td>✗</td></tr>
+ <tr><td><code>CoverPicker.jsx:94-108</code></td><td>✗</td><td>✗</td><td>✗</td><td>✗</td><td>✗</td><td>✗</td></tr>
+ <tr><td><code>StorageSettingsModal.jsx:140-156</code></td><td>✗</td><td>✗</td><td>✗</td><td>✗</td><td>✗</td><td>✗</td></tr>
+ <tr><td><code>PasswordChangeModal.jsx:42-47</code></td><td>✓</td><td>✓</td><td>✗</td><td>✗</td><td>✗</td><td>✗</td></tr>
+ <tr><td><code>UnifiedSearchModal.jsx:130-148</code></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✗</td><td>✗</td></tr>
+ <tr><td><code>AlbumDetail.jsx:231-241</code></td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✗</td><td>✗</td></tr>
+ <tr><td><code>MusicLibraryPlayer.jsx:711-720</code> (fullscreen)</td><td>✗</td><td>✗</td><td>✓</td><td>✓</td><td>✗</td><td>✗</td></tr></table>
+ <p>Дополнительно: на iOS <code>document.body.style.overflow = 'hidden'</code> <b>не</b> останавливает скролл — нужен <code>position: fixed</code> + <code>top: -scrollY</code>.</p>
+ <div class="fix"><b>Фикс:</b> общий <code>&lt;Modal&gt;</code>-примитив + <code>useBodyScrollLock()</code> с iOS-веткой.</div>`},
+
+{id:'UI-12',sev:'high',cat:'z-index',t:'Тосты и алерты оказываются под плеером',
+ loc:'Полная карта слоёв',
+ body:`<p>Собраны все значения <code>z-index</code> в проекте (grep по <code>src</code>):</p>
+ <table><tr><th>z-index</th><th>Элемент</th><th>Файл:строка</th></tr>
+ <tr><td>7000</td><td><code>.tmusic-topbar</code> — создаёт stacking context через <code>backdrop-filter</code></td><td><code>MusicLibrary.jsx:1017</code></td></tr>
+ <tr><td>8000</td><td>админский тост</td><td><code>MusicLibrary.jsx:1783</code></td></tr>
+ <tr><td>8000</td><td><code>ProfileMenu</code> — заперт внутри контекста 7000</td><td><code>ProfileMenu.jsx:221</code></td></tr>
+ <tr><td>8400</td><td><code>.tmusic-playerbar</code> (mobile)</td><td><code>index.css:1385</code></td></tr>
+ <tr><td>8500</td><td><code>.tmusic-album-overlay</code> ← коллизия</td><td><code>index.css:812</code></td></tr>
+ <tr><td>8500</td><td><code>.tmusic-bottom-nav</code> ← коллизия</td><td><code>index.css:1342</code></td></tr>
+ <tr><td>9000</td><td>офлайн-баннер</td><td><code>App.jsx:350</code></td></tr>
+ <tr><td>9000</td><td><code>CoverPicker</code></td><td><code>CoverPicker.jsx:103</code></td></tr>
+ <tr><td>9500</td><td>fullscreen-плеер</td><td><code>MusicLibraryPlayer.jsx:715</code></td></tr>
+ <tr><td>9600</td><td><code>.tmusic-toast</code></td><td><code>index.css:1742</code></td></tr>
+ <tr><td>9650</td><td><code>.tm-track-menu</code> — иллюзия, внутри контекста 8500</td><td><code>index.css:1821</code></td></tr>
+ <tr><td>9998</td><td>алерт <code>favoriteError</code></td><td><code>App.jsx:407</code></td></tr>
+ <tr><td>9999</td><td><code>AuthModal</code>, <code>UnifiedSearchModal</code>, <code>StorageSettingsModal</code> — три модалки делят слой</td><td>—</td></tr>
+ <tr><td>10001</td><td><code>PasswordChangeModal</code></td><td><code>PasswordChangeModal.jsx:42</code></td></tr></table>
+ <p>Следствия: админский тост (8000) <b>под</b> плеером (8400); <code>CoverPicker</code> (9000) <b>под</b> fullscreen-плеером (9500) и тостом (9600); <code>AuthModal</code> рисуется поверх открытого поиска только за счёт DOM-порядка.</p>
+ <div class="fix"><b>Фикс:</b> именованные слои в <code>:root</code> — <code>--z-player: 8400; --z-nav: 8500; --z-sheet: 8600; --z-modal: 10000; --z-toast: 11000</code>. Устраняет 4 находки сразу.</div>`},
+
+{id:'UI-13',sev:'high',cat:'Мобильный',t:'Офлайн-баннер перекрывает топбар',
+ loc:'App.jsx:343-361 · MusicLibrary.jsx:1014-1019',
+ body:`<p>Баннер: <code>position: fixed, top: 0, zIndex: 9000, padding: '8px 16px'</code>.
+ Топбар: <code>position: sticky, top: 0, zIndex: 7000</code>.</p>
+ <p><b>(а)</b> Нет <code>max(8px, var(--safe-top))</code> → на телефоне с вырезом текст уходит под статус-бар.
+ <b>(б)</b> <code>9000 &gt; 7000</code>, и ничто не сдвигает контент вниз → в офлайне полностью скрыты логотип, поле поиска и аватар.</p>
+ <div class="fix"><b>Фикс:</b> <code>padding: 'max(8px, var(--safe-top)) 16px 8px'</code> + переменная <code>--offline-banner-h</code> как <code>padding-top</code> корня и <code>top</code> топбара.</div>`},
+
+{id:'UI-14',sev:'high',cat:'a11y',t:'Icon-only кнопки без доступного имени',
+ loc:'~30 мест',
+ body:`<p>Имя формируется только из <code>title</code> — это fallback в accname, который <b>не озвучивается VoiceOver на iOS</b>:
+ <code>MusicLibrary.jsx:1239-1266</code> · <code>AlbumDetail.jsx:276-305</code> · <code>StorageSettingsModal.jsx:698-703, :767-786</code> ·
+ <code>HomeExtraPanels.jsx:404-410, :486-509</code> · <code>AdminPanel.jsx:802-826, :544-573</code> · <code>FolderBrowser.jsx:247-274</code> · <code>AdminCatalog.jsx:545</code>.</p>
+ <p>Совсем без имени (голые <code>&lt;svg onClick&gt;</code> — не <code>&lt;button&gt;</code>, нет фокуса и роли):
+ <code>AdminVfsImport.jsx:426-446</code> (шеврон), <code>:449-463</code> (чекбокс), <code>:590-600</code>, <code>:719</code>, <code>:878-882</code>, <code>:1007</code>.</p>
+ <div class="fix"><b>Фикс:</b> обязательный <code>aria-label</code> в <code>Btn</code> (<span class="loc">AdminPanel.jsx:55-97</span>) + ~30 атрибутов по местам.</div>`},
+
+{id:'UI-15',sev:'high',cat:'Деструктивные действия',t:'Удаление бэкапа, выход, деактивация — без подтверждения',
+ loc:'AdminPanel, ProfileMenu, HomeExtraPanels, AlbumDetail, StorageSettingsModal, FolderBrowser',
+ body:`<table><tr><th>Файл:строка</th><th>Действие</th></tr>
+ <tr><td><code>AdminPanel.jsx:567-573</code></td><td><b>удаление бэкапа БД</b> — один клик по иконке мусорки без <code>title</code>/<code>aria-label</code>. Соседнее «Восстановить» защищено <code>prompt</code> + <code>confirm</code></td></tr>
+ <tr><td><code>AdminPanel.jsx:802-826</code></td><td>деактивация пользователя, «Завершить все сессии» (соседнее «Удалить» confirm имеет)</td></tr>
+ <tr><td><code>AdminPanel.jsx:430-450</code></td><td>VACUUM / ANALYZE / REINDEX / purge tokens — блокирующие операции на живой БД</td></tr>
+ <tr><td><code>ProfileMenu.jsx:355-364</code></td><td>выход из аккаунта → через <code>clearLocalSession</code> убивает воспроизведение</td></tr>
+ <tr><td><code>HomeExtraPanels.jsx:192-204</code></td><td>удаление плейлиста</td></tr>
+ <tr><td><code>AlbumDetail.jsx:625-648</code>, <code>StorageSettingsModal.jsx:823-839</code>, <code>FolderBrowser.jsx:219</code></td><td>удаление трека из офлайн-кэша</td></tr></table>
+ <div class="fix"><b>Фикс:</b> <code>window.confirm</code> для всех перечисленных; для кэша допустим inline-undo.</div>`},
+
+{id:'UI-16',sev:'high',cat:'Производительность',t:'Нет пагинации/виртуализации для крупных списков',
+ loc:'MusicLibrary.jsx:1347-1358, :156 · FolderBrowser.jsx:444 · MusicLibraryPlayer.jsx:1100',
+ body:`<p>Пагинация есть только у каталога (<code>LIB_PAGE_SIZE = 200</code>, <span class="loc">MusicLibrary.jsx:215</span>). Без ограничений:</p>
+ <ul>
+ <li><code>MusicLibrary.jsx:1347-1350</code> — альбомы артиста</li>
+ <li><code>MusicLibrary.jsx:1358</code> — children</li>
+ <li><code>MusicLibrary.jsx:156</code> — <code>FAVORITES_LIMIT = 500</code>, до 500 карточек сразу; <code>renderLoadMore</code> для «Любимых» возвращает <code>null</code> (<span class="loc">:509</span>)</li>
+ <li><code>FolderBrowser.jsx:444</code> — <code>tracks.slice(0, 500)</code></li>
+ <li><code>MusicLibraryPlayer.jsx:1100</code> — вся очередь</li>
+ </ul>
+ <p>Тысячи DOM-узлов + <code>&lt;img&gt;</code> на карточку → jank при скролле, OOM на слабом Android.</p>
+ <div class="fix"><b>Фикс:</b> единый «Показать ещё», либо <code>content-visibility: auto</code> + <code>contain-intrinsic-size</code> как дешёвый первый шаг.</div>`},
+
+{id:'UI-17',sev:'high',cat:'Мобильный',t:'vh вместо dvh — обрезка модалок при показанной адресной строке',
+ loc:'UnifiedSearchModal.jsx:154 · StorageSettingsModal.jsx:165 · index.css:1949-1952 · AlbumDetail.jsx:606',
+ body:`<p>В Android Chrome / iOS Safari <code>100vh</code> = <b>large viewport</b> (адресная строка скрыта), а
+ <code>window.innerHeight</code> = текущий. Разница 50-120px → низ модалки уходит за видимую область
+ и обрезается <code>overflow: hidden</code>.</p>
+ <p>Проект уже использует <code>dvh</code> в других местах (<span class="loc">index.css:759</span>, <span class="loc">App.jsx:340</span>, <span class="loc">MusicLibrary.jsx:1007</span>) — непоследовательно.</p>
+ <div class="fix"><b>Фикс:</b> <code>maxHeight: 'min(92dvh, calc(100dvh - 32px))'</code>; для storage — <code>94dvh</code>.</div>`},
+
+{id:'UI-18',sev:'high',cat:'a11y · Фокус',t:"Инлайновый outline: 'none' перебивает глобальный :focus-visible",
+ loc:'AuthModal.jsx:132, :149 · UnifiedSearchModal.jsx:208 · CoverPicker.jsx:234 · MusicLibrary.jsx:1080 · StorageSettingsModal.jsx:694',
+ body:`<p><code>index.css:1877-1881</code> задаёт <code>:focus-visible</code>, но <b>инлайновые стили имеют приоритет над любым селектором таблицы стилей</b> → кольцо фокуса не рисуется. Фокус на полях входа не визуализируется никак.</p>
+ <p>Плюс <code>index.css:925-938</code> — <code>.tmusic-search-screen-input</code> заменяет outline сменой цвета 1px границы: слабо для WCAG 2.4.11.</p>
+ <div class="fix"><b>Фикс:</b> убрать <code>outline: 'none'</code> из инлайна, задать в CSS + явный <code>:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }</code>.</div>`},
+
+{id:'UI-19',sev:'med',cat:'Мобильный · Тач',t:'Тач-таргеты меньше 44×44 CSS px',
+ loc:'~18 позиций',
+ body:`<table><tr><th>Файл:строка</th><th>Размер</th><th>Элемент</th></tr>
+ <tr><td><code>index.css:1715-1717</code> <code>.tm-queue-mini</code></td><td>26×26</td><td>кэш / следующим / в очередь</td></tr>
+ <tr><td><code>index.css:542-543</code> <code>.tmusic-panel-icon-btn</code></td><td>30×30</td><td>удалить плейлист</td></tr>
+ <tr><td><code>HomeExtraPanels.jsx:50-51</code></td><td>30×30</td><td>↑↓ переупорядочить трек</td></tr>
+ <tr><td><code>index.css:885-894</code> <code>.tmusic-np-btn</code></td><td>40×40</td><td>весь транспорт fullscreen-плеера</td></tr>
+ <tr><td><code>AlbumDetail.jsx:291-292</code></td><td>28×28</td><td>сменить обложку (админ)</td></tr>
+ <tr><td><code>AlbumDetail.jsx:512, :536, :573</code></td><td>32×32</td><td>★, в плейлист, ⋮</td></tr>
+ <tr><td><code>StorageSettingsModal.jsx:551, :578, :605, :632, :659</code></td><td>18×18</td><td>чекбоксы выбора треков</td></tr>
+ <tr><td><code>AdminPanel.jsx:670</code></td><td>18×18</td><td>чекбоксы настроек</td></tr>
+ <tr><td><code>MusicLibraryPlayer.jsx:561-635</code></td><td>26×26</td><td>prev / next / repeat</td></tr>
+ <tr><td><code>MusicLibrary.jsx:917-918</code></td><td>26×26</td><td>Unlink (извлечь артиста)</td></tr>
+ <tr><td><code>App.jsx:369-381</code></td><td>~21px</td><td>«Кэш и память» в офлайн-баннере</td></tr>
+ <tr><td><code>App.jsx:409-410</code></td><td>UA-default</td><td>кнопки в <code>favoriteError</code> без стилей</td></tr>
+ <tr><td><code>search/SearchCategoryTabs.jsx:34-45</code></td><td>~33px</td><td>табы категорий поиска</td></tr>
+ <tr><td><code>FolderBrowser.jsx:256-257</code></td><td>36×36</td><td>play в дереве папок</td></tr></table>
+ <p>Отдельно: кнопка «Войти» (<span class="loc">MusicLibrary.jsx:1145-1157</span>, ~24px) <b>не имеет <code>title</code></b>, поэтому мобильное правило <code>button[title="Войти"] { min-height: 44px }</code> (<span class="loc">index.css:1249-1254</span>) к ней не применяется.</p>
+ <div class="fix"><b>Фикс:</b> глобально <code>button { min-height: 44px; min-width: 44px }</code> + <code>::before</code>-расширитель hit-area там, где визуал менять нельзя.</div>`},
+
+{id:'UI-20',sev:'med',cat:'Мобильный',t:'Двойной резерв снизу — 238px мёртвого пространства',
+ loc:'MusicLibrary.jsx:1007 · index.css:1167-1170',
+ body:`<p><code>main</code> вложен в корневой <code>div</code>, отступы складываются:
+ <code>calc(var(--player-bar-h) + 24px + safe-bottom)</code> = 98px <b>плюс</b> мобильный оверрайд
+ <code>calc(var(--bottom-nav-h) + 72px + safe-bottom + 12px)</code> = 140px → <b>238px</b> при необходимых 120px.</p>
+ <p>Причина: <code>--player-bar-h: 74px</code> (<span class="loc">index.css:15</span>) нигде не переопределяется для мобильного, где полоса стала 56px (<span class="loc">index.css:1377</span>). Счётчик «Показано: N» висит в пустоте.</p>
+ <div class="fix"><b>Фикс:</b> в <code>@media (max-width: 640px)</code> задать <code>:root { --player-bar-h: 56px }</code> и убрать один из двух padding-bottom.</div>`},
+
+{id:'UI-21',sev:'med',cat:'Обратная связь',t:'Нет pending/disabled на кнопках воспроизведения — двойные тапы',
+ loc:'MusicLibrary.jsx:982-991, :831-844 · HomeExtraPanels.jsx:172-190',
+ body:`<p><code>handlePlayAlbum</code> — async (<code>getFolderTracks</code>), состояние «в процессе» отсутствует.
+ Между тапом и звуком — тишина без индикации.</p>
+ <p>Двойной/троекратный тап по ▶ запускает несколько параллельных <code>getFolderTracks</code> + <code>playQueue</code>:
+ очередь пересоздаётся, позиция сбрасывается. То же для «Слушать» плейлиста.</p>
+ <div class="fix"><b>Фикс:</b> <code>const [pendingId, setPendingId] = useState(null)</code> → спиннер в кнопке + <code>disabled</code>.</div>`},
+
+{id:'UI-22',sev:'med',cat:'Обратная связь',t:'Тосты не стекируются — новое сообщение затирает предыдущее',
+ loc:'store/playerStore.js:433, :460-461',
+ body:`<p><code>notice</code> — одиночный слот: <code>setNotice: (notice) =&gt; set({ notice })</code>.</p>
+ <p>Транскодинг завершился → «Готово: X теперь в MP3 320»; через 200 мс поток дал ошибку → сообщение
+ подменяется на «Проблемы с потоком…». Первое пропало. При серии ошибок (пропуск треков) пользователь
+ видит только последнюю.</p>
+ <p>Источники: <code>App.jsx:308,312</code>, <code>AlbumDetail.jsx:222,227</code>, <code>FolderBrowser.jsx:423,428,448</code>,
+ <code>HomeExtraPanels.jsx:148</code> и напрямую через <code>setState</code> из SSE (<code>playerStore.js:48,57,60</code>).</p>
+ <div class="fix"><b>Фикс:</b> <code>notices: []</code> + <code>pushNotice</code> с <code>id</code>, лимит 3, авто-dismiss по каждому.</div>`},
+
+{id:'UI-23',sev:'med',cat:'Клавиатура · a11y',t:'Поиск: нет focus-trap, возврата фокуса и навигации стрелками',
+ loc:'search/UnifiedSearchModal.jsx:34-52, :112-116',
+ body:`<p>Фокус ставится в инпут, но <b>не восстанавливается</b> на элементе-источнике при закрытии.
+ <code>Tab</code> уводит фокус на фон за модалкой (нет focus-trap).</p>
+ <p>Стрелки ↑/↓ и Enter по результату не работают — Enter только пишет запрос в «Недавние»
+ (<span class="loc">:112-116</span>). Пролистать 30 результатов и выбрать трек с клавиатуры нельзя.</p>
+ <div class="fix"><b>Фикс:</b> сохранять <code>document.activeElement</code> при открытии и возвращать при закрытии;
+ <code>role="listbox"/"option"</code> + обработчик ArrowUp/ArrowDown/Enter с <code>aria-activedescendant</code>.</div>`},
+
+{id:'UI-24',sev:'med',cat:'Пустые состояния',t:'Неавторизованный пользователь видит «Ничего не найдено»',
+ loc:'MusicLibrary.jsx:349-355, :1714-1730',
+ body:`<p><code>useEffect(() =&gt; { if (isAuthenticated) { loadData() } else { setIsLoading(false) } }, […])</code></p>
+ <p>Закрыл модалку логина крестиком → пустая сетка с «Ничего не найдено. Попробуйте изменить поисковый
+ запрос или выбрать другую категорию», хотя причина — отсутствие входа. CTA нет.</p>
+ <div class="fix"><b>Фикс:</b> отдельный empty-state для <code>!isAuthenticated</code>: «Войдите, чтобы слушать библиотеку» + кнопка «Войти».</div>`},
+
+{id:'UI-25',sev:'med',cat:'Согласованность данных',t:'Каталог не обновляется после правок в админке',
+ loc:'MusicLibrary.jsx:1170-1172, :349-355',
+ body:`<p>Админ переименовал артиста / перенёс релиз / просканировал карточку (всё это вызывает
+ <code>bustCatalogCache()</code>), нажал «На главную» → сетка показывает <b>старые названия и порядок</b>,
+ потому что <code>loadData()</code> не вызывался: зависимости эффекта не изменились.</p>
+ <p>Данные обновятся только через TTL 5 минут или после F5.</p>
+ <div class="fix"><b>Фикс:</b> в <code>onBack</code> бустить счётчик рефетча или диспатчить <code>tmusic:catalog-changed</code>.</div>`},
+
+{id:'UI-26',sev:'med',cat:'Мобильный',t:'Модалки без safe-area padding',
+ loc:'UnifiedSearchModal.jsx:143 · StorageSettingsModal.jsx:150 · AuthModal.jsx:29 · PasswordChangeModal.jsx:42 · CoverPicker.jsx:96-105',
+ body:`<p><code>padding: '16px'</code> / <code>'20px'</code> без <code>max(…, var(--safe-*))</code>.
+ При <code>viewport-fit=cover</code> в ландшафте <code>safe-left/right</code> ≈ 44-59px → содержимое
+ заходит под вырез и скругления экрана.</p>
+ <p>Контраст: <code>.tmusic-nowplaying</code> сделан правильно (<span class="loc">index.css:755-758</span>).</p>
+ <div class="fix"><b>Фикс:</b> <code>padding: 'max(16px, var(--safe-top)) max(16px, var(--safe-right)) max(16px, var(--safe-bottom)) max(16px, var(--safe-left))'</code>.</div>`},
+
+{id:'UI-27',sev:'med',cat:'a11y',t:'Прогресс-бар импорта без role="progressbar"',
+ loc:'AdminVfsImport.jsx:1151-1179',
+ body:`<p>Прогресс собран из обычных <code>div</code> — нет <code>role="progressbar"</code>, <code>aria-valuenow/min/max</code>,
+ <code>aria-busy</code>. Текст «N / M» рядом не в live region. Импорт полностью «немой» для скринридера.</p>
+ <div class="fix"><b>Фикс:</b> добавить <code>role="progressbar"</code> + <code>aria-valuenow</code> + <code>aria-valuetext</code>.</div>`},
+
+{id:'UI-28',sev:'med',cat:'a11y · Формы',t:'18 полей и селектов без программных меток; нет autoComplete',
+ loc:'AdminPanel, AdminCatalog, AdminVfsImport, MusicLibrary, ProfileMenu, AuthModal, CoverPicker',
+ body:`<p>Имя формируется из <code>placeholder</code> или <code>title</code> — ненадёжно. Селекты в строках
+ списков не сообщают, <b>к какому объекту</b> относятся: SR слышит просто «combo box».</p>
+ <p><code>AdminPanel.jsx:774-791</code> — <code>&lt;select&gt;</code> роли пользователя без <code>aria-label</code>: непонятно, чью роль меняют.</p>
+ <p><code>AuthModal.jsx:118-151</code> — нет <code>autoComplete="username"</code> / <code>"current-password"</code>:
+ менеджеры паролей не работают (WCAG 1.3.5). Для контраста — <code>PasswordChangeModal.jsx:55-66</code> сделано образцово
+ (<code>htmlFor</code> + <code>autoComplete</code>).</p>
+ <div class="fix"><b>Фикс:</b> <code>aria-label</code> с контекстом объекта на каждый контрол + <code>autoComplete</code> в форму входа.</div>`},
+
+{id:'UI-29',sev:'med',cat:'Мобильный',t:'Позиция трек-меню не пересчитывается при повороте экрана',
+ loc:'AlbumDetail.jsx:557-566, :606',
+ body:`<p><code>getBoundingClientRect()</code>, <code>window.innerHeight</code>, <code>window.innerWidth - 226</code>
+ считаются <b>один раз</b> в момент клика. Grep по всему <code>src</code>: <code>resize|orientationchange</code> → <b>0 совпадений</b>.</p>
+ <p>Поворот телефона при открытом меню оставляет его на устаревших координатах — меню может оказаться
+ за пределами экрана. Константа <code>226</code> не клампится слева: <code>x</code> может быть отрицательным на узком экране.</p>
+ <div class="fix"><b>Фикс:</b> слушать <code>resize</code>/<code>orientationchange</code> → пересчёт или <code>setTrackMenu(null)</code>; кламп <code>x</code> в <code>[8, innerWidth - 210 - 8]</code>.</div>`},
+
+{id:'UI-30',sev:'med',cat:'Мобильный',t:'Длинные неразрывные строки обрезаются вместо переноса',
+ loc:'AdminPanel.jsx:508 · всего 3 wordBreak в кодовой базе',
+ body:`<p><code>&lt;code&gt;{settings.backup_dir}&lt;/code&gt;</code> — путь ФС без <code>wordBreak</code>.
+ При <code>body { overflow-x: hidden }</code> (<span class="loc">index.css:41</span>) длинный путь или URL
+ не переносится, а <b>обрезается</b> — прочитать или скопировать нельзя.</p>
+ <div class="fix"><b>Фикс:</b> <code>wordBreak: 'break-all'</code> / <code>overflow-wrap: anywhere</code> на путях, URL и токенах.</div>`},
+
+{id:'UI-31',sev:'med',cat:'Мобильный · z-index',t:'Дропдаун профиля заперт в stacking context топбара',
+ loc:'ProfileMenu.jsx:209-222, :458-471 · MusicLibrary.jsx:1014-1017',
+ body:`<p>Топбар имеет <code>backdrop-filter: blur(10px)</code> и <code>zIndex: 7000</code> → создаёт stacking context.
+ <code>zIndex: 8000</code> внутри него фактически означает 7000 → меню рисуется <b>ниже</b> плеера (8400), навбара (8500) и всех модалок.</p>
+ <p>Ширина <code>280</code> без <code>max-width</code>: на 320px экране菜单 уезжает за левый край и молча обрезается <code>overflow-x: hidden</code>.</p>
+ <div class="fix"><b>Фикс:</b> <code>width: 'min(280px, calc(100vw - 24px))'</code> + рендер через <code>createPortal</code> в <code>document.body</code>.</div>`},
+
+{id:'UI-32',sev:'med',cat:'Адаптивность',t:'Полоса плеера не адаптируется между 641 и 900px',
+ loc:'index.css:687-699, :87-92',
+ body:`<p>Мобильные оверрайды включаются только на ≤640px (<span class="loc">index.css:1369-1385</span>).
+ На 641-768px: <code>.tmusic-player-info { min-width: 180px }</code> + <code>.tmusic-player-center { max-width: 560px }</code>
+ + tools + padding не влезают → <code>.tm-scrub</code> (<code>flex: 1</code>, высота 22px) схлопывается до нескольких пикселей.</p>
+ <div class="fix"><b>Фикс:</b> в <code>@media (max-width: 900px)</code> — <code>width: auto; min-width: 120px</code> и <code>max-width: none</code>.</div>`},
+
+{id:'UI-33',sev:'med',cat:'Мобильный',t:'Регулятор громкости: 4px рельс и бегунок 12×12',
+ loc:'index.css:63-81, :1580-1581',
+ body:`<p>Площадь захвата 12×12 на 4px дорожке, слайдер всего 52px между кнопками мини-плеера → промахи при drag на Android.
+ У скроббера это уже решено (<code>.tm-scrub { height: 22px }</code>, <span class="loc">index.css:137-146</span>), у громкости — нет.</p>
+ <div class="fix"><b>Фикс:</b> для <code>.tm-volume input[type="range"]</code> — <code>height: 24px</code> с прозрачным треком и отрисовкой 4px линии через <code>::-webkit-slider-runnable-track</code>.</div>`},
+
+{id:'UI-34',sev:'low',cat:'Стили',t:'Хардкод hex-цветов в обход CSS-переменных',
+ loc:'UnifiedSearchModal.jsx:155 · SearchTrackItem.jsx:210, :213 · MusicLibrary.jsx:1285 · StorageSettingsModal.jsx:253-278 · App.jsx:351 · SearchCategoryTabs.jsx:43',
+ body:`<p><code>#161412</code> вместо <code>var(--bg-card)</code>; <code>#FFD700</code> вместо <code>var(--accent)</code> = <code>#D4FF3F</code> —
+ визуально <b>другой</b> акцент в результатах поиска; <code>#b5ada2</code> вместо <code>var(--dim)</code>; <code>#000</code> вместо <code>#141210</code>.</p>
+ <p>Расхождения фолбэков: <code>var(--bg-card, #1c1917)</code> против реального <code>#1c1916</code>; <code>var(--ink, #f5f5f4)</code> против <code>#ECE7DD</code>.</p>
+ <div class="fix"><b>Фикс:</b> вынести в <code>:root</code> — <code>--success</code>, <code>--info</code>, <code>--warn</code>, <code>--on-accent</code>, <code>--modal-bg</code>.</div>`},
+
+{id:'UI-35',sev:'low',cat:'React',t:'key={idx} — позиционные ключи',
+ loc:'MusicLibraryPlayer.jsx:1111, :1046 · AlbumDetail.jsx:412',
+ body:`<p><code>key={t.id || idx}</code> — при отсутствии <code>id</code> идентичность становится позиционной.
+ После переупорядочивания или удаления React переиспользует не тот DOM-узел: неверная подсветка активного трека, залипшее состояние drag.</p>
+ <div class="fix"><b>Фикс:</b> синтетический стабильный ключ <code>${'${track.id ?? releaseId + ":" + idx}'}</code>.</div>`},
+
+{id:'UI-36',sev:'low',cat:'UX',t:'user-select: none на всём body — текст нельзя скопировать',
+ loc:'index.css:44, :1777-1782',
+ body:`<p>Whitelist всего из 4 селекторов. Имена артистов (<code>.tmusic-card-sub</code>, <code>.tmusic-artist-card-name</code>),
+ названия треков в очереди и пути в админке скопировать нельзя.</p>
+ <div class="fix"><b>Фикс:</b> включить <code>user-select: text</code> по умолчанию, оставив <code>none</code> только на drag-handle'ах.</div>`},
+
+{id:'UI-37',sev:'low',cat:'a11y',t:'Неинформативный alt у обложек',
+ loc:'MusicLibraryPlayer.jsx:410-412, :776-778 · MusicLibrary.jsx:934, :993',
+ body:`<p><code>alt="Cover"</code> / <code>alt="Cover Full"</code> — неинформативно. На карточках <code>alt</code>
+ совпадает с видимым текстом рядом → скринридер читает название дважды (там уместнее <code>alt=""</code>).</p>
+ <div class="fix"><b>Фикс:</b> <code>alt={\`Обложка: ${'${albumTitle}'} — ${'${artistName}'}\`}</code> либо <code>alt=""</code> для декоративных.</div>`},
+
+{id:'UI-38',sev:'low',cat:'Код',t:'Голый confirm()/prompt() вместо window.confirm',
+ loc:'CoverPicker.jsx:80 · ProfileMenu.jsx:192 · AdminPanel.jsx:554, :729, :811, :831 · AdminCatalog.jsx:237 · AdminVfsImport.jsx:346',
+ body:`<p>Работает, но ломается при shadowing, нестандартно для кодовой базы и ломает focus-trap родительской модалки.</p>
+ <div class="fix"><b>Фикс:</b>统一 <code>window.confirm</code>, либо заменить на доступный <code>role="alertdialog"</code>.</div>`},
+
+{id:'UI-39',sev:'low',cat:'Обратная связь',t:'Бейдж кэша в поиске не покажется при строковом id',
+ loc:'search/SearchTrackItem.jsx:32',
+ body:`<p><code>cachedTrackIds.has(track.id)</code> без <code>Number()</code> — в <code>AlbumDetail.jsx:457</code> и
+ <code>HomeExtraPanels.jsx:304</code> приведение есть. Если API вернёт строковый id — бейдж «в кэше» в поиске не появится.</p>
+ <div class="fix"><b>Фикс:</b> привести к <code>Number(track.id)</code>.</div>`},
+
+{id:'UI-40',sev:'low',cat:'Обратная связь',t:'addToQueue в поиске работает молча',
+ loc:'search/SearchTrackItem.jsx:48-51',
+ body:`<p><code>addToQueue(track)</code> без <code>setNotice</code>. В <code>FolderBrowser.jsx:426-429</code> и
+ <code>AlbumDetail.jsx:224-228</code> тост есть, в результатах поиска — нет: трек добавился в конец очереди без всякой обратной связи.</p>
+ <div class="fix"><b>Фикс:</b> добавить <code>setNotice({ kind: 'info', text: 'Добавлено в очередь' })</code>.</div>`},
+
+{id:'UI-41',sev:'low',cat:'Деструктивные действия',t:'Селекты в админке мутируют сразу на onChange',
+ loc:'AdminCatalog.jsx:542, :591',
+ body:`<p><code>&lt;select&gt;</code> типа карточки и переноса альбома применяют изменение мгновенно.
+ Случайно щёлкнул по селекту — карточка уже переехала или сменила тип, подтверждения нет.</p>
+ <div class="fix"><b>Фикс:</b> confirm или явная кнопка «Применить».</div>`},
+
+{id:'UI-42',sev:'low',cat:'Производительность',t:'Раздел «Любимые» перезапрашивается при каждом тапе по сердцу',
+ loc:'MusicLibrary.jsx:333',
+ body:`<p>Эффект загрузки зависит от <code>favoriteIds</code> → каждый тап по ♥ внутри раздела перезапрашивает
+ весь список (до 500 строк), список мигает. Зависимость нужна только для счётчика.</p>
+ <div class="fix"><b>Фикс:</b> убрать <code>favoriteIds</code> из зависимостей, считать счётчик локально.</div>`},
+
+{id:'UI-43',sev:'low',cat:'a11y',t:'Пропуск уровней заголовков; на главной нет h1',
+ loc:'MusicLibrary.jsx:1281 → :1351, :1361 · :1021-1031, :1693',
+ body:`<p>На странице артиста: <code>&lt;h1&gt;</code> (<span class="loc">:1281</span>) → сразу <code>&lt;h3&gt;</code> («РЕЛИЗЫ И АЛЬБОМЫ», «ВНУТРИ»), нет <code>h2</code>.
+ На главной странице каталога <code>&lt;h1&gt;</code> отсутствует вовсе — логотип это <code>div</code>, первый заголовок <code>&lt;h2&gt;</code>.</p>
+ <div class="fix"><b>Фикс:</b> выстроить иерархию h1 → h2 → h3, логотип на главной сделать <code>&lt;h1&gt;</code>.</div>`}
+];
+
+const SEV={crit:['s-crit','CRITICAL'],high:['s-high','HIGH'],med:['s-med','MEDIUM'],low:['s-low','LOW']};
+const list=document.getElementById('list');
+let filter='all', query='';
+
+function render(){
+  const items=F.filter(f=>(filter==='all'||f.sev===filter) &&
+    (!query || (f.id+' '+f.t+' '+f.cat+' '+f.loc+' '+f.body).toLowerCase().includes(query)));
+  if(!items.length){list.innerHTML='<div class="empty">Ничего не найдено</div>';return}
+  list.innerHTML=items.map((f,i)=>`
+    <div class="f" data-i="${i}">
+      <div class="f-h">
+        <span class="sev ${SEV[f.sev][0]}">${SEV[f.sev][1]}</span>
+        <div class="f-t">
+          <div class="f-id">${f.id}</div>
+          <div class="f-title">${f.t}</div>
+          <div class="f-cat"><span class="tag">${f.cat}</span></div>
+        </div>
+        <span class="chev">▶</span>
+      </div>
+      <div class="f-b">
+        <h4>Расположение</h4>
+        <p><span class="loc">${f.loc}</span></p>
+        ${f.body}
+      </div>
+    </div>`).join('');
+  list.querySelectorAll('.f-h').forEach(h=>h.onclick=()=>h.parentElement.classList.toggle('open'));
+}
+
+document.querySelectorAll('.chip').forEach(c=>c.onclick=()=>{
+  document.querySelectorAll('.chip').forEach(x=>x.classList.remove('on'));
+  c.classList.add('on'); filter=c.dataset.sev; render();
+});
+document.getElementById('q').oninput=e=>{query=e.target.value.toLowerCase().trim();render()};
+render();
+</script>
+</body>
+</html>

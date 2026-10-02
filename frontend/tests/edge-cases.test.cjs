@@ -18,7 +18,7 @@ function player() {
     AbortController, fetch: async () => ({ ok: true, status: 206, arrayBuffer: async () => new ArrayBuffer(0) }),
   }
   const source = fs.readFileSync(path.join(__dirname, '../src/store/playerStore.js'), 'utf8')
-    .replace(/^import .*\n/gm, '').replace('export const usePlayerStore =', 'globalThis.usePlayerStore =')
+    .replace(/^import .*\r?\n/gm, '').replace('export const usePlayerStore =', 'globalThis.usePlayerStore =')
   vm.createContext(context)
   vm.runInContext(source, context)
   return context.usePlayerStore
@@ -89,7 +89,7 @@ test('API client 429 waits using parsed HTTP-date, never NaN', async () => {
     setTimeout: (callback, ms) => { delay = ms; callback() }, window: { dispatchEvent: noop }, CustomEvent: function () {},
   }
   const source = fs.readFileSync(path.join(__dirname, '../src/api/client.js'), 'utf8')
-    .replace(/^import .*\n/gm, '').replace(/export /g, '')
+    .replace(/^import .*\r?\n/gm, '').replace(/export /g, '')
   vm.createContext(context); vm.runInContext(source, context)
   await assert.rejects(context.request('/api/test'), (error) => error.code === 'rate_limited' && error.status === 429)
   assert(Number.isFinite(delay) && delay >= 59000 && delay <= 60000)

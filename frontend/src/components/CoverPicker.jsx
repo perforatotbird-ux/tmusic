@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { libraryApi } from '../api/library'
 import { Upload, Link as LinkIcon, Trash2, X, Check } from 'lucide-react'
+import Modal from './ui/Modal'
+import { useConfirm } from './ui/useConfirm'
+import { ClickableRow } from './ui/ClickableRow'
 
 export function CoverPicker({ target, onClose, onUpdated }) {
   const [activeTab, setActiveTab] = useState('url') // 'url' | 'file'
@@ -9,6 +12,7 @@ export function CoverPicker({ target, onClose, onUpdated }) {
   const [preview, setPreview] = useState(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState(null)
+  const { confirm, confirmDialog } = useConfirm()
   // Every createObjectURL must be paired with revokeObjectURL, otherwise each
   // picked file leaks a blob URL until the tab is closed.
   const previewRef = useRef(null)
@@ -19,8 +23,6 @@ export function CoverPicker({ target, onClose, onUpdated }) {
       previewRef.current = null
     }
   }, [])
-
-  if (!target) return null
 
   const setPreviewUrl = (nextFile) => {
     if (previewRef.current) {
@@ -77,7 +79,13 @@ export function CoverPicker({ target, onClose, onUpdated }) {
   }
 
   const handleReset = async () => {
-    if (!confirm('Сбросить кастомную обложку к стандартной?')) return
+    const ok = await confirm({
+      title: 'Сбросить обложку',
+      message: 'Сбросить кастомную обложку к стандартной?',
+      danger: true,
+      confirmLabel: 'Сбросить',
+    })
+    if (!ok) return
     setIsLoading(true)
     try {
       await libraryApi.resetCover(target.type, target.id)
@@ -91,230 +99,231 @@ export function CoverPicker({ target, onClose, onUpdated }) {
   }
 
   return (
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        backgroundColor: 'rgba(10, 9, 8, 0.85)',
-        backdropFilter: 'blur(8px)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 9000,
-        padding: '20px',
-      }}
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={handleDrop}
-    >
-      <div
-        style={{
-          backgroundColor: 'var(--bg-card)',
-          border: '1px solid var(--line-bright)',
-          borderRadius: 'var(--radius)',
-          maxWidth: '460px',
-          width: '100%',
-          padding: '24px 20px',
-          position: 'relative',
-          maxHeight: '90dvh',
-          overflowY: 'auto',
-        }}
+    <>
+      <Modal
+        open={!!target}
+        onClose={onClose}
+        labelledBy="cover-picker-title"
+        maxWidth={460}
+        zIndex="var(--z-modal)"
+        backdrop="rgba(10, 9, 8, 0.85)"
+        backdropFilter="blur(8px)"
+        style={{ background: 'transparent', border: 'none', boxShadow: 'none' }}
       >
-        <button
-          onClick={onClose}
-          aria-label="Закрыть"
+        <div
           style={{
-            position: 'absolute',
-            top: '12px',
-            right: '12px',
-            background: 'none',
-            border: 'none',
-            color: 'var(--dim)',
-            cursor: 'pointer',
-            minWidth: '44px',
-            minHeight: '44px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
+            backgroundColor: 'var(--bg-card)',
+            border: '1px solid var(--line-bright)',
+            borderRadius: 'var(--radius)',
+            maxWidth: '460px',
+            width: '100%',
+            padding: '24px 20px',
+            position: 'relative',
+            maxHeight: '90dvh',
+            overflowY: 'auto',
           }}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={handleDrop}
         >
-          <X size={20} />
-        </button>
-
-        <h3 className="title-zine" style={{ fontSize: '18px', marginBottom: '4px' }}>
-          Обложка: {target.title || target.displayName}
-        </h3>
-        <p style={{ color: 'var(--dim)', fontSize: '12.5px', marginBottom: '18px' }}>
-          Загрузите файл или укажите защищённый URL изображения
-        </p>
-
-        {error && (
-          <div
-            style={{
-              padding: '10px 14px',
-              backgroundColor: 'rgba(255,107,107,0.1)',
-              border: '1px solid var(--danger)',
-              borderRadius: '8px',
-              color: 'var(--danger)',
-              fontSize: '12px',
-              marginBottom: '14px',
-            }}
-          >
-            {error}
-          </div>
-        )}
-
-        {/* Tabs */}
-        <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
           <button
-            type="button"
-            onClick={() => setActiveTab('url')}
+            onClick={onClose}
+            aria-label="Закрыть"
             style={{
-              flex: 1,
-              padding: '10px 8px',
-              minHeight: '44px',
-              borderRadius: '6px',
-              border: '1px solid var(--line)',
-              backgroundColor: activeTab === 'url' ? 'var(--accent-muted)' : 'transparent',
-              color: activeTab === 'url' ? 'var(--accent)' : 'var(--ink)',
+              position: 'absolute',
+              top: '12px',
+              right: '12px',
+              background: 'none',
+              border: 'none',
+              color: 'var(--dim)',
               cursor: 'pointer',
-              fontSize: '13.5px',
-              fontWeight: '600',
+              minWidth: '44px',
+              minHeight: '44px',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: '6px',
             }}
           >
-            <LinkIcon size={14} /> URL
+            <X size={20} />
           </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('file')}
-            style={{
-              flex: 1,
-              padding: '10px 8px',
-              minHeight: '44px',
-              borderRadius: '6px',
-              border: '1px solid var(--line)',
-              backgroundColor: activeTab === 'file' ? 'var(--accent-muted)' : 'transparent',
-              color: activeTab === 'file' ? 'var(--accent)' : 'var(--ink)',
-              cursor: 'pointer',
-              fontSize: '13.5px',
-              fontWeight: '600',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '6px',
-            }}
-          >
-            <Upload size={14} /> Загрузить файл
-          </button>
-        </div>
 
-        <form onSubmit={handleSubmit}>
-          {activeTab === 'url' ? (
-            <input
-              type="url"
-              placeholder="https://example.com/cover.jpg"
-              value={url}
-              onChange={(e) => {
-                setUrl(e.target.value)
-                setPreview(e.target.value)
-              }}
-              style={{
-                width: '100%',
-                padding: '12px 14px',
-                minHeight: '44px',
-                backgroundColor: 'rgba(255,255,255,0.03)',
-                border: '1px solid var(--line)',
-                borderRadius: '8px',
-                color: 'var(--ink)',
-                fontSize: '16px',
-                marginBottom: '16px',
-                outline: 'none',
-              }}
-            />
-          ) : (
+          <h3 id="cover-picker-title" className="title-zine" style={{ fontSize: '18px', marginBottom: '4px' }}>
+            Обложка: {target?.title || target?.displayName}
+          </h3>
+          <p style={{ color: 'var(--dim)', fontSize: '12.5px', marginBottom: '18px' }}>
+            Загрузите файл или укажите защищённый URL изображения
+          </p>
+
+          {error && (
             <div
               style={{
-                border: '2px dashed var(--line-bright)',
+                padding: '10px 14px',
+                backgroundColor: 'rgba(255,107,107,0.1)',
+                border: '1px solid var(--danger)',
                 borderRadius: '8px',
-                padding: '24px',
-                textAlign: 'center',
-                marginBottom: '16px',
-                cursor: 'pointer',
+                color: 'var(--danger)',
+                fontSize: '12px',
+                marginBottom: '14px',
               }}
-              onClick={() => document.getElementById('cover-file-input').click()}
             >
-              <Upload size={24} style={{ margin: '0 auto 8px auto', color: 'var(--dim)' }} />
-              <div style={{ fontSize: '13px', color: 'var(--ink)' }}>
-                {file ? file.name : 'Нажмите или перетащите файл сюда'}
-              </div>
-              <div style={{ fontSize: '11px', color: 'var(--dim)', marginTop: '4px' }}>PNG, JPG, WebP до 10 МБ</div>
-              <input
-                id="cover-file-input"
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                onChange={handleFileChange}
-                style={{ display: 'none' }}
-              />
+              {error}
             </div>
           )}
 
-          {preview && (
-            <div style={{ textAlign: 'center', marginBottom: '16px' }}>
-              <img
-                src={preview}
-                alt="Предпросмотр"
-                style={{
-                  maxWidth: '120px',
-                  maxHeight: '120px',
-                  borderRadius: '6px',
-                  objectFit: 'cover',
-                  border: '1px solid var(--line)',
-                }}
-              />
-            </div>
-          )}
-
-          <div style={{ display: 'flex', gap: '10px', marginTop: '16px' }}>
-            {target.hasCustom && (
-              <button
-                type="button"
-                onClick={handleReset}
-                disabled={isLoading}
-                style={{
-                  padding: '10px 14px',
-                  backgroundColor: 'transparent',
-                  border: '1px solid var(--danger)',
-                  color: 'var(--danger)',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  fontSize: '13px',
-                }}
-              >
-                <Trash2 size={16} />
-              </button>
-            )}
+          {/* Tabs */}
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
             <button
-              type="submit"
-              disabled={isLoading || (!url && !file)}
+              type="button"
+              onClick={() => setActiveTab('url')}
               style={{
                 flex: 1,
-                padding: '10px',
-                backgroundColor: 'var(--accent)',
-                color: '#141210',
-                border: 'none',
-                borderRadius: '8px',
-                fontWeight: '700',
+                padding: '10px 8px',
+                minHeight: '44px',
+                borderRadius: '6px',
+                border: '1px solid var(--line)',
+                backgroundColor: activeTab === 'url' ? 'var(--accent-muted)' : 'transparent',
+                color: activeTab === 'url' ? 'var(--accent)' : 'var(--ink)',
                 cursor: 'pointer',
+                fontSize: '13.5px',
+                fontWeight: '600',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '6px',
               }}
             >
-              {isLoading ? 'Сохранение...' : 'Сохранить обложку'}
+              <LinkIcon size={14} /> URL
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('file')}
+              style={{
+                flex: 1,
+                padding: '10px 8px',
+                minHeight: '44px',
+                borderRadius: '6px',
+                border: '1px solid var(--line)',
+                backgroundColor: activeTab === 'file' ? 'var(--accent-muted)' : 'transparent',
+                color: activeTab === 'file' ? 'var(--accent)' : 'var(--ink)',
+                cursor: 'pointer',
+                fontSize: '13.5px',
+                fontWeight: '600',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '6px',
+              }}
+            >
+              <Upload size={14} /> Загрузить файл
             </button>
           </div>
-        </form>
-      </div>
-    </div>
+
+          <form onSubmit={handleSubmit}>
+            {activeTab === 'url' ? (
+              <input
+                type="url"
+                placeholder="https://example.com/cover.jpg"
+                value={url}
+                onChange={(e) => {
+                  setUrl(e.target.value)
+                  setPreview(e.target.value)
+                }}
+                style={{
+                  width: '100%',
+                  padding: '12px 14px',
+                  minHeight: '44px',
+                  backgroundColor: 'rgba(255,255,255,0.03)',
+                  border: '1px solid var(--line)',
+                  borderRadius: '8px',
+                  color: 'var(--ink)',
+                  fontSize: '16px',
+                  marginBottom: '16px',
+                }}
+              />
+            ) : (
+              <ClickableRow
+                aria-label="Загрузить файл обложки"
+                style={{
+                  border: '2px dashed var(--line-bright)',
+                  borderRadius: '8px',
+                  padding: '24px',
+                  textAlign: 'center',
+                  marginBottom: '16px',
+                  cursor: 'pointer',
+                }}
+                onClick={() => document.getElementById('cover-file-input').click()}
+              >
+                <Upload size={24} style={{ margin: '0 auto 8px auto', color: 'var(--dim)' }} />
+                <div style={{ fontSize: '13px', color: 'var(--ink)' }}>
+                  {file ? file.name : 'Нажмите или перетащите файл сюда'}
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--dim)', marginTop: '4px' }}>PNG, JPG, WebP до 10 МБ</div>
+                <input
+                  id="cover-file-input"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  onChange={handleFileChange}
+                  style={{ display: 'none' }}
+                />
+              </ClickableRow>
+            )}
+
+            {preview && (
+              <div style={{ textAlign: 'center', marginBottom: '16px' }}>
+                <img
+                  src={preview}
+                  alt="Предпросмотр"
+                  style={{
+                    maxWidth: '120px',
+                    maxHeight: '120px',
+                    borderRadius: '6px',
+                    objectFit: 'cover',
+                    border: '1px solid var(--line)',
+                  }}
+                />
+              </div>
+            )}
+
+            <div style={{ display: 'flex', gap: '10px', marginTop: '16px' }}>
+              {target?.hasCustom && (
+                <button
+                  type="button"
+                  onClick={handleReset}
+                  disabled={isLoading}
+                  aria-label="Сбросить обложку"
+                  style={{
+                    padding: '10px 14px',
+                    backgroundColor: 'transparent',
+                    border: '1px solid var(--danger)',
+                    color: 'var(--danger)',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                  }}
+                >
+                  <Trash2 size={16} />
+                </button>
+              )}
+              <button
+                type="submit"
+                disabled={isLoading || (!url && !file)}
+                style={{
+                  flex: 1,
+                  padding: '10px',
+                  backgroundColor: 'var(--accent)',
+                  color: 'var(--on-accent)',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontWeight: '700',
+                  cursor: 'pointer',
+                }}
+              >
+                {isLoading ? 'Сохранение...' : 'Сохранить обложку'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </Modal>
+      {confirmDialog}
+    </>
   )
 }

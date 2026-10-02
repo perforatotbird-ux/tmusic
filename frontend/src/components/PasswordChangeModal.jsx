@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { authApi } from '../api/auth'
 import { useAuthStore } from '../store/authStore'
+import Modal from './ui/Modal'
 
 export function PasswordChangeModal({ required = false, onClose }) {
   const [currentPassword, setCurrentPassword] = useState('')
@@ -39,11 +40,18 @@ export function PasswordChangeModal({ required = false, onClose }) {
     background: 'var(--bg)', color: 'var(--ink)', fontSize: 16,
   }
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 10001, background: 'rgba(10,9,8,.94)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-      <section role="dialog" aria-modal="true" aria-labelledby="password-change-title"
-        style={{ width: '100%', maxWidth: 430, padding: 24, borderRadius: 12,
-          border: '1px solid var(--line-bright)', background: 'var(--bg-card)' }}>
+    <Modal
+      open
+      onClose={onClose}
+      title="Сменить пароль"
+      labelledBy="password-change-title"
+      maxWidth={430}
+      zIndex="var(--z-password)"
+      dismissable={!required}
+      backdrop="rgba(10,9,8,.94)"
+      style={{ background: 'transparent', border: 'none', boxShadow: 'none' }}
+    >
+      <section style={{ width: '100%', maxWidth: 430, padding: 24, borderRadius: 12, border: '1px solid var(--line-bright)', background: 'var(--bg-card)' }}>
         <h2 id="password-change-title">Сменить пароль</h2>
         <p style={{ color: 'var(--dim)', fontSize: 14 }}>
           {required
@@ -64,16 +72,13 @@ export function PasswordChangeModal({ required = false, onClose }) {
           <input id="confirm-password" type="password" autoComplete="new-password"
             value={confirmation} onChange={(e) => setConfirmation(e.target.value)}
             minLength={8} maxLength={128} required disabled={busy} style={inputStyle} />
-          <button type="submit" disabled={busy} style={{ ...inputStyle, background: 'var(--accent)', color: '#141210' }}>
+          <button type="submit" disabled={busy} style={{ ...inputStyle, background: 'var(--accent)', color: 'var(--on-accent)' }}>
             {busy ? 'Сохранение…' : 'Сохранить и войти заново'}
           </button>
           {!required && <button type="button" onClick={onClose} disabled={busy}>Отмена</button>}
-          {required && <button type="button" onClick={async () => {
-            await logout()
-            onClose?.()
-          }} disabled={busy}>Выйти</button>}
+          {required && <button type="button" onClick={async () => { await logout(); onClose?.() }} disabled={busy}>Выйти</button>}
         </form>
       </section>
-    </div>
+    </Modal>
   )
 }

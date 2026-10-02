@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { App } from './App'
 import { SharePage } from './components/SharePage'
+import { ErrorBoundary } from './components/ui/ErrorBoundary'
 import { installGlobalErrorLogging, log } from './utils/logger'
 import './index.css'
 
@@ -13,9 +14,13 @@ log.info('main.jsx executing', { href: location.href })
 const shareMatch = window.location.pathname.match(/^\/s\/([^/]+)\/?$/)
 const root = ReactDOM.createRoot(document.getElementById('root'))
 
+// UI-02: without a boundary, any render error unmounted the entire tree and left
+// a blank white screen — no message, no recovery, playback lost.
 root.render(
   <React.StrictMode>
-    {shareMatch ? <SharePage token={shareMatch[1]} /> : <App />}
+    <ErrorBoundary label="приложения">
+      {shareMatch ? <SharePage token={shareMatch[1]} /> : <App />}
+    </ErrorBoundary>
   </React.StrictMode>
 )
 

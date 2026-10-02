@@ -45,6 +45,10 @@ async function fetchResponse(url, config) {
   }
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 function getCookie(name) {
   const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'))
   if (!match) return null
@@ -130,8 +134,22 @@ export async function request(endpoint, options = {}) {
 
   if (response.status === 429) {
     const retryAfter = retryAfterSeconds(response.headers.get('Retry-After'))
+    // Never block the request for the full Retry-After window: a 60–300s freeze
+    // with no feedback is worse than a fast failure. Only auto-retry when the
+    // server asks for a short, bounded delay, and cap the number of attempts so
+    // we can't loop forever. Otherwise fail fast with a recoverable error.
+    const attempt = Number(options.headers?.['X-RateLimit-Attempt'] || 0)
+    const SHORT_WAIT_SEC = 3
+    const MAX_ATTEMPTS = 2
+    if (retryAfter > 0 && retryAfter <= SHORT_WAIT_SEC && attempt < MAX_ATTEMPTS) {
+      await delay(Math.min(retryAfter, SHORT_WAIT_SEC) * 1000)
+      return request(endpoint, {
+        ...options,
+        headers: { ...headers, 'X-RateLimit-Attempt': String(attempt + 1) },
+      })
+    }
     const errorDetail = `Слишком много запросов. Повторите через ${retryAfter} секунд.`
-    await new Promise(r => setTimeout(r, 1000 * retryAfter))
+    window.dispatchEvent(new CustomEvent('tmusic:rate-limited', { detail: { retryAfter } }))
     throw new ApiError(errorDetail, { status: 429, code: 'rate_limited', retryAfter })
   }
 

@@ -18,8 +18,13 @@ import {
   Check,
   Star,
   MoreVertical,
+  HardDrive,
+  Trash2,
 } from 'lucide-react'
 import { useFavoritesStore } from '../store/favoritesStore'
+import { useOfflineStore } from '../store/offlineStore'
+import { useBodyScrollLock } from '../hooks/useBodyScrollLock'
+import { ClickableRow } from './ui/ClickableRow'
 
 function formatSizeHint(track) {
   if (track?.size && Number.isFinite(track.size) && track.size > 0) {
@@ -80,6 +85,11 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
   const loadFavorites = useFavoritesStore((s) => s.load)
   const toggleFavorite = useFavoritesStore((s) => s.toggle)
 
+  const cachedTrackIds = useOfflineStore((s) => s.cachedTrackIds)
+  const cachingTrackIds = useOfflineStore((s) => s.cachingTrackIds)
+  const cacheTrack = useOfflineStore((s) => s.cacheTrack)
+  const removeTrack = useOfflineStore((s) => s.removeTrack)
+
   useEffect(() => {
     if (isAuthenticated) loadFavorites()
   }, [isAuthenticated, loadFavorites])
@@ -88,11 +98,36 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
   const albumTitle = album?.title || album?.display_name || 'Альбом'
   const artistName = (artist && artist.display_name) || albumTitle
 
+  // UI-11/UI-26: iOS-correct scroll lock (position:fixed + offset) instead of
+  // the old body.overflow trick, which fails to lock scroll on iOS Safari.
+  useBodyScrollLock(true)
+
+  // UI-11/UI-26: move focus into the dialog on open and restore it on close.
+  const overlayRef = useRef(null)
   useEffect(() => {
-    const prev = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
+    const prev = document.activeElement
+    const raf = requestAnimationFrame(() => overlayRef.current?.focus?.())
     return () => {
-      document.body.style.overflow = prev
+      cancelAnimationFrame(raf)
+      if (prev && typeof prev.focus === 'function' && document.contains(prev)) {
+        try { prev.focus({ preventScroll: true }) } catch { /* gone */ }
+      }
+    }
+  }, [])
+
+  // UI-29: anchored menus (track ⋮ and playlist picker) are positioned once.
+  // Recompute is impossible without the source node, so close them on any
+  // viewport change instead of leaving them stranded off-screen.
+  useEffect(() => {
+    const closeMenus = () => {
+      setTrackMenu(null)
+      setPlaylistTarget(null)
+    }
+    window.addEventListener('resize', closeMenus)
+    window.addEventListener('orientationchange', closeMenus)
+    return () => {
+      window.removeEventListener('resize', closeMenus)
+      window.removeEventListener('orientationchange', closeMenus)
     }
   }, [])
 
@@ -221,6 +256,8 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
 
   return (
     <div
+      ref={overlayRef}
+      tabIndex={-1}
       className="tmusic-album-overlay"
       onClick={() => {
         if (trackMenu) setTrackMenu(null)
@@ -333,7 +370,7 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
                 marginTop: '10px',
                 padding: '9px 18px',
                 backgroundColor: tracks.length === 0 ? 'var(--line-bright)' : 'var(--accent)',
-                color: '#141210',
+                color: 'var(--on-accent)',
                 border: 'none',
                 borderRadius: '999px',
                 fontWeight: '800',
@@ -346,7 +383,7 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
                 minHeight: '40px',
               }}
             >
-              {isLoading ? <Loader2 size={15} className="tmusic-spin" /> : <Play size={15} fill="#141210" />}
+              {isLoading ? <Loader2 size={15} className="tmusic-spin" /> : <Play size={15} fill="currentColor" />}
               Слушать всё
             </button>
           </div>
@@ -398,7 +435,7 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
               const playing = isCurrent && isPlaying
               const dur = formatTime(t.duration || durations[t.id] || 0)
               return (
-                <div
+                <ClickableRow
                   key={t.id || idx}
                   onClick={() => (isCurrent ? togglePlay() : handlePlayTrack(idx))}
                   className="tmusic-track-row"
@@ -438,12 +475,55 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
                       fontSize: '13.5px',
                       fontWeight: isCurrent ? '700' : '500',
                       color: isCurrent ? 'var(--accent)' : 'var(--ink)',
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
                     }}
                   >
-                    {stripExt(t.name)}
+                    <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {stripExt(t.name)}
+                    </span>
+                    {cachedTrackIds.has(Number(t.id)) && (
+                      <span
+                        className="tmusic-badge-cached"
+                        title="В кэше • Доступно офлайн"
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '3px',
+                          fontSize: '10px',
+                          fontWeight: '800',
+                          padding: '1px 6px',
+                          borderRadius: '6px',
+                          background: 'rgba(34, 197, 94, 0.15)',
+                          color: 'var(--success)',
+                          border: '1px solid rgba(34, 197, 94, 0.3)',
+                          flexShrink: 0,
+                        }}
+                      >
+                        <Check size={11} strokeWidth={3} /> Кэш
+                      </span>
+                    )}
+                    {cachingTrackIds.has(Number(t.id)) && (
+                      <span
+                        className="tmusic-badge-caching"
+                        title="Кеширование..."
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '3px',
+                          fontSize: '10px',
+                          fontWeight: '700',
+                          padding: '1px 6px',
+                          borderRadius: '6px',
+                          background: 'rgba(56, 189, 248, 0.15)',
+                          color: 'var(--info)',
+                          flexShrink: 0,
+                        }}
+                      >
+                        <Loader2 size={11} className="animate-spin" /> Загрузка
+                      </span>
+                    )}
                   </div>
                   <span style={{ fontSize: '11px', color: 'var(--dim)', flexShrink: 0, minWidth: '38px', textAlign: 'right' }}>
                     {dur || formatSizeHint(t)}
@@ -533,7 +613,7 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
                   >
                     <MoreVertical size={15} />
                   </button>
-                </div>
+                </ClickableRow>
               )
             })}
         </div>
@@ -552,7 +632,7 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
               position: 'fixed',
               left: trackMenu.x,
               top: trackMenu.flip ? undefined : trackMenu.y,
-              bottom: trackMenu.flip ? `calc(100vh - ${trackMenu.y}px)` : undefined,
+              bottom: trackMenu.flip ? `calc(100dvh - ${trackMenu.y}px)` : undefined,
             }}
             onClick={(e) => e.stopPropagation()}
             role="menu"
@@ -571,6 +651,30 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
             >
               <ListEnd size={14} /> Добавить в очередь
             </button>
+            {cachedTrackIds.has(Number(trackMenu.track.id)) ? (
+              <button
+                type="button"
+                className="tm-track-menu-item"
+                onClick={() => {
+                  removeTrack(trackMenu.track.id)
+                  setTrackMenu(null)
+                }}
+                style={{ color: 'var(--danger)' }}
+              >
+                <Trash2 size={14} /> Удалить из кэша
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="tm-track-menu-item"
+                onClick={() => {
+                  cacheTrack(trackMenu.track)
+                  setTrackMenu(null)
+                }}
+              >
+                <HardDrive size={14} /> Сохранить в кэш
+              </button>
+            )}
           </div>
         )}
 
@@ -639,7 +743,7 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
                         borderRadius: '8px',
                         border: '1px solid var(--line, #333)',
                         background: addedFlash === pl.id ? 'var(--accent)' : 'transparent',
-                        color: addedFlash === pl.id ? '#141210' : 'var(--ink)',
+                        color: addedFlash === pl.id ? 'var(--on-accent)' : 'var(--ink)',
                         cursor: 'pointer',
                         display: 'flex',
                         alignItems: 'center',
@@ -678,7 +782,7 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker }
                       disabled={!newPlName.trim() || playlistBusy || createUncertain}
                       style={{
                         background: newPlName.trim() ? 'var(--accent)' : 'var(--line-bright)',
-                        color: '#141210',
+                        color: 'var(--on-accent)',
                         border: 'none',
                         borderRadius: '8px',
                         padding: '8px 12px',

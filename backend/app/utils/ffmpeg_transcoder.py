@@ -172,6 +172,11 @@ def get_ffmpeg_command(input_path: str, output_path: str, bitrate_kbps: int = 32
 
 # ─── Low-level transcode from byte stream ──────────────────────────────────────
 
+def _write_bytes_sync(path: str | Path, data: bytes) -> None:
+    with open(path, "wb") as f:
+        f.write(data)
+
+
 async def transcode_from_bytes(
     input_bytes: bytes,
     output_path: str,
@@ -232,10 +237,8 @@ async def transcode_from_bytes(
     # Validate output: reject empty/garbage MP3s (e.g. header-only output)
     if len(stdout_data) < 1024:
         raise RuntimeError(f"ffmpeg produced invalid MP3 ({len(stdout_data)} bytes)")
-    
-    # Write the transcoded bytes to output file
-    with open(output_path, "wb") as f:
-        f.write(stdout_data)
+    # Write the transcoded bytes to output file in worker thread
+    await asyncio.to_thread(_write_bytes_sync, output_path, stdout_data)
 
 
 def get_mp3_duration(file_path: str) -> Optional[float]:

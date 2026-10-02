@@ -551,6 +551,11 @@ class TranscodingService:
         finally:
             db.close()
 
+    @staticmethod
+    def _write_file(path: Path, data: bytes) -> None:
+        with open(path, "wb") as f:
+            f.write(data)
+
     async def _transcode_track(self, job: TranscodeJob):
         """Download track bytes, transcode to MP3, cache to disk, and notify."""
         output_path = settings.TRANSCODE_CACHE_DIR / f"{job.cache_key}.mp3"
@@ -574,13 +579,12 @@ class TranscodingService:
         # Transcode to MP3 320kbps CBR using ffmpeg subprocess
         logger.info("Transcoding file %d to MP3 320kbps...", job.file_id)
 
-        # Write raw bytes to a temp file: MP4/M4A inputs with the moov atom at
-        # the end require seeking, which is impossible on a non-seekable pipe.
+        # Write raw bytes to a temp file off the event loop: MP4/M4A inputs with
+        # the moov atom at the end require seeking, which is impossible on a non-seekable pipe.
         ext = safe_src_ext(job.file_name)
         src_tmp = settings.TRANSCODE_CACHE_DIR / f"{job.cache_key}.src.{ext}"
         try:
-            with open(src_tmp, "wb") as f:
-                f.write(raw_bytes)
+            await asyncio.to_thread(self._write_file, src_tmp, raw_bytes)
 
             cmd = [
                 str(FFMPEG_EXE),
@@ -625,21 +629,20 @@ class TranscodingService:
                 f"ffmpeg produced invalid MP3 ({len(stdout_data)} bytes): {stderr_text[-800:]}"
             )
 
-        # Write transcoded MP3 to disk cache
-        with open(output_path, "wb") as f:
-            f.write(stdout_data)
+        # Write transcoded MP3 to disk cache in worker thread
+        await asyncio.to_thread(self._write_file, output_path, stdout_data)
 
         mp3_size = output_path.stat().st_size
         job.mp3_size = mp3_size
         job.finished_at = time.time()
         job.status = TranscodeStatus.READY
 
-        # Get duration using ffprobe
-        duration = get_mp3_duration(str(output_path))
+        # Get duration using ffprobe in worker thread
+        duration = await asyncio.to_thread(get_mp3_duration, str(output_path))
         job.duration = duration
 
-        # Write manifest
-        write_cache_manifest(job.cache_key, {
+        # Write manifest in worker thread
+        manifest_payload = {
             "status": "ready",
             "cache_key": job.cache_key,
             "file_id": job.file_id,
@@ -649,10 +652,11 @@ class TranscodingService:
             "duration": duration,
             "bitrate_kbps": settings.TRANSCODE_BITRATE_KBPS,
             "created_at": time.time(),
-        })
+        }
+        await asyncio.to_thread(write_cache_manifest, job.cache_key, manifest_payload)
 
-        # Clean up cache if it's growing too large
-        self._cleanup_cache()
+        # Clean up cache in worker thread if it's growing too large
+        await asyncio.to_thread(self._cleanup_cache)
 
         # Notify only users who requested this job.
         self._notify({

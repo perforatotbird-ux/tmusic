@@ -15,7 +15,11 @@ import { PasswordChangeModal } from './components/PasswordChangeModal'
 import { MusicLibrary } from './components/MusicLibrary'
 import { MusicLibraryPlayer } from './components/MusicLibraryPlayer'
 import { CoverPicker } from './components/CoverPicker'
+import { StorageSettingsModal } from './components/StorageSettingsModal'
+import { ToastHost } from './components/ui/ToastHost'
+import { useOfflineStore } from './store/offlineStore'
 import { createLogger } from './utils/logger'
+import { WifiOff, HardDrive } from 'lucide-react'
 
 const log = createLogger('app')
 
@@ -27,6 +31,14 @@ export function App() {
   // Track id we've already bound restore/metadata for (store owns src/play).
   const boundTrackIdRef = useRef(null)
   const errorTrackRef = useRef({ id: null, count: 0 })
+
+  const { storageModalOpen, setStorageModalOpen, isOffline, cachedTrackIds } = useOfflineStore()
+
+  useEffect(() => {
+    const offlineMgr = useOfflineStore.getState()
+    offlineMgr.init()
+    return () => offlineMgr.dispose()
+  }, [])
 
   const { user, isAuthenticated, checkAuth, setAuthModalOpen } = useAuthStore()
 
@@ -66,8 +78,20 @@ export function App() {
     const handleUnauthorized = () => {
       log.warn('received tmusic:unauthorized → opening auth modal')
       setAuthModalOpen(true)
+      usePlayerStore.getState().stopTranscodeEvents()
     }
     window.addEventListener('tmusic:unauthorized', handleUnauthorized)
+
+    // UI-09: surface rate-limit errors as a recoverable notice instead of a silent
+    // freeze (the request already fails fast in api/client.js).
+    const handleRateLimited = (e) => {
+      const retryAfter = e?.detail?.retryAfter ?? 60
+      usePlayerStore.getState().pushNotice({
+        kind: 'warn',
+        text: `Слишком много запросов. Повторите через ${retryAfter} секунд.`,
+      })
+    }
+    window.addEventListener('tmusic:rate-limited', handleRateLimited)
 
     // Android lockscreen / tab throttle: resume if we believe playback continues.
     // In native WebView with ForegroundService, skip this to avoid race conditions.
@@ -92,6 +116,7 @@ export function App() {
       log.info('App unmounted')
       disposeMediaSession()
       window.removeEventListener('tmusic:unauthorized', handleUnauthorized)
+      window.removeEventListener('tmusic:rate-limited', handleRateLimited)
       if (onVis) document.removeEventListener('visibilitychange', onVis)
       if (resumeIfNeeded) window.removeEventListener('focus', resumeIfNeeded)
     }
@@ -99,15 +124,18 @@ export function App() {
 
   // Global player hotkeys: Space, ←/→ seek, Shift+←/→ track, M mute, L like.
   useEffect(() => {
+    // UI-03: this previously checked only text fields, so the global Space
+    // handler called preventDefault() while a <button> had focus and cancelled
+    // its native activation — no button in the app could be pressed with Space.
     const isTypingTarget = (el) => {
       if (!el) return false
       const tag = el.tagName
-      return (
-        tag === 'INPUT' ||
-        tag === 'TEXTAREA' ||
-        tag === 'SELECT' ||
-        el.isContentEditable
-      )
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+      if (el.isContentEditable) return true
+      // Buttons, links and anything acting as one own Space/Enter themselves.
+      if (tag === 'BUTTON' || tag === 'A') return true
+      if (el.getAttribute?.('role') === 'button') return true
+      return Boolean(el.closest?.('[role="button"],[role="tab"],[role="menuitem"]'))
     }
 
     const onKeyDown = (e) => {
@@ -147,12 +175,17 @@ export function App() {
         }
         return
       }
+      // ArrowUp/Down own volume only when focus is on the page background;
+      // otherwise they must scroll / move through lists.
+      const volumeKeysAllowed = e.target === document.body || e.target === document.documentElement
       if (key === 'ArrowUp') {
+        if (!volumeKeysAllowed) return
         e.preventDefault()
         s.setVolume(Math.min(1, (s.isMuted ? 0 : s.volume) + 0.05))
         return
       }
       if (key === 'ArrowDown') {
+        if (!volumeKeysAllowed) return
         e.preventDefault()
         s.setVolume(Math.max(0, (s.isMuted ? 0 : s.volume) - 0.05))
         return
@@ -326,6 +359,61 @@ export function App() {
 
   return (
     <div style={{ minHeight: '100dvh', backgroundColor: 'var(--bg)', color: 'var(--ink)' }}>
+      {/* Offline Status Top Banner */}
+      {isOffline && (
+        <div
+          role="status"
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            zIndex: 'var(--z-offline)',
+            background: 'linear-gradient(90deg, #ea580c, #c2410c)',
+            color: '#fff',
+            /* UI-13: honour the notch/status bar and reserve space below via
+               --offline-banner-h so the banner stops covering the topbar. */
+            padding: 'max(8px, var(--safe-top)) max(16px, var(--safe-right)) 8px max(16px, var(--safe-left))',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+            flexWrap: 'wrap',
+            fontSize: '12.5px',
+            fontWeight: '700',
+            boxShadow: '0 2px 10px rgba(0,0,0,0.5)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <WifiOff size={16} />
+            <span>Офлайн режим • Доступно {cachedTrackIds.size} закешированных треков</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setStorageModalOpen(true)}
+            title="Кэш и память"
+            aria-label="Открыть настройки кэша и памяти"
+            style={{
+              background: 'rgba(255,255,255,0.2)',
+              border: 'none',
+              borderRadius: '6px',
+              // UI-19: was ~21px tall — far below the 44px touch minimum.
+              minHeight: 44,
+              padding: '4px 12px',
+              color: '#fff',
+              fontSize: '11.5px',
+              fontWeight: '800',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+            }}
+          >
+            <HardDrive size={13} /> Кэш и память
+          </button>
+        </div>
+      )}
+
       {/* Hidden Native Audio Element — single node for the whole session */}
       <audio
         ref={audioRef}
@@ -344,12 +432,16 @@ export function App() {
       {/* Persistent Audio Player */}
       <MusicLibraryPlayer />
 
-      {favoriteError && <div role="alert" style={{ position: 'fixed', bottom: 100, left: 16,
-        right: 16, zIndex: 9998, padding: 12, background: 'var(--bg-card)', color: 'var(--danger)' }}>
-        {favoriteError}
-        <button type="button" onClick={() => useFavoritesStore.getState().load({ force: true })}>Обновить избранное</button>
-        <button type="button" onClick={() => useFavoritesStore.getState().clearError()}>Закрыть</button>
-      </div>}
+      {/* UI-12: the favourites error used a hardcoded bottom:100 and zIndex 9998 —
+          it collided with the player bar / toasts on mobile. Route everything
+          through the shared ToastHost, which owns the stacking layer. */}
+      {favoriteError && (
+        <ToastHost.FavoriteError
+          message={favoriteError}
+          onRetry={() => useFavoritesStore.getState().load({ force: true })}
+          onClose={() => useFavoritesStore.getState().clearError()}
+        />
+      )}
       {/* Authentication Modal */}
       <AuthModal />
       {user && (passwordChangeOpen || user.password_change_required) && (
@@ -364,8 +456,19 @@ export function App() {
         <CoverPicker
           target={coverTarget}
           onClose={() => setCoverTarget(null)}
-          onUpdated={() => window.location.reload()}
+          // UI-08: refetch the catalog instead of reloading the whole page — a
+          // hard reload killed playback, the queue and the Media Session while
+          // the user was listening. MusicLibrary listens for this event.
+          onUpdated={() => {
+            // Tell the library view to re-fetch without a page reload.
+            window.dispatchEvent(new CustomEvent('tmusic:catalog-changed'))
+          }}
         />
+      )}
+
+      {/* Telegram-style Storage & Cache Settings Modal */}
+      {storageModalOpen && (
+        <StorageSettingsModal onClose={() => setStorageModalOpen(false)} />
       )}
     </div>
   )

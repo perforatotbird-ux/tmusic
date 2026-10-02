@@ -27,6 +27,8 @@ import {
 import { adminApi } from '../api/admin'
 import { AdminCatalog } from './AdminCatalog'
 import { AdminVfsImport } from './AdminVfsImport'
+import { useConfirm } from './ui/useConfirm'
+import { usePrompt } from './ui/usePrompt'
 
 const TABS = [
   { id: 'overview', label: 'Обзор', icon: Activity },
@@ -52,11 +54,14 @@ function fmtBytes(n) {
   return `${v.toFixed(i ? 1 : 0)} ${u[i]}`
 }
 
-function Btn({ children, onClick, variant = 'ghost', disabled, title }) {
+function Btn({ children, onClick, variant = 'ghost', disabled, title, 'aria-label': ariaLabel, ...rest }) {
+  // UI-14: icon-only buttons had no accessible name (title is not announced by
+  // VoiceOver on iOS). Fall back to `title` whenever the child is not text.
+  const hasTextChild = typeof children === 'string' || typeof children === 'number'
   const styles = {
     primary: {
       background: 'var(--accent)',
-      color: '#141210',
+      color: 'var(--on-accent)',
       border: 'none',
     },
     ghost: {
@@ -74,8 +79,10 @@ function Btn({ children, onClick, variant = 'ghost', disabled, title }) {
     <button
       type="button"
       title={title}
+      aria-label={ariaLabel || (!hasTextChild ? title : undefined)}
       disabled={disabled}
       onClick={onClick}
+      {...rest}
       style={{
         ...styles[variant],
         borderRadius: 8,
@@ -143,6 +150,8 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
   const [analytics, setAnalytics] = useState(null)
   const [subsonic, setSubsonic] = useState(null)
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' })
+  const { confirm, confirmDialog } = useConfirm()
+  const { prompt, promptDialog } = usePrompt()
 
   const toastTimer = useRef(null)
   const toastMounted = useRef(false)
@@ -294,6 +303,8 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
 
   return (
     <div className="tmusic-admin-panel">
+      {confirmDialog}
+      {promptDialog}
       <div
         style={{
           display: 'flex',
@@ -550,14 +561,18 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
                     <Btn
                       variant="danger"
                       disabled={busy}
-                      onClick={() => {
-                        const confirmation = window.prompt(`Для восстановления введите имя файла: ${b.name}`)
-                        if (confirmation === b.name && window.confirm('Восстановить базу данных из этого бэкапа?')) {
-                          runAction(
-                            () => adminApi.restoreBackup(b.name, { dry_run: false, confirm: confirmation }),
-                            'База восстановлена'
-                          )
-                        }
+                      onClick={async () => {
+                        const ok = await confirm({
+                          title: 'Восстановить базу данных',
+                          message: `Восстановить базу данных из бэкапа «${b.name}»? Текущие данные будут заменены.`,
+                          danger: true,
+                          confirmLabel: 'Восстановить',
+                        })
+                        if (!ok) return
+                        runAction(
+                          () => adminApi.restoreBackup(b.name, { dry_run: false, confirm: b.name }),
+                          'База восстановлена'
+                        )
                       }}
                     >
                       Восстановить
@@ -726,7 +741,13 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
                     variant="danger"
                     disabled={busy}
                     onClick={async () => {
-                      if (!window.confirm('Ротировать токен? Старый токен перестанет работать.')) return
+                      const ok = await confirm({
+                        title: 'Ротация токена',
+                        message: 'Ротировать токен? Старый токен перестанет работать.',
+                        danger: true,
+                        confirmLabel: 'Ротировать',
+                      })
+                      if (!ok) return
                       setBusy(true)
                       try {
                         setSubsonic(await adminApi.rotateSubsonicCredentials())
@@ -773,6 +794,7 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
                   <div style={{ flex: 1, minWidth: 100, fontWeight: 700 }}>{u.username}</div>
                   <select
                     value={u.role}
+                    aria-label={`Роль пользователя ${u.username}`}
                     onChange={async (e) => {
                       await runAction(() => adminApi.patchUser(u.id, { role: e.target.value }), 'Роль обновлена')
                     }}
@@ -807,8 +829,16 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
                   </Btn>
                   <Btn
                     title="Сбросить пароль"
-                    onClick={() => {
-                      const password = window.prompt(`Новый пароль для ${u.username} (минимум 8 символов)`)
+                    aria-label={`Сбросить пароль пользователя ${u.username}`}
+                    onClick={async () => {
+                      // UI-38: accessible in-app prompt instead of native window.prompt
+                      const password = await prompt({
+                        title: 'Сбросить пароль',
+                        message: `Новый пароль для ${u.username}`,
+                        inputLabel: 'Новый пароль (минимум 8 символов)',
+                        type: 'password',
+                        confirmLabel: 'Сбросить',
+                      })
                       if (password && password.length >= 8) {
                         runAction(() => adminApi.patchUser(u.id, { new_password: password }), 'Пароль изменён')
                       }
@@ -827,10 +857,15 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
                   <Btn
                     variant="danger"
                     title="Удалить без данных"
-                    onClick={() => {
-                      if (window.confirm(`Удалить пользователя ${u.username}? Действие необратимо.`)) {
-                        runAction(() => adminApi.deleteUser(u.id), 'Пользователь удалён')
-                      }
+                    onClick={async () => {
+                      const ok = await confirm({
+                        title: 'Удалить пользователя',
+                        message: `Удалить пользователя ${u.username}? Действие необратимо.`,
+                        danger: true,
+                        confirmLabel: 'Удалить',
+                      })
+                      if (!ok) return
+                      runAction(() => adminApi.deleteUser(u.id), 'Пользователь удалён')
                     }}
                   >
                     <Trash2 size={12} />

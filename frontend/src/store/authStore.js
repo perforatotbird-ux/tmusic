@@ -70,8 +70,21 @@ export const useAuthStore = create((set, get) => ({
       set({ user: me, isAuthenticated: true, isAuthModalOpen: false })
       if (!me.password_change_required) usePlayerStore.getState().hydrate()
       return true
-    } catch {
-      if (generation === epoch && sequence === checkSequence) get().clearLocalSession()
+    } catch (err) {
+      // UI-07: a transient network failure or 5xx must NOT wipe an active session
+      // and kill playback. Only a 401 means the credentials are no longer valid.
+      if (err?.code === 'authentication_required') {
+        if (generation === epoch && sequence === checkSequence) get().clearLocalSession()
+        return false
+      }
+      // network_error / server_error: preserve the session and surface a
+      // recoverable notice instead of silently destroying the player.
+      if (generation === epoch && sequence === checkSequence) {
+        usePlayerStore.getState().pushNotice({
+          kind: 'warn',
+          text: 'Нет связи с сервером. Воспроизведение продолжается, если доступно офлайн.',
+        })
+      }
       return false
     }
   },

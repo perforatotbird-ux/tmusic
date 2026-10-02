@@ -18,12 +18,14 @@ import {
   HardDrive,
   ListStart,
   ListEnd,
+  Check,
 } from 'lucide-react'
 import { vfsApi } from '../api/vfs'
 import { bustMediaCaches } from '../api/cache'
 import { playlistsApi } from '../api/playlists'
 import { usePlayerStore } from '../store/playerStore'
 import { useAuthStore } from '../store/authStore'
+import { useOfflineStore } from '../store/offlineStore'
 
 function fmtDur(sec) {
   if (!sec || isNaN(sec)) return ''
@@ -94,6 +96,10 @@ function TreeRow({
     ? (f.subfolder_count || 0) > 0 || (f.recursive_track_count || 0) > 0 || (kids && kids.length > 0)
     : false
   const isCurrentTrack = !isFolder && currentTrack?.id === t.id
+  const cachedTrackIds = useOfflineStore((s) => s.cachedTrackIds)
+  const cacheTrack = useOfflineStore((s) => s.cacheTrack)
+  const removeTrack = useOfflineStore((s) => s.removeTrack)
+  const isCached = !isFolder && cachedTrackIds.has(Number(t?.id))
 
   return (
     <>
@@ -156,24 +162,47 @@ function TreeRow({
           <span style={{ width: 16 }} />
         )}
 
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div
-            style={{
-              fontWeight: isFolder ? 650 : isCurrentTrack ? 700 : 500,
-              fontSize: 13.5,
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              color: isCurrentTrack ? 'var(--accent)' : 'var(--ink)',
-            }}
-          >
-            {isFolder ? f.name : (t.name || '').replace(/\.[^/.]+$/, '')}
-          </div>
-          {isFolder && (
-            <div style={{ fontSize: '11px', color: 'var(--dim)' }}>
-              {f.subfolder_count > 0 && `${f.subfolder_count} папок · `}
-              {f.recursive_track_count || f.track_count || 0} трек(ов)
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div
+              style={{
+                fontWeight: isFolder ? 650 : isCurrentTrack ? 700 : 500,
+                fontSize: 13.5,
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                color: isCurrentTrack ? 'var(--accent)' : 'var(--ink)',
+              }}
+            >
+              {isFolder ? f.name : (t.name || '').replace(/\.[^/.]+$/, '')}
             </div>
+            {isFolder && (
+              <div style={{ fontSize: '11px', color: 'var(--dim)' }}>
+                {f.subfolder_count > 0 && `${f.subfolder_count} папок · `}
+                {f.recursive_track_count || f.track_count || 0} трек(ов)
+              </div>
+            )}
+          </div>
+          {!isFolder && isCached && (
+            <span
+              className="tmusic-badge-cached"
+              title="В кэше • Доступно офлайн"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '2px',
+                fontSize: '10px',
+                fontWeight: '800',
+                padding: '1px 5px',
+                borderRadius: '5px',
+                background: 'rgba(34, 197, 94, 0.15)',
+                color: 'var(--success)',
+                border: '1px solid rgba(34, 197, 94, 0.3)',
+                flexShrink: 0,
+              }}
+            >
+              <Check size={10} strokeWidth={3} /> Кэш
+            </span>
           )}
         </div>
 
@@ -184,6 +213,16 @@ function TreeRow({
         )}
         {!isFolder && (
           <span className="tm-queue-actions" onClick={(e) => e.stopPropagation()}>
+            <button
+              type="button"
+              className="tm-queue-mini"
+              onClick={() => (isCached ? removeTrack(t.id) : cacheTrack(t))}
+              aria-label={isCached ? 'Удалить из кэша' : 'Сохранить в кэш'}
+              title={isCached ? 'Удалить из кэша' : 'Сохранить в кэш'}
+              style={{ color: isCached ? 'var(--success)' : 'var(--dim)' }}
+            >
+              <HardDrive size={13} />
+            </button>
             <button
               type="button"
               className="tm-queue-mini"
@@ -219,7 +258,7 @@ function TreeRow({
             borderRadius: '50%',
             border: 'none',
             background: 'var(--accent)',
-            color: '#141210',
+            color: 'var(--on-accent)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -230,7 +269,7 @@ function TreeRow({
           {isFolder && playingId === f.id ? (
             <Loader2 size={14} className="animate-spin" />
           ) : (
-            <Play size={12} fill="#141210" />
+            <Play size={12} fill="currentColor" />
           )}
         </button>
       </div>

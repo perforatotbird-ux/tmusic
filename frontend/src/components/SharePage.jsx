@@ -77,7 +77,7 @@ export function SharePage({ token }) {
         <button
           type="button"
           onClick={toggle}
-          style={{ marginTop: 16, width: '100%', border: 0, borderRadius: 10, padding: '12px 16px', background: 'var(--accent)', color: '#141210', fontWeight: 800, cursor: 'pointer' }}
+          style={{ marginTop: 16, width: '100%', border: 0, borderRadius: 10, padding: '12px 16px', background: 'var(--accent)', color: 'var(--on-accent)', fontWeight: 800, cursor: 'pointer' }}
         >
           {playing ? 'Пауза' : 'Слушать трек'}
         </button>

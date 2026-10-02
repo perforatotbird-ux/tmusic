@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { adminApi } from '../api/admin'
 import { bustCatalogCache } from '../api/library'
+import { useConfirm } from './ui/useConfirm'
 
 const KINDS = [
   { id: 'artist', label: 'Артист' },
@@ -135,6 +136,7 @@ export function AdminCatalog({ onOpenCoverPicker }) {
   const [selectedAlbums, setSelectedAlbums] = useState([])
   const [moveTarget, setMoveTarget] = useState('')
   const [menu, setMenu] = useState(null)
+  const { confirm, confirmDialog } = useConfirm()
   const loadSeq = useRef(0)
 
   const loadArtists = useCallback(async () => {
@@ -234,7 +236,13 @@ export function AdminCatalog({ onOpenCoverPicker }) {
   }
 
   const removeArtist = async (artist) => {
-    if (!window.confirm(`Удалить «${artist.display_name}»? Возможно только если внутри нет альбомов.`)) return
+    const ok = await confirm({
+      title: 'Удалить карточку',
+      message: `Удалить «${artist.display_name}»? Возможно только если внутри нет альбомов.`,
+      danger: true,
+      confirmLabel: 'Удалить',
+    })
+    if (!ok) return
     setBusyId(`a${artist.id}`)
     try {
       await adminApi.deleteArtist(artist.id)
@@ -405,6 +413,7 @@ export function AdminCatalog({ onOpenCoverPicker }) {
 
   return (
     <div>
+      {confirmDialog}
       {error && (
         <div
           style={{
@@ -449,7 +458,7 @@ export function AdminCatalog({ onOpenCoverPicker }) {
             type="button"
             disabled={creating || !newName.trim()}
             onClick={() => createCollection(false)}
-            style={{ background: 'var(--accent)', color: '#141210', border: 'none', borderRadius: 8, padding: '8px 14px', minHeight: 40, fontWeight: 800, fontSize: 12, cursor: creating || !newName.trim() ? 'default' : 'pointer', opacity: creating || !newName.trim() ? 0.5 : 1, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            style={{ background: 'var(--accent)', color: 'var(--on-accent)', border: 'none', borderRadius: 8, padding: '8px 14px', minHeight: 40, fontWeight: 800, fontSize: 12, cursor: creating || !newName.trim() ? 'default' : 'pointer', opacity: creating || !newName.trim() ? 0.5 : 1, display: 'inline-flex', alignItems: 'center', gap: 6 }}
           >
             {creating ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Создать
           </button>
@@ -539,10 +548,10 @@ export function AdminCatalog({ onOpenCoverPicker }) {
                       <div style={{ fontWeight: 700, fontSize: 13.5 }}>{artist.display_name}</div>
                       <div style={{ fontSize: 11, color: 'var(--dim)' }}>{KIND_LABEL[artist.kind] || artist.kind} · {artist.album_count ?? 0} альб.{artist.locked ? ' · закреплён' : ''}</div>
                     </div>
-                    <select value={artist.kind} disabled={busy} onClick={(e) => e.stopPropagation()} onChange={(e) => changeKind(artist, e.target.value)} title="Тип карточки" style={{ ...inputStyle, minHeight: 36, fontSize: 12, maxWidth: 150 }}>
+                    <select value={artist.kind} disabled={busy} onClick={(e) => e.stopPropagation()} onChange={(e) => changeKind(artist, e.target.value)} title="Тип карточки" aria-label={`Тип карточки: ${artist.display_name}`} style={{ ...inputStyle, minHeight: 36, fontSize: 12, maxWidth: 150 }}>
                       {KINDS.map((k) => <option key={k.id} value={k.id}>{k.label}</option>)}
                     </select>
-                    <button type="button" onClick={(e) => { e.stopPropagation(); setMenu(menu?.type === 'artist' && menu.id === artist.id ? null : { type: 'artist', id: artist.id }) }} style={iconBtn} title="Действия"><MoreVertical size={15} /></button>
+                    <button type="button" onClick={(e) => { e.stopPropagation(); setMenu(menu?.type === 'artist' && menu.id === artist.id ? null : { type: 'artist', id: artist.id }) }} style={iconBtn} title="Действия" aria-label={`Действия: ${artist.display_name}`}><MoreVertical size={15} /></button>
                   </>
                 )}
               </Row>
@@ -568,41 +577,60 @@ export function AdminCatalog({ onOpenCoverPicker }) {
                     const albEditing = editingAlbum?.id === album.id
                     const albBusy = busyId === `b${album.id}`
                     return (
-                      <div
-                        key={album.id}
-                        onClick={(e) => { e.stopPropagation(); setMenu(menu?.type === 'album' && menu.id === album.id ? null : { type: 'album', id: album.id, artistId: artist.id }) }}
-                        draggable
-                        onDragStart={(e) => { e.stopPropagation(); setDragAlbum(album) }}
-                        onDragEnd={() => { setDragAlbum(null); setDropTarget(null) }}
-                        style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 6px', borderBottom: '1px solid var(--line)', flexWrap: 'wrap', opacity: dragAlbum?.id === album.id ? 0.5 : 1 }}
-                      >
-                        <input type="checkbox" checked={selectedAlbums.includes(album.id)} onClick={(e) => e.stopPropagation()} onChange={(e) => setSelectedAlbums((prev) => e.target.checked ? [...prev, album.id] : prev.filter((id) => id !== album.id))} aria-label={`Выбрать ${album.title}`} />
-                        <span title="Перетащите в другую карточку" style={{ color: 'var(--dim)', cursor: 'grab', display: 'inline-flex' }}><GripVertical size={15} /></span>
-                        {albEditing ? (
-                          <>
-                            <input value={editingAlbum.title} onClick={(e) => e.stopPropagation()} onChange={(e) => setEditingAlbum({ ...editingAlbum, title: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter') saveAlbum(album, artist.id); if (e.key === 'Escape') setEditingAlbum(null) }} autoFocus placeholder="Название альбома" style={{ ...inputStyle, flex: 2, minWidth: 140 }} />
-                            <input value={editingAlbum.year} onClick={(e) => e.stopPropagation()} onChange={(e) => setEditingAlbum({ ...editingAlbum, year: e.target.value })} placeholder="Год" inputMode="numeric" style={{ ...inputStyle, width: 84 }} />
-                            <button type="button" onClick={(e) => { e.stopPropagation(); saveAlbum(album, artist.id) }} disabled={albBusy} style={iconBtn} aria-label="Сохранить альбом"><Check size={15} style={{ color: 'var(--accent)' }} /></button>
-                            <button type="button" onClick={(e) => { e.stopPropagation(); setEditingAlbum(null) }} style={iconBtn} aria-label="Отмена"><X size={15} /></button>
-                          </>
-                        ) : (
-                          <div style={{ flex: 1, minWidth: 140, fontSize: 13 }}><b>{album.title}</b><span style={{ color: 'var(--dim)' }}> · {album.year || 'без года'}</span></div>
+                      <React.Fragment key={album.id}>
+                        <div
+                          onClick={(e) => { e.stopPropagation(); setMenu(menu?.type === 'album' && menu.id === album.id ? null : { type: 'album', id: album.id, artistId: artist.id }) }}
+                          draggable
+                          onDragStart={(e) => { e.stopPropagation(); setDragAlbum(album) }}
+                          onDragEnd={() => { setDragAlbum(null); setDropTarget(null) }}
+                          style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 6px', borderBottom: '1px solid var(--line)', flexWrap: 'wrap', opacity: dragAlbum?.id === album.id ? 0.5 : 1 }}
+                        >
+                          <input type="checkbox" checked={selectedAlbums.includes(album.id)} onClick={(e) => e.stopPropagation()} onChange={(e) => setSelectedAlbums((prev) => e.target.checked ? [...prev, album.id] : prev.filter((id) => id !== album.id))} aria-label={`Выбрать ${album.title}`} />
+                          <span title="Перетащите в другую карточку" style={{ color: 'var(--dim)', cursor: 'grab', display: 'inline-flex' }}><GripVertical size={15} /></span>
+                          {albEditing ? (
+                            <>
+                              <input value={editingAlbum.title} onClick={(e) => e.stopPropagation()} onChange={(e) => setEditingAlbum({ ...editingAlbum, title: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter') saveAlbum(album, artist.id); if (e.key === 'Escape') setEditingAlbum(null) }} autoFocus placeholder="Название альбома" style={{ ...inputStyle, flex: 2, minWidth: 140 }} />
+                              <input value={editingAlbum.year} onClick={(e) => e.stopPropagation()} onChange={(e) => setEditingAlbum({ ...editingAlbum, year: e.target.value })} placeholder="Год" inputMode="numeric" style={{ ...inputStyle, width: 84 }} />
+                              <button type="button" onClick={(e) => { e.stopPropagation(); saveAlbum(album, artist.id) }} disabled={albBusy} style={iconBtn} aria-label="Сохранить альбом"><Check size={15} style={{ color: 'var(--accent)' }} /></button>
+                              <button type="button" onClick={(e) => { e.stopPropagation(); setEditingAlbum(null) }} style={iconBtn} aria-label="Отмена"><X size={15} /></button>
+                            </>
+                          ) : (
+                            <div style={{ flex: 1, minWidth: 140, fontSize: 13 }}><b>{album.title}</b><span style={{ color: 'var(--dim)' }}> · {album.year || 'без года'}</span></div>
+                          )}
+                          <select value={album.artist_id} disabled={albBusy} onClick={(e) => e.stopPropagation()} onChange={async (e) => {
+                          const toId = Number(e.target.value)
+                          // UI-41: revert instantly if the user backs out — a stray
+                          // click must not silently move the album between cards.
+                          if (toId === album.artist_id) return
+                          const target = artists.find((a) => a.id === toId)
+                          const ok = await confirm({
+                            title: 'Переместить альбом',
+                            message: `Переместить «${album.title}» в карточку «${target?.display_name || ''}»?`,
+                            confirmLabel: 'Переместить',
+                          })
+                          if (!ok) {
+                            e.target.value = String(album.artist_id)
+                            return
+                          }
+                          moveAlbum(album, toId)
+                        }} title="Переместить в карточку" aria-label={`Переместить «${album.title}» в другую карточку`} style={{ ...inputStyle, minHeight: 36, fontSize: 12, maxWidth: 170 }}>
+                            {artists.map((a) => <option key={a.id} value={a.id}>{a.display_name.slice(0, 28)}</option>)}
+                          </select>
+                          {/* UI-04: keyboard-reachable trigger for the album menu (the
+                              row itself contains form controls and can't be a button). */}
+                          <button type="button" onClick={(e) => { e.stopPropagation(); setMenu(menu?.type === 'album' && menu.id === album.id ? null : { type: 'album', id: album.id, artistId: artist.id }) }} style={iconBtn} title="Действия" aria-label={`Действия: ${album.title}`}><MoreVertical size={15} /></button>
+                        </div>
+                        {menu?.type === 'album' && menu.id === album.id && menu.artistId === artist.id && (
+                          <ActionMenu>
+                            <MenuAction icon={Pencil} onClick={() => { setEditingAlbum({ id: album.id, title: album.title, year: album.year || '' }); setMenu(null) }}>Переименовать</MenuAction>
+                            {onOpenCoverPicker && <MenuAction icon={ImageIcon} onClick={() => { onOpenCoverPicker({ type: 'album', id: album.id, title: album.title, hasCustom: !!album.custom_image_url }); setMenu(null) }}>Изменить обложку</MenuAction>}
+                            <MenuAction icon={ScanLine} disabled={busyId === `scan-b${album.id}`} onClick={() => scanAlbum(album, artist.id)}>Сканировать</MenuAction>
+                          </ActionMenu>
                         )}
-                        <select value={album.artist_id} disabled={albBusy} onClick={(e) => e.stopPropagation()} onChange={(e) => moveAlbum(album, Number(e.target.value))} title="Переместить в карточку" style={{ ...inputStyle, minHeight: 36, fontSize: 12, maxWidth: 170 }}>
-                          {artists.map((a) => <option key={a.id} value={a.id}>{a.display_name.slice(0, 28)}</option>)}
-                        </select>
-                      </div>
+                      </React.Fragment>
                     )
                   })}
                 </div>
-              )}
-
-              {menu?.type === 'album' && menu.id === album.id && menu.artistId === artist.id && (
-                <ActionMenu>
-                  <MenuAction icon={Pencil} onClick={() => { setEditingAlbum({ id: album.id, title: album.title, year: album.year || '' }); setMenu(null) }}>Переименовать</MenuAction>
-                  {onOpenCoverPicker && <MenuAction icon={ImageIcon} onClick={() => { onOpenCoverPicker({ type: 'album', id: album.id, title: album.title, hasCustom: !!album.custom_image_url }); setMenu(null) }}>Изменить обложку</MenuAction>}
-                  <MenuAction icon={ScanLine} disabled={busyId === `scan-b${album.id}`} onClick={() => scanAlbum(album, artist.id)}>Сканировать</MenuAction>
-                </ActionMenu>
               )}
             </div>
           )

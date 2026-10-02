@@ -128,4 +128,37 @@ class AndroidMediaBridge(private val context: Context) {
             }
         )
     }
+
+    // --- Device Storage Info for Telegram-like Cache Settings ---
+
+    @JavascriptInterface
+    fun getDeviceStorageInfo(): String {
+        return try {
+            val stat = android.os.StatFs(context.filesDir.path)
+            val blockSize = stat.blockSizeLong
+            val totalBlocks = stat.blockCountLong
+            val availableBlocks = stat.availableBlocksLong
+            val totalBytes = totalBlocks * blockSize
+            val availableBytes = availableBlocks * blockSize
+
+            fun dirSize(dir: java.io.File): Long {
+                var size = 0L
+                dir.listFiles()?.forEach { file ->
+                    size += if (file.isDirectory) dirSize(file) else file.length()
+                }
+                return size
+            }
+            val appCacheBytes = dirSize(context.cacheDir)
+
+            val json = JSONObject().apply {
+                put("totalBytes", totalBytes)
+                put("availableBytes", availableBytes)
+                put("appCacheBytes", appCacheBytes)
+            }
+            json.toString()
+        } catch (e: Exception) {
+            "{}"
+        }
+    }
 }
+

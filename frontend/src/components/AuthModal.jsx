@@ -1,13 +1,12 @@
 import React, { useState } from 'react'
 import { useAuthStore } from '../store/authStore'
 import { Lock, AlertCircle, X } from 'lucide-react'
+import Modal from './ui/Modal'
 
 export function AuthModal() {
   const { isAuthModalOpen, loginWithPassword, isLoading, error, setAuthModalOpen, logoutPending, logoutBusy, logout } = useAuthStore()
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
-
-  if (!isAuthModalOpen) return null
 
   const handlePasswordSubmit = (e) => {
     e.preventDefault()
@@ -17,32 +16,16 @@ export function AuthModal() {
   }
 
   return (
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        backgroundColor: 'rgba(10, 9, 8, 0.92)',
-        backdropFilter: 'blur(10px)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 9999,
-        padding: '20px',
-      }}
+    <Modal
+      open={isAuthModalOpen}
+      onClose={() => setAuthModalOpen(false)}
+      title="T-MUSIC ACCESS"
+      maxWidth={380}
+      backdrop="rgba(10, 9, 8, 0.92)"
+      backdropFilter="blur(10px)"
+      style={{ border: '1px solid var(--line-bright)', borderRadius: 'var(--radius)' }}
     >
-      <div
-        style={{
-          backgroundColor: 'var(--bg-card)',
-          border: '1px solid var(--line-bright)',
-          borderRadius: 'var(--radius)',
-          maxWidth: '380px',
-          width: '100%',
-          padding: '28px 22px',
-          boxShadow: '0 20px 40px rgba(0,0,0,0.6)',
-          textAlign: 'center',
-          position: 'relative'
-        }}
-      >
+      <div style={{ padding: '28px 22px', textAlign: 'center', position: 'relative' }}>
         <button
           onClick={() => setAuthModalOpen(false)}
           disabled={logoutPending || logoutBusy}
@@ -129,7 +112,6 @@ export function AuthModal() {
               border: '1px solid var(--line)',
               borderRadius: '8px',
               color: 'var(--ink)',
-              outline: 'none',
             }}
           />
           <input
@@ -146,7 +128,6 @@ export function AuthModal() {
               border: '1px solid var(--line)',
               borderRadius: '8px',
               color: 'var(--ink)',
-              outline: 'none',
             }}
           />
           <button
@@ -157,7 +138,7 @@ export function AuthModal() {
               minHeight: '44px',
               fontSize: '14px',
               backgroundColor: 'var(--accent)',
-              color: '#141210',
+              color: 'var(--on-accent)',
               border: 'none',
               borderRadius: '8px',
               fontWeight: '700',
@@ -168,6 +149,6 @@ export function AuthModal() {
           </button>
         </form>
       </div>
-    </div>
+    </Modal>
   )
 }

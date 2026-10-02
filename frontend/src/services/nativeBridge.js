@@ -20,3 +20,16 @@ export function openServerDiscovery() {
     bridge.openLocalDiscovery()
   }
 }
+
+export function getNativeStorageInfo() {
+  const bridge = getNativeBridge()
+  if (bridge && bridge.getDeviceStorageInfo) {
+    try {
+      const raw = bridge.getDeviceStorageInfo()
+      return JSON.parse(raw || '{}')
+    } catch {
+      return null
+    }
+  }
+  return null
+}

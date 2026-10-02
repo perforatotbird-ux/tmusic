@@ -68,6 +68,7 @@ from app.services.backup_scheduler import start_backup_scheduler, stop_backup_sc
 from app.services.discovery_service import discovery_service
 from app.services.transcoding_service import transcoding_service
 from app.api.logs_router import router as logs_router
+from app.api.search_router import router as search_router
 from app.services import admin_service
 
 logger = logging.getLogger("tmusic.main")
@@ -460,6 +461,7 @@ app.include_router(admin_router)
 app.include_router(admin_catalog_router)
 app.include_router(admin_vfs_router)
 app.include_router(logs_router)
+app.include_router(search_router)
 
 
 @app.get("/health", tags=["system"])

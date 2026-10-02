@@ -52,7 +52,7 @@ def test_blocking_routes_use_fastapi_threadpool(fn):
 
 @pytest.mark.asyncio
 async def test_slow_provider_does_not_block_request_loop(monkeypatch):
-    import httpx2 as httpx
+    import httpx
     monkeypatch.setattr(metadata_router.lyrics_service, 'lyrics_enabled', lambda: True)
     def slow(**kwargs): time.sleep(0.08); return None
     monkeypatch.setattr(metadata_router.lyrics_service, 'get_lyrics', slow)
@@ -328,3 +328,47 @@ async def test_transcode_entry_reaps_before_removing_source(monkeypatch, tmp_pat
     task = asyncio.create_task(operation); await proc.entered.wait(); task.cancel()
     with pytest.raises(asyncio.CancelledError): await task
     assert proc.killed and proc.drained and not src_paths[0].exists()
+
+
+@pytest.mark.asyncio
+async def test_transcode_track_offloads_io_and_duration_probe(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, 'TRANSCODE_CACHE_DIR', tmp_path)
+    service = transcoding_service.TranscodingService()
+    monkeypatch.setattr(transcoding_service, 'ensure_ffmpeg_binaries', lambda: True)
+    monkeypatch.setattr(service, '_download_track_bytes', AsyncMock(return_value=b'synthetic audio'))
+    
+    # Mock subprocess communication returning valid fake MP3 bytes (>1024 bytes)
+    fake_mp3 = b'ID3' + b'\x00' * 2048
+    async def fake_communicate(proc, timeout=None):
+        return fake_mp3, b''
+    monkeypatch.setattr(transcoding_service, 'communicate_with_cleanup', fake_communicate)
+
+    class FakeProc:
+        returncode = 0
+    async def fake_spawn(*args, **kwargs):
+        return FakeProc()
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', fake_spawn)
+
+    # Track calls to asyncio.to_thread
+    thread_targets = []
+    original_to_thread = asyncio.to_thread
+    async def tracking_to_thread(func, *args, **kwargs):
+        thread_targets.append(getattr(func, '__name__', str(func)))
+        return await original_to_thread(func, *args, **kwargs)
+    monkeypatch.setattr(asyncio, 'to_thread', tracking_to_thread)
+
+    def fake_duration(path):
+        return 123.45
+    monkeypatch.setattr(transcoding_service, 'get_mp3_duration', fake_duration)
+    
+    job = transcoding_service.TranscodeJob(1, 'Synthetic.flac', 123, False, 'audio/flac', 0, 'c'*32)
+    await service._transcode_track(job)
+
+    assert job.status == transcoding_service.TranscodeStatus.READY
+    assert job.duration == 123.45
+    # Verify that duration probe, write_file, manifest and cache cleanup were offloaded via asyncio.to_thread
+    assert 'fake_duration' in thread_targets
+    assert '_write_file' in thread_targets
+    assert 'write_cache_manifest' in thread_targets
+    assert '_cleanup_cache' in thread_targets
+

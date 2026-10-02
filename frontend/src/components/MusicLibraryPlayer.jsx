@@ -21,12 +21,16 @@ import {
   Trash2,
   Star,
   FileText,
-  X,
   ArrowUp,
   ArrowDown,
   Loader2,
   ListEnd,
+  Check,
+  HardDrive,
 } from 'lucide-react'
+import { useOfflineStore } from '../store/offlineStore'
+import { ToastHost } from './ui/ToastHost'
+import { ClickableRow } from './ui/ClickableRow'
 
 function formatTime(seconds) {
   if (!seconds || isNaN(seconds)) return '0:00'
@@ -174,7 +178,6 @@ export function MusicLibraryPlayer() {
     shuffle,
     repeat,
     isPlayerExpanded,
-    notice,
     durations,
     togglePlay,
     forceResume,
@@ -188,12 +191,18 @@ export function MusicLibraryPlayer() {
     removeFromQueue,
     moveQueueItem,
     clearUpcoming,
-    dismissNotice,
   } = usePlayerStore()
   const { isAuthenticated } = useAuthStore()
   const favIds = useFavoritesStore((s) => s.ids)
   const loadFavorites = useFavoritesStore((s) => s.load)
   const toggleFavorite = useFavoritesStore((s) => s.toggle)
+
+  const cachedTrackIds = useOfflineStore((s) => s.cachedTrackIds)
+  const cachingTrackIds = useOfflineStore((s) => s.cachingTrackIds)
+  const cacheTrack = useOfflineStore((s) => s.cacheTrack)
+  const removeTrack = useOfflineStore((s) => s.removeTrack)
+  const isCurrentCached = currentTrack?.id != null && cachedTrackIds.has(Number(currentTrack.id))
+  const isCurrentCaching = currentTrack?.id != null && cachingTrackIds.has(Number(currentTrack.id))
 
   useEffect(() => {
     if (isAuthenticated) loadFavorites()
@@ -215,12 +224,9 @@ export function MusicLibraryPlayer() {
     }
   }, [isPlayerExpanded, setPlayerExpanded])
 
-  // Error/notice toast auto-fades like the library toast.
-  useEffect(() => {
-    if (!notice) return undefined
-    const t = setTimeout(dismissNotice, 6000)
-    return () => clearTimeout(t)
-  }, [notice, dismissNotice])
+  // Auto-fade of toasts is now handled centrally in ToastHost; this effect is
+  // no longer needed (it referenced the removed single-slot `notice`).
+
 
   // Fetch lyrics when panel is open and track changes (or on first open).
   const trackId = currentTrack?.id ?? null
@@ -375,6 +381,9 @@ export function MusicLibraryPlayer() {
 
   return (
     <>
+      {/* UI-22: stacked toasts (stream errors, skips, transcode events) now render
+          through the shared ToastHost at the correct z-layer. */}
+      <ToastHost />
       {/* ─── Compact Bottom Player Bar ────────────────────────────────────────── */}
       <div
         className="tmusic-playerbar"
@@ -399,7 +408,7 @@ export function MusicLibraryPlayer() {
           <div style={{ position: 'relative', flexShrink: 0 }}>
             <img
               src={coverUrl}
-              alt="Cover"
+              alt={currentTrack?.title ? `Обложка: ${currentTrack.title}` : 'Обложка трека'}
               style={{
                 width: '46px',
                 height: '46px',
@@ -425,9 +434,26 @@ export function MusicLibraryPlayer() {
                 whiteSpace: 'nowrap',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
               }}
             >
-              {trackTitle}
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{trackTitle}</span>
+              {isCurrentCached && (
+                <span
+                  className="tmusic-badge-cached"
+                  title="Воспроизводится из офлайн-кэша"
+                  style={{
+                    fontSize: '9.5px',
+                    padding: '0px 5px',
+                    borderRadius: '4px',
+                    flexShrink: 0,
+                  }}
+                >
+                  <Check size={9} strokeWidth={3} /> Кэш
+                </span>
+              )}
             </div>
             <div
               style={{
@@ -453,7 +479,7 @@ export function MusicLibraryPlayer() {
               height: '42px',
               borderRadius: '50%',
               backgroundColor: 'var(--accent)',
-              color: '#141210',
+              color: 'var(--on-accent)',
               border: 'none',
               display: 'flex',
               alignItems: 'center',
@@ -465,9 +491,9 @@ export function MusicLibraryPlayer() {
             {isBuffering ? (
               <Loader2 size={19} className="tmusic-spin" />
             ) : isPlaying ? (
-              <Pause size={20} fill="#141210" />
+              <Pause size={20} fill="currentColor" />
             ) : (
-              <Play size={20} fill="#141210" style={{ marginLeft: '2px' }} />
+              <Play size={20} fill="currentColor" style={{ marginLeft: '2px' }} />
             )}
           </button>
           <button
@@ -555,7 +581,7 @@ export function MusicLibraryPlayer() {
                 height: '38px',
                 borderRadius: '50%',
                 backgroundColor: 'var(--accent)',
-                color: '#141210',
+                color: 'var(--on-accent)',
                 border: 'none',
                 display: 'flex',
                 alignItems: 'center',
@@ -570,9 +596,9 @@ export function MusicLibraryPlayer() {
               {isBuffering ? (
                 <Loader2 size={18} className="tmusic-spin" />
               ) : isPlaying ? (
-                <Pause size={18} fill="#141210" />
+                <Pause size={18} fill="currentColor" />
               ) : (
-                <Play size={18} fill="#141210" style={{ marginLeft: '2px' }} />
+                <Play size={18} fill="currentColor" style={{ marginLeft: '2px' }} />
               )}
             </button>
             <button
@@ -748,7 +774,7 @@ export function MusicLibraryPlayer() {
               <div style={{ position: 'relative', width: '100%', maxWidth: '360px' }}>
                 <img
                   src={coverUrl}
-                  alt="Cover Full"
+                  alt={currentTrack?.title ? `Обложка: ${currentTrack.title}` : 'Обложка трека'}
                   style={{
                     width: '100%',
                     maxWidth: '360px',
@@ -766,22 +792,46 @@ export function MusicLibraryPlayer() {
                   </span>
                 )}
               </div>
-              <h2
+              <div
                 style={{
-                  fontSize: '20px',
-                  fontWeight: '700',
-                  color: 'var(--ink)',
-                  textAlign: 'center',
-                  margin: '20px 0 4px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '8px',
                   maxWidth: '100%',
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
                   padding: '0 8px',
+                  margin: '20px 0 4px',
                 }}
               >
-                {trackTitle}
-              </h2>
+                <h2
+                  style={{
+                    fontSize: '20px',
+                    fontWeight: '700',
+                    color: 'var(--ink)',
+                    textAlign: 'center',
+                    margin: 0,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {trackTitle}
+                </h2>
+                {isCurrentCached && (
+                  <span
+                    className="tmusic-badge-cached"
+                    title="В офлайн-кэше устройства"
+                    style={{
+                      fontSize: '11px',
+                      padding: '2px 7px',
+                      borderRadius: '6px',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Check size={12} strokeWidth={3} /> Кэш
+                  </span>
+                )}
+              </div>
               <div style={{ fontSize: '14.5px', color: 'var(--accent)', marginBottom: '2px', fontWeight: '600' }}>
                 {artistName}
               </div>
@@ -789,14 +839,45 @@ export function MusicLibraryPlayer() {
                 {albumTitle}
               </div>
 
-              {/* Favorite toggle */}
-              {isAuthenticated && (
+              {/* Action buttons: Favorite & Cache */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', marginBottom: '16px' }}>
+                {isAuthenticated && (
+                  <button
+                    onClick={handleToggleFav}
+                    className="tmusic-np-btn"
+                    style={{
+                      color: isFav ? 'var(--accent)' : 'var(--dim)',
+                      width: 'auto',
+                      borderRadius: '999px',
+                      padding: '0 14px',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      background: 'none',
+                      border: 'none',
+                      cursor: 'pointer',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                    }}
+                    title={isFav ? 'Убрать из любимых' : 'В любимые'}
+                    aria-pressed={isFav}
+                  >
+                    <Star size={18} fill={isFav ? 'var(--accent)' : 'none'} />
+                    {isFav ? 'В любимых' : 'В любимые'}
+                  </button>
+                )}
                 <button
-                  onClick={handleToggleFav}
+                  onClick={() => {
+                    if (!currentTrack) return
+                    if (isCurrentCached) {
+                      removeTrack(currentTrack.id)
+                    } else {
+                      cacheTrack(currentTrack)
+                    }
+                  }}
                   className="tmusic-np-btn"
                   style={{
-                    color: isFav ? 'var(--accent)' : 'var(--dim)',
-                    marginBottom: '14px',
+                    color: isCurrentCached ? 'var(--success)' : isCurrentCaching ? 'var(--info)' : 'var(--dim)',
                     width: 'auto',
                     borderRadius: '999px',
                     padding: '0 14px',
@@ -809,13 +890,26 @@ export function MusicLibraryPlayer() {
                     fontSize: '13px',
                     fontWeight: 600,
                   }}
-                  title={isFav ? 'Убрать из любимых' : 'В любимые'}
-                  aria-pressed={isFav}
+                  title={isCurrentCached ? 'Удалить трек из кэша' : 'Сохранить трек в кэш'}
                 >
-                  <Star size={18} fill={isFav ? 'var(--accent)' : 'none'} />
-                  {isFav ? 'В любимых' : 'В любимые'}
+                  {isCurrentCaching ? (
+                    <>
+                      <Loader2 size={16} className="tmusic-spin" />
+                      <span>Загрузка...</span>
+                    </>
+                  ) : isCurrentCached ? (
+                    <>
+                      <Check size={16} strokeWidth={2.5} />
+                      <span>В кэше</span>
+                    </>
+                  ) : (
+                    <>
+                      <HardDrive size={16} />
+                      <span>В кэш</span>
+                    </>
+                  )}
                 </button>
-              )}
+              </div>
 
               {/* Progress Slider */}
               <div style={{ width: '100%', maxWidth: '380px', marginBottom: '16px' }}>
@@ -855,7 +949,7 @@ export function MusicLibraryPlayer() {
                     height: '62px',
                     borderRadius: '50%',
                     backgroundColor: 'var(--accent)',
-                    color: '#141210',
+                    color: 'var(--on-accent)',
                     border: 'none',
                     display: 'flex',
                     alignItems: 'center',
@@ -871,9 +965,9 @@ export function MusicLibraryPlayer() {
                   {isBuffering ? (
                     <Loader2 size={26} className="tmusic-spin" />
                   ) : isPlaying ? (
-                    <Pause size={28} fill="#141210" />
+                    <Pause size={28} fill="currentColor" />
                   ) : (
-                    <Play size={28} fill="#141210" style={{ marginLeft: '4px' }} />
+                    <Play size={28} fill="currentColor" style={{ marginLeft: '4px' }} />
                   )}
                 </button>
                 <button
@@ -1007,7 +1101,7 @@ export function MusicLibraryPlayer() {
                       const isPast = !shuffle && idx < queueIndex
                       const dur = durations[track.id] || track.duration
                       return (
-                        <div
+                        <ClickableRow
                           key={track.id || idx}
                           className="tm-queue-row"
                           onClick={() => playQueue(queue, idx, currentRelease)}
@@ -1050,9 +1144,28 @@ export function MusicLibraryPlayer() {
                               textOverflow: 'ellipsis',
                               color: isCurrent ? 'var(--accent)' : 'var(--ink)',
                               fontWeight: isCurrent ? 700 : 500,
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
                             }}
                           >
-                            {(track.name || '').replace(/\.[^/.]+$/, '')}
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                              {(track.name || '').replace(/\.[^/.]+$/, '')}
+                            </span>
+                            {cachedTrackIds.has(Number(track.id)) && (
+                              <span
+                                className="tmusic-badge-cached"
+                                title="В офлайн-кэше"
+                                style={{
+                                  fontSize: '9px',
+                                  padding: '1px 5px',
+                                  borderRadius: '4px',
+                                  flexShrink: 0,
+                                }}
+                              >
+                                <Check size={9} strokeWidth={3} /> Кэш
+                              </span>
+                            )}
                           </span>
                           {dur && !isCurrent && (
                             <span style={{ fontSize: '11px', color: 'var(--dim)', flexShrink: 0 }}>
@@ -1096,7 +1209,7 @@ export function MusicLibraryPlayer() {
                               ИГРАЕТ
                             </span>
                           )}
-                        </div>
+                        </ClickableRow>
                       )
                     })}
                     {queue.length === 0 && (
@@ -1109,24 +1222,6 @@ export function MusicLibraryPlayer() {
               )}
             </div>
           </div>
-        </div>
-      )}
-
-      {/* ─── Playback notice (stream errors, skips) ─────────────────────────── */}
-      {notice && (
-        <div
-          className={`tmusic-toast ${notice.kind === 'error' ? 'tmusic-toast-error' : ''}`}
-          role="alert"
-        >
-          {notice.kind === 'error' ? <X size={14} style={{ flexShrink: 0 }} /> : <Play size={13} style={{ flexShrink: 0 }} />}
-          <span>{notice.text}</span>
-          <button
-            onClick={dismissNotice}
-            className="tmusic-toast-close"
-            aria-label="Закрыть уведомление"
-          >
-            <X size={13} />
-          </button>
         </div>
       )}
     </>
