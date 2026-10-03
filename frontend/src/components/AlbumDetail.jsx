@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { streamApi } from '../api/stream'
 import { playlistsApi } from '../api/playlists'
 import { resolveCoverUrl } from '../utils/cover'
+import { withReleaseMeta } from '../utils/cachedBrowse'
 import { usePlayerStore } from '../store/playerStore'
 import { useAuthStore } from '../store/authStore'
 import {
@@ -243,12 +244,21 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker, 
     coverUrl: resolveCoverUrl(album, artist),
   }
 
+  // Queue tracks must carry the release context themselves: stream rows have
+  // no artist/album/cover, and only per-track fields reach the offline cache
+  // (see withReleaseMeta) — otherwise the row lands in «Без исполнителя».
+  const queueTracks = (list) => withReleaseMeta(list, {
+    artist: artistName,
+    album: albumTitle,
+    coverUrl: resolveCoverUrl(album, artist, null),
+  })
+
   const handlePlayAll = () => {
-    if (tracks.length > 0) playQueue(tracks, 0, releaseInfo)
+    if (tracks.length > 0) playQueue(queueTracks(tracks), 0, releaseInfo)
   }
 
   const handlePlayTrack = (idx) => {
-    playQueue(tracks, idx, releaseInfo)
+    playQueue(queueTracks(tracks), idx, releaseInfo)
   }
 
   const isThisQueue = queue.length > 0 && tracks.length > 0 && queue[0]?.id === tracks[0]?.id

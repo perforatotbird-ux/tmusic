@@ -15,7 +15,7 @@ function loadModule() {
     .replace(/^import[\s\S]*?from\s+'[^']*'\s*$/gm, '')
   const context = { module: { exports: {} }, console }
   vm.createContext(context)
-  vm.runInContext(`${stripped}\n;module.exports = { cachedToTrack, groupCachedTracks, cachedArtistCard, cachedAlbumCard, cachedArtistCardId, isCachedArtistCardId, UNKNOWN_ARTIST, UNKNOWN_ALBUM }`, context)
+  vm.runInContext(`${stripped}\n;module.exports = { cachedToTrack, groupCachedTracks, cachedArtistCard, cachedAlbumCard, cachedArtistCardId, isCachedArtistCardId, withReleaseMeta, UNKNOWN_ARTIST, UNKNOWN_ALBUM }`, context)
   return context.module.exports
 }
 
@@ -25,6 +25,7 @@ const {
   cachedArtistCard,
   cachedAlbumCard,
   isCachedArtistCardId,
+  withReleaseMeta,
   UNKNOWN_ARTIST,
   UNKNOWN_ALBUM,
 } = loadModule()
@@ -187,4 +188,53 @@ test('cached album ids are namespaced so they cannot collide with catalog ids', 
   assert.equal(isCachedArtistCardId(42), false)
   assert.equal(isCachedArtistCardId('42'), false)
   assert.equal(isCachedArtistCardId('tmusic:favorites'), false)
+})
+
+// ─── Release context for the offline cache ───────────────────────────────────
+// Stream tracklists carry no artist/album/cover — the open album card is the
+// only place that knows them. Without withReleaseMeta the cached row lands in
+// «Без исполнителя» / «Без альбома» instead of Metallica → Reload.
+test('withReleaseMeta fills blanks so cached rows group under the real release', () => {
+  const out = withReleaseMeta(
+    [{ id: 7, name: 'Load.mp3', stream_url: '/api/stream/7' }],
+    { artist: 'Metallica', album: 'Reload', coverUrl: '/covers/reload.jpg' },
+  )
+
+  assert.equal(out[0].artist, 'Metallica')
+  assert.equal(out[0].album, 'Reload')
+  assert.equal(out[0].coverUrl, '/covers/reload.jpg')
+
+  // …and the grouped tree shows Metallica → Reload → Load.mp3 with the cover.
+  const [group] = groupCachedTracks(out)
+  assert.equal(group.name, 'Metallica')
+  assert.equal(group.trackCount, 1)
+  assert.equal(group.albums.length, 1)
+  assert.equal(group.albums[0].name, 'Reload')
+  assert.equal(group.albums[0].coverUrl, '/covers/reload.jpg')
+  assert.equal(group.albums[0].tracks[0].name, 'Load.mp3')
+
+  const card = cachedArtistCard(group)
+  assert.equal(card.display_name, 'Metallica')
+  assert.equal(card.cover_url, '/covers/reload.jpg')
+})
+
+test('withReleaseMeta never overwrites per-track metadata', () => {
+  const out = withReleaseMeta(
+    [{ id: 1, artist: 'Nirvana', album: 'Nevermind', coverUrl: '/covers/n.jpg' }],
+    { artist: 'Metallica', album: 'Reload', coverUrl: '/covers/r.jpg' },
+  )
+
+  assert.equal(out[0].artist, 'Nirvana')
+  assert.equal(out[0].album, 'Nevermind')
+  assert.equal(out[0].coverUrl, '/covers/n.jpg')
+})
+
+test('withReleaseMeta passes through non-arrays and non-objects untouched', () => {
+  assert.equal(withReleaseMeta(null, { artist: 'X' }), null)
+  assert.equal(withReleaseMeta(undefined, { artist: 'X' }), undefined)
+  const out = withReleaseMeta([null, undefined, 42, { id: 1 }], { artist: 'Metallica' })
+  assert.equal(out[0], null)
+  assert.equal(out[1], undefined)
+  assert.equal(out[2], 42)
+  assert.equal(out[3].artist, 'Metallica')
 })

@@ -4,7 +4,7 @@ import { setMediaPlaybackState } from '../services/mediaSession'
 import { IS_NATIVE } from '../services/nativeBridge'
 import { createLogger } from '../utils/logger'
 import { useOfflineStore } from './offlineStore'
-import { getCachedTrack } from '../services/offlineStorageService'
+import { getCachedTrack, refreshCachedTrackMeta } from '../services/offlineStorageService'
 
 const log = createLogger('player')
 
@@ -112,6 +112,15 @@ function fetchCachedTrackSafe(fileId) {
   return Promise.resolve(null)
 }
 
+function refreshCachedMetaSafe(track) {
+  try {
+    if (track && typeof refreshCachedTrackMeta === 'function') {
+      return refreshCachedTrackMeta(track).catch(() => {})
+    }
+  } catch {}
+  return Promise.resolve(false)
+}
+
 const storedVolume = parseFloat(localStorage.getItem('tmusic_volume') || '0.9')
 const initialVolume = Number.isFinite(storedVolume) ? Math.max(0, Math.min(1, storedVolume)) : 0.9
 const SESSION_KEY = 'tmusic_session'
@@ -204,6 +213,15 @@ export const usePlayerStore = create((set, get) => {
     const isOffline = typeof navigator !== 'undefined' && !navigator.onLine
     const offlineState = getOfflineStoreState()
     const isCached = offlineState ? offlineState.cachedTrackIds.has(Number(fileId)) : false
+
+    // Heal pre-fix cache rows: when the playing queue track knows its
+    // artist/album/cover but the stored row has blanks (cached before the
+    // queue carried release context), fill the blanks so «В кэше» regroups
+    // the track under its real Artist → Album. Blob untouched, fire-and-forget.
+    const playing = get().currentTrack
+    if (playing && playing.id === fileId) {
+      refreshCachedMetaSafe(playing)
+    }
 
     if (isOffline && !isCached) {
       log.warn('Track is not cached for offline playback', { id: fileId })

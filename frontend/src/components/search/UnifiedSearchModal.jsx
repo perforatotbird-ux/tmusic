@@ -75,7 +75,14 @@ export function UnifiedSearchModal({ onOpenArtist, onOpenAlbum }) {
 
   const handleTrackPlay = (track, trackList = null) => {
     if (query.trim()) addRecentSearch(query.trim())
-    const list = trackList || [track]
+    // Search rows use backend key names — normalize to the queue/cached shape
+    // so the offline cache stores real Artist → Album instead of blanks.
+    const list = (trackList || [track]).map((t) => ({
+      ...t,
+      artist: t.artist || t.artist_name || '',
+      album: t.album || t.album_title || '',
+      coverUrl: t.coverUrl || t.custom_image_url || t.cover_url || null,
+    }))
     const idx = list.findIndex((t) => t.id === track.id)
     playQueue(list, Math.max(0, idx), {
       title: track.album_title || 'Результаты поиска',

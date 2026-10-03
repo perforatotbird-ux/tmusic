@@ -169,9 +169,11 @@ export async function saveTrack(trackMeta, blob) {
     fileId,
     name: trackMeta.name || trackMeta.title || `Track ${fileId}`,
     title: trackMeta.title || (trackMeta.name || '').replace(/\.[^/.]+$/, ''),
-    artist: trackMeta.artist || trackMeta.artistName || '',
-    album: trackMeta.album || trackMeta.albumTitle || '',
-    coverUrl: trackMeta.coverUrl || null,
+    // Queue tracks come in several shapes: catalog/stream rows (`artist`),
+    // player-enriched rows (`artistName`), search rows (`artist_name`).
+    artist: trackMeta.artist || trackMeta.artistName || trackMeta.artist_name || '',
+    album: trackMeta.album || trackMeta.albumTitle || trackMeta.album_title || '',
+    coverUrl: trackMeta.coverUrl || trackMeta.custom_image_url || trackMeta.cover_url || null,
     duration: Number(trackMeta.duration) || 0,
     size: blob.size,
     mimeType: blob.type || trackMeta.mime_type || 'audio/mpeg',
@@ -284,6 +286,56 @@ export async function getAllCachedTracks() {
     })
   } catch {
     return []
+  }
+}
+
+/**
+ * Fill in metadata of an already-cached row without touching its audio blob.
+ *
+ * Rows cached before the queue carried release context (or from entry points
+ * without it) sit in «Без исполнителя» / «Без альбома». When such a track is
+ * played again from a context that knows the real artist/album/cover, this
+ * heals the row so «В кэше» regroups it under Metallica → Reload. Only blank
+ * grouping fields (artist/album/coverUrl) are filled; existing values — and
+ * the stored title — are never overwritten. No-op when the row is not cached
+ * or the incoming track has no metadata.
+ */
+export async function refreshCachedTrackMeta(trackMeta) {
+  if (!trackMeta || trackMeta.id == null) return false
+  const fileId = Number(trackMeta.id)
+  const incoming = {
+    artist: trackMeta.artist || trackMeta.artistName || trackMeta.artist_name || '',
+    album: trackMeta.album || trackMeta.albumTitle || trackMeta.album_title || '',
+    coverUrl: trackMeta.coverUrl || trackMeta.custom_image_url || trackMeta.cover_url || null,
+  }
+  if (!incoming.artist && !incoming.album && !incoming.coverUrl) return false
+
+  try {
+    const db = await openDatabase()
+    return new Promise((resolve) => {
+      const tx = db.transaction('tracks', 'readwrite')
+      const store = tx.objectStore('tracks')
+      const req = store.get(fileId)
+      req.onsuccess = () => {
+        const item = req.result
+        if (!item) {
+          resolve(false)
+          return
+        }
+        let touched = false
+        if (!item.artist && incoming.artist) { item.artist = incoming.artist; touched = true }
+        if (!item.album && incoming.album) { item.album = incoming.album; touched = true }
+        if (!item.coverUrl && incoming.coverUrl) { item.coverUrl = incoming.coverUrl; touched = true }
+        if (touched) {
+          item.lastAccessedAt = Date.now()
+          store.put(item)
+        }
+        resolve(touched)
+      }
+      req.onerror = () => resolve(false)
+    })
+  } catch {
+    return false
   }
 }
 
@@ -619,7 +671,12 @@ export async function downloadTrackForOffline(track, { onProgress } = {}) {
   }
 
   const isAlreadyCached = await hasTrack(fileId)
-  if (isAlreadyCached) return true
+  if (isAlreadyCached) {
+    // Heal pre-fix rows: fill blank artist/album/cover from the playing
+    // track when the play context knows them (no re-download).
+    await refreshCachedTrackMeta(track).catch(() => false)
+    return true
+  }
 
   const downloadPromise = (async () => {
     try {

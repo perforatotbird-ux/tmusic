@@ -11,6 +11,7 @@ import {
   cachedArtistCard,
   cachedAlbumCard,
   isCachedArtistCardId,
+  withReleaseMeta,
 } from '../utils/cachedBrowse'
 import { AlbumDetail } from './AlbumDetail'
 import { LibraryPanel } from './HomeExtraPanels'
@@ -683,7 +684,16 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         const artistName = (artist && artist.display_name) || album.title || 'Альбом'
         const coverUrl = resolveCoverUrl(album, artist)
 
-        playQueue(tracks, 0, {
+        // Stream rows carry no artist/album/cover — attach the release context
+        // to each queue track so the offline cache stores it and «В кэше»
+        // groups the track under its real Artist → Album (null fallback: a
+        // stored '/icon.svg' would mask the fallback badge).
+        const queueTracks = withReleaseMeta(tracks, {
+          artist: artistName,
+          album: album.title,
+          coverUrl: resolveCoverUrl(album, artist, null),
+        })
+        playQueue(queueTracks, 0, {
           title: album.title,
           artistName,
           coverUrl,
@@ -719,7 +729,12 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       if (!tracks || tracks.length === 0) return
       const artistName = (artist && artist.display_name) || album.title || 'Альбом'
       const coverUrl = resolveCoverUrl(album, artist)
-      prepareQueue(tracks, 0, { title: album.title, artistName, coverUrl })
+      const queueTracks = withReleaseMeta(tracks, {
+        artist: artistName,
+        album: album.title,
+        coverUrl: resolveCoverUrl(album, artist, null),
+      })
+      prepareQueue(queueTracks, 0, { title: album.title, artistName, coverUrl })
       setPlayerExpanded(true)
     } catch (e) {
       console.error('Failed to load tracks for album:', e)
@@ -895,7 +910,14 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     try {
       const tracks = await streamApi.getFolderTracks(artist.folder_id, true)
       if (tracks && tracks.length > 0) {
-        playQueue(tracks, 0, {
+        // Recursive tracklist spans several albums — per-track album is
+        // unknown here, but the artist is: attach it so «В кэше» buckets the
+        // tracks under the real artist instead of «Без исполнителя».
+        const queueTracks = withReleaseMeta(tracks, {
+          artist: artist.display_name,
+          coverUrl: resolveCoverUrl(artist, null, null),
+        })
+        playQueue(queueTracks, 0, {
           title: 'Все треки',
           artistName: artist.display_name,
           coverUrl: resolveCoverUrl(artist),

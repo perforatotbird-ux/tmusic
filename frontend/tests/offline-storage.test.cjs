@@ -327,6 +327,77 @@ test('clearCategory deletes only the specified category and clearCategory("all")
   assert.equal(dbData.metadata.size, 0)
 })
 
+test('saveTrack stores release metadata from any queue-track shape', async () => {
+  const { context } = createOfflineServiceContext()
+  const blob = { size: 1234, type: 'audio/mpeg' }
+
+  // Catalog/stream shape enriched by withReleaseMeta.
+  await context.saveTrack(
+    { id: 1, name: 'Load.mp3', artist: 'Metallica', album: 'Reload', coverUrl: '/covers/r.jpg' },
+    blob,
+  )
+  // Search-API shape (backend key names).
+  await context.saveTrack(
+    { id: 2, name: 'Song2.mp3', artist_name: 'Nirvana', album_title: 'Nevermind', cover_url: '/covers/n.jpg' },
+    blob,
+  )
+
+  const rows = await context.getAllCachedTracks()
+  const byId = Object.fromEntries(rows.map((r) => [r.id, r]))
+  assert.equal(byId[1].artist, 'Metallica')
+  assert.equal(byId[1].album, 'Reload')
+  assert.equal(byId[1].coverUrl, '/covers/r.jpg')
+  assert.equal(byId[2].artist, 'Nirvana')
+  assert.equal(byId[2].album, 'Nevermind')
+  assert.equal(byId[2].coverUrl, '/covers/n.jpg')
+})
+
+test('refreshCachedTrackMeta heals blank rows without touching the blob', async () => {
+  const { context, dbData } = createOfflineServiceContext()
+  const blob = { size: 999, type: 'audio/mpeg' }
+
+  // Row cached before the queue carried release context: blanks everywhere.
+  await context.saveTrack({ id: 7, name: 'Load.mp3' }, blob)
+  assert.equal((await context.getAllCachedTracks())[0].artist, '')
+
+  const healed = await context.refreshCachedTrackMeta({
+    id: 7, artist: 'Metallica', album: 'Reload', coverUrl: '/covers/r.jpg', title: 'Load',
+  })
+  assert.equal(healed, true)
+
+  const [row] = await context.getAllCachedTracks()
+  assert.equal(row.artist, 'Metallica')
+  assert.equal(row.album, 'Reload')
+  assert.equal(row.coverUrl, '/covers/r.jpg')
+  // Audio blob entry untouched (same stored object, same size).
+  assert.equal(dbData.tracks.get(7).size, 999)
+})
+
+test('refreshCachedTrackMeta never overwrites real values and no-ops cleanly', async () => {
+  const { context } = createOfflineServiceContext()
+  const blob = { size: 10, type: 'audio/mpeg' }
+
+  await context.saveTrack(
+    { id: 3, name: 'X.mp3', artist: 'Nirvana', album: 'Nevermind', coverUrl: '/covers/n.jpg', title: 'X' },
+    blob,
+  )
+  const kept = await context.refreshCachedTrackMeta({
+    id: 3, artist: 'Metallica', album: 'Reload', coverUrl: '/covers/r.jpg', title: 'Other',
+  })
+  assert.equal(kept, false)
+  // The stored title is left alone even when the incoming one differs.
+  assert.equal((await context.getAllCachedTracks())[0].title, 'X')
+  const [row] = await context.getAllCachedTracks()
+  assert.equal(row.artist, 'Nirvana')
+  assert.equal(row.album, 'Nevermind')
+  assert.equal(row.coverUrl, '/covers/n.jpg')
+
+  // Unknown id and metadata-less track: both no-ops.
+  assert.equal(await context.refreshCachedTrackMeta({ id: 404, artist: 'Ghost' }), false)
+  assert.equal(await context.refreshCachedTrackMeta({ id: 3 }), false)
+  assert.equal(await context.refreshCachedTrackMeta(null), false)
+})
+
 test('getStorageBreakdown computes audio, covers and metadata sizes accurately', async () => {
   const { context, dbData } = createOfflineServiceContext()
 
