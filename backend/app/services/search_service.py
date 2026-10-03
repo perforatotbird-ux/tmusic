@@ -2,10 +2,14 @@
 T-Music Search Service
 Business logic for catalog search: query normalization, title cleanup,
 cover URL resolution, duration enrichment, and LRU caching (ADR-001).
+
+Cover URL contract (2026-10-03): same as music_library_service — search
+cards return ``/api/library/cover?key=<cache-key>`` derived from the stored
+remote URL, so display always reads from the local disk cache. No ``?url=``
+is emitted for cards.
 """
 import re
 import time
-import urllib.parse
 import threading
 from typing import Optional, Tuple, Dict, Any, List
 from sqlalchemy.orm import Session
@@ -41,10 +45,11 @@ def _build_custom_cover_url(key: Optional[str]) -> Optional[str]:
 
 
 def _build_cover_url(url: Optional[str], custom_key: Optional[str]) -> Optional[str]:
+    # Cache-only display URL: deterministic key from the remote URL.
     if custom_key or not url:
         return None
-    quoted = urllib.parse.quote(url, safe="")
-    return f"/api/library/cover?url={quoted}"
+    from app.services.cover_cache_service import cover_cache
+    return f"/api/library/cover?key={cover_cache.url_to_key(url)}"
 
 
 def _cover_pair(url: Optional[str], custom_key: Optional[str]) -> Tuple[Optional[str], Optional[str]]:

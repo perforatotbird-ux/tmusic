@@ -152,6 +152,15 @@ async def catalog_scan_artist(
     artist.locked = True
     artist.updated_at = utcnow()
     db.commit()
+    # Warm the local disk cache once, so cards served via ?key= hit local
+    # files and never trigger a per-request remote fetch on display.
+    if info.get("image_url"):
+        try:
+            from app.services.cover_cache_service import cover_cache
+
+            await cover_cache.fetch_and_cache(info["image_url"])
+        except Exception:
+            pass
     return {"ok": True, "id": artist.id, "updated": True, "mbid": artist.mbid}
 
 
@@ -290,6 +299,15 @@ async def catalog_scan_album(
     album.enriched_at = utcnow()
     album.updated_at = utcnow()
     db.commit()
+    # Warm the local disk cache once, so cards served via ?key= hit local
+    # files and never trigger a per-request remote fetch on display.
+    if info.get("image_url"):
+        try:
+            from app.services.cover_cache_service import cover_cache
+
+            await cover_cache.fetch_and_cache(info["image_url"])
+        except Exception:
+            pass
     return {"ok": True, "id": album.id, "updated": True, "mbid": album.mbid}
 
 

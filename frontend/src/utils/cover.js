@@ -2,8 +2,9 @@
  * Single source of truth for cover-image fallback priority.
  *
  * Backend cards expose up to three URL fields:
- *   custom_image_url (user-uploaded override) →
- *   cover_url / image_url (enriched) →
+ *   custom_image_url (user-uploaded override, `/api/library/cover?key=..&custom=1`) →
+ *   cover_url / image_url (enriched, always `/api/library/cover?key=..` from the
+ *   local disk cache — never a remote URL) →
  *   DEFAULT_COVER fallback.
  *
  * Album cards use `cover_url`, artist cards use `image_url`; this helper

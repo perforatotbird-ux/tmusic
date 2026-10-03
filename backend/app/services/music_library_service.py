@@ -1,8 +1,18 @@
 """
 T-Music Library Service
 Coordinates artist catalog, discographies, custom cover art, and library statistics.
+
+Cover URL contract (2026-10-03): artist/album cards NEVER expose remote URLs.
+``_build_cover_url`` returns ``/api/library/cover?key=<cache-key>`` where the key
+is ``cover_cache.url_to_key(remote_url)`` — the same deterministic key the disk
+cache uses for ``{key}.bin``. The browser therefore always reads from the local
+disk cache (``cache/music_images``); no per-request remote fetch happens on
+display. Remote download happens only once — at enrichment time (see
+``admin_catalog_router.catalog_scan_*`` / ``metadata_router.enrich_artist``,
+which warm the cache via ``fetch_and_cache``) — or via the explicit admin
+``POST /api/library/cover`` upload path. ``GET /cover?url=`` remains as a
+backward-compatible explicit fetch, but cards must not emit it.
 """
-import urllib.parse
 from typing import Optional, List
 from datetime import datetime
 from fastapi import HTTPException
@@ -16,6 +26,7 @@ from app.repositories.album_repository import AlbumRepository
 from app.schemas.library import (
     MusicArtistCard, MusicAlbumCard, MusicArtistDetail, LibraryStats
 )
+from app.services.cover_cache_service import cover_cache
 from app.utils.time import utcnow
 
 
@@ -30,12 +41,15 @@ class MusicLibraryService:
 
     @staticmethod
     def _build_cover_url(url: Optional[str], custom_key: Optional[str], enriched_at: Optional[datetime]) -> Optional[str]:
+        # Always serve from the local disk cache: derive the deterministic
+        # cache key from the stored remote URL and point at ?key=.
+        # enriched_at is kept in the signature for call-site compatibility.
         if custom_key:
             return None
         if not url:
             return None
-        quoted_url = urllib.parse.quote(url, safe="")
-        return f"/api/library/cover?url={quoted_url}"
+        key = cover_cache.url_to_key(url)
+        return f"/api/library/cover?key={key}"
 
     @classmethod
     def _cover_pair(cls, url: Optional[str], custom_key: Optional[str],

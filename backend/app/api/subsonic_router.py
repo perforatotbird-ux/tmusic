@@ -609,9 +609,12 @@ async def _handle(
                 return RedirectResponse(url=f"/api/library/cover?key={alb.custom_image_key}&custom=1")
             if alb and alb.cover_url:
                 from fastapi.responses import RedirectResponse
-                from urllib.parse import quote
 
-                return RedirectResponse(url=f"/api/library/cover?url={quote(alb.cover_url, safe='')}")
+                from app.services.cover_cache_service import cover_cache
+
+                return RedirectResponse(
+                    url=f"/api/library/cover?key={cover_cache.url_to_key(alb.cover_url)}"
+                )
         # 1x1 transparent PNG
         png = bytes.fromhex(
             "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"

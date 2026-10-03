@@ -2,6 +2,7 @@
 T-Music Metadata API (Last.fm / Discogs readiness + lookups).
 No secrets in responses.
 """
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -125,6 +126,18 @@ def enrich_artist(
     if changed:
         db.commit()
         db.refresh(artist)
+    # Warm the local disk cache once, so cards served via ?key= hit local
+    # files. Best-effort: enrichment must not fail when the image host is
+    # down. This endpoint stays sync (FastAPI threadpool, see
+    # test_blocking_routes_use_fastapi_threadpool), so the async fetch runs
+    # in a fresh loop inside this worker thread.
+    if info.get("image_url"):
+        try:
+            from app.services.cover_cache_service import cover_cache
+
+            asyncio.run(cover_cache.fetch_and_cache(info["image_url"]))
+        except Exception:
+            pass
     return {
         "id": artist.id,
         "display_name": artist.display_name,

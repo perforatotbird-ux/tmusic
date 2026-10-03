@@ -119,7 +119,7 @@ async def get_covers_manifest(
 @router.get("/cover")
 async def get_cover(
     key: Optional[str] = Query(None, description="Direct cached key"),
-    url: Optional[str] = Query(None, description="Remote URL to fetch and cache"),
+    url: Optional[str] = Query(None, description="Remote URL to fetch and cache (explicit fetch only; cards use key)"),
     custom: Optional[int] = Query(0, description="1 if custom uploaded cover"),
     user: AppUser = Depends(get_current_user)
 ):
@@ -128,6 +128,13 @@ async def get_cover(
     Requires authentication — an open proxy would allow unauthenticated
     SSRF probing and cache-key enumeration.
     Supports both migrated CloudByte cache (.bin/.meta) and newly fetched images.
+
+    Cache-only display contract (2026-10-03): artist/album/search cards emit
+    ``?key=`` URLs derived from the stored remote URL, so normal display
+    never touches the network — it serves the local disk cache or 404s.
+    The ``?url=`` branch below is an explicit-fetch path (legacy clients,
+    one-off warming); it checks the disk cache first and downloads only on
+    miss. New display code must not emit ``?url=``.
     """
     if key:
         is_custom = custom == 1

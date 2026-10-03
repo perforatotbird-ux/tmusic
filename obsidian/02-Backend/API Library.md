@@ -43,11 +43,20 @@ Prefix: `/api/library` · Router: `backend/app/api/library_router.py` · Service
 Манифест ключей custom-cover. Charset: `^[A-Za-z0-9._-]{1,64}$`, макс. **500** ключей.
 
 ### GET `/api/library/cover`
-Secure proxy обложки (по key или url).
+Secure proxy обложки. Контракт отображения (2026-10-03): карточки
+артистов/альбомов/поиска отдают **только** `?key=` (ключ `cover_cache.url_to_key`
+от хранящегося remote URL) — показ всегда читает локальный дисковый кеш
+(`cache/music_images/{key}.bin`) и никогда не ходит в сеть за remote URL.
+Ветка `?url=` осталась как явный fetch для legacy-клиентов и разового
+прогрева: сначала проверяет диск, качает только при промахе.
 - **401** без auth
-- SSRF-фильтр хостов (`is_safe_host`)
+- SSRF-фильтр хостов (`is_safe_host`), pinned-resolver против DNS-rebinding
 - Timeout: `COVER_HTTP_TIMEOUT_SEC` / `COVER_HTTP_CONNECT_TIMEOUT_SEC`
 - Max bytes: `COVER_MAX_IMAGE_BYTES` (10 МБ)
+- Прогрев кеша: `POST /api/admin/catalog/artists|albums/{id}/scan` и
+  `POST /api/metadata/artists/{id}/enrich` скачивают картинку один раз
+  (`fetch_and_cache`, best-effort); бэкфилл существующих строк —
+  `python scripts/warm_cover_cache.py [--dry-run] [--limit N]` (БД не пишет).
 
 ### Upload / set cover
 `SetCoverRequest`, multipart upload; hard cap `MAX_UPLOAD_BYTES = MAX_IMAGE_BYTES + 1`.
