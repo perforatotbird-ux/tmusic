@@ -316,7 +316,10 @@ async def test_transcode_entry_reaps_before_removing_source(monkeypatch, tmp_pat
     if entry == 'service':
         monkeypatch.setattr(settings, 'TRANSCODE_CACHE_DIR', tmp_path)
         service = transcoding_service.TranscodingService()
-        monkeypatch.setattr(service, '_download_track_bytes', AsyncMock(return_value=b'synthetic audio'))
+        async def download(job, path):
+            await service._disk_call(path.write_bytes, b'synthetic audio')
+            return 15
+        monkeypatch.setattr(service, '_download_track_to_file', download)
         job = transcoding_service.TranscodeJob(1, 'Synthetic.flac', 123, False, 'audio/flac', 0, 'a'*32)
         operation = service._transcode_track(job)
     else:
@@ -335,7 +338,10 @@ async def test_transcode_track_offloads_io_and_duration_probe(monkeypatch, tmp_p
     monkeypatch.setattr(settings, 'TRANSCODE_CACHE_DIR', tmp_path)
     service = transcoding_service.TranscodingService()
     monkeypatch.setattr(transcoding_service, 'ensure_ffmpeg_binaries', lambda: True)
-    monkeypatch.setattr(service, '_download_track_bytes', AsyncMock(return_value=b'synthetic audio'))
+    async def download(job, path):
+        await service._disk_call(path.write_bytes, b'synthetic audio')
+        return 15
+    monkeypatch.setattr(service, '_download_track_to_file', download)
     
     # Mock subprocess communication returning valid fake MP3 bytes (>1024 bytes)
     fake_mp3 = b'ID3' + b'\x00' * 2048
@@ -346,6 +352,8 @@ async def test_transcode_track_offloads_io_and_duration_probe(monkeypatch, tmp_p
     class FakeProc:
         returncode = 0
     async def fake_spawn(*args, **kwargs):
+        Path(args[-1]).write_bytes(fake_mp3)
+        assert kwargs['stdout'] == asyncio.subprocess.DEVNULL
         return FakeProc()
     monkeypatch.setattr(asyncio, 'create_subprocess_exec', fake_spawn)
 
@@ -368,7 +376,8 @@ async def test_transcode_track_offloads_io_and_duration_probe(monkeypatch, tmp_p
     assert job.duration == 123.45
     # Verify that duration probe, write_file, manifest and cache cleanup were offloaded via asyncio.to_thread
     assert 'fake_duration' in thread_targets
-    assert '_write_file' in thread_targets
+    assert 'write_bytes' in thread_targets
+    assert 'replace' in thread_targets
     assert 'write_cache_manifest' in thread_targets
     assert '_cleanup_cache' in thread_targets
 

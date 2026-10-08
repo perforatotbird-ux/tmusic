@@ -86,3 +86,9 @@ Main/share/Subsonic используют один response builder, выбира
 ## Error-handling preflight
 
 Main/share/Subsonic builder получает первый непустой chunk до response.start (timeout 30 секунд, не буферизация всего трека). Upstream failure/empty body -> безопасный 503 до headers. После headers неожиданный EOF/exception не заменяется на HTTPException: body прерывается, structured server log фиксирует track_id/remaining bytes; audio onError в App показывает notice/останавливает или пропускает track. Generator/source закрывается при completion/failure/cancellation/disconnect. Content-Length/Range остаются привязаны к выбранной representation. Живой Telegram/proxy/device тест ещё не выполнен.
+
+## Явное MP3-представление (2026-10-08)
+
+`GET /api/stream/{file_id}?representation=mp3` требует готовый кэш для форматов с `needs_transcoding`; если его нет — HTTP 409 + Retry-After: 2. Для native-compatible файлов сохраняется обычный stream. Auth/Range остаются прежними; ответ явного MP3 использует `private, no-store`. Web-player вызывает POST transcode и опрашивает transcode-status до готовности, отменяя ожидание при смене трека. См. [[Кэш и стриминг]].
+
+`transcode-status` также возвращает `job_active`: pending без активной задачи (например, после перезапуска процесса) показывает retryable error вместо бесконечного ожидания. Эвиктированный READY-кэш считается FAILED и допускает повторный POST. Browser prep проверяется polling, SSE остаётся каналом уведомлений, а не единственным условием готовности.

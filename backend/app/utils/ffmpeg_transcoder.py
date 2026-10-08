@@ -33,8 +33,8 @@ logger = logging.getLogger("tmusic.transcoder")
 FFMPEG_BIN_DIR: Path = Path(
     os.environ.get("FFMPEG_BIN_DIR") or (Path(__file__).parent / "ffmpeg")
 )
-FFMPEG_EXE = FFMPEG_BIN_DIR / "ffmpeg.exe"
-FFPROBE_EXE = FFMPEG_BIN_DIR / "ffprobe.exe"
+FFMPEG_EXE = FFMPEG_BIN_DIR / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+FFPROBE_EXE = FFMPEG_BIN_DIR / ("ffprobe.exe" if os.name == "nt" else "ffprobe")
 
 
 class TranscodeStatus(Enum):

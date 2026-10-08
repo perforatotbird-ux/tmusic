@@ -11,7 +11,7 @@ FROM python:3.13-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc libpq-dev postgresql-client curl && \
+    gcc libpq-dev postgresql-client curl ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt ./
@@ -26,6 +26,8 @@ RUN groupadd --system tmusic && useradd --system --gid tmusic tmusic && \
     mkdir -p /app/cache /app/data && \
     chown -R tmusic:tmusic /app
 USER tmusic
+
+ENV FFMPEG_BIN_DIR=/usr/bin
 
 WORKDIR /app/backend
 EXPOSE 8005

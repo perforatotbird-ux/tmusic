@@ -29,6 +29,11 @@ function createOfflineServiceContext() {
             objectStore: (name) => {
               const map = dbData[name] || new Map()
               return {
+                count: (key) => {
+                  const r = { result: map.has(key) ? 1 : 0 }
+                  setTimeout(() => r.onsuccess && r.onsuccess({ target: r }), 0)
+                  return r
+                },
                 get: (key) => {
                   const r = { result: map.get(key) }
                   setTimeout(() => r.onsuccess && r.onsuccess({ target: r }), 0)
@@ -152,6 +157,7 @@ function createOfflineServiceContext() {
   }
 
   const context = {
+    streamApi: { needsPreparation: track => /\.(m4a|flac)$/i.test(track.name || ''), preparePlayback: async id => `/api/stream/${id}?representation=mp3` },
     window: windowMock,
     indexedDB: fakeIdb,
     IDBKeyRange: {
@@ -415,4 +421,22 @@ test('getStorageBreakdown computes audio, covers and metadata sizes accurately',
   assert.equal(stats.totalBytes, 10000)
   assert.equal(stats.deviceTotalBytes, 64000000000)
   assert.equal(stats.deviceAvailableBytes, 32000000000)
+})
+
+test('new M4A offline download stores explicit prepared MP3, not original raw URL', async () => {
+  const { context, dbData } = createOfflineServiceContext(), calls = []
+  context.fetch = async url => { calls.push(url); return { ok: true, blob: async () => ({ size: 2048, type: 'audio/mpeg' }) } }
+  assert.equal(await context.downloadTrackForOffline({ id: 41, name: 'Long.m4a', stream_url: '/raw-should-not-be-used' }), true)
+  assert.equal(calls[0], '/api/stream/41?representation=mp3')
+  assert.equal(dbData.tracks.get(41).mimeType, 'audio/mpeg')
+})
+test('legacy M4A cache is replaced by prepared MP3 while valid MP3 is retained', async () => {
+  const { context, dbData } = createOfflineServiceContext(), calls = []
+  await context.saveTrack({ id: 42, name: 'Long.m4a' }, { size: 500, type: 'audio/mp4' })
+  context.fetch = async url => { calls.push(url); return { ok: true, blob: async () => ({ size: 2048, type: 'audio/mpeg' }) } }
+  assert.equal(await context.downloadTrackForOffline({ id: 42, name: 'Long.m4a' }), true)
+  assert.equal(dbData.tracks.get(42).mimeType, 'audio/mpeg')
+  const before = calls.length
+  assert.equal(await context.downloadTrackForOffline({ id: 42, name: 'Long.m4a' }), true)
+  assert.equal(calls.length, before)
 })

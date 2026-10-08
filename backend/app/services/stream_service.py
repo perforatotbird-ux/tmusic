@@ -136,7 +136,7 @@ class StreamService:
             logger.exception("Failed to resolve encryption header for track %d", track.id)
             raise HTTPException(status_code=503, detail="Streaming service temporarily unavailable.")
 
-    async def resolve_representation(self, track) -> StreamRepresentation:
+    async def resolve_representation(self, track, *, require_transcoded=False) -> StreamRepresentation:
         from app.services.transcoding_service import transcoding_service
         if needs_transcoding(track.name, track.mime_type):
             result = transcoding_service.get_result(track.id)
@@ -148,11 +148,13 @@ class StreamService:
                         return StreamRepresentation(size, "audio/mpeg", path)
                 except OSError:
                     pass  # Cache disappeared: select the original before headers.
+        if require_transcoded and needs_transcoding(track.name, track.mime_type):
+            raise HTTPException(status_code=409, detail="Transcoded audio is not ready.", headers={"Retry-After": "2"})
         return StreamRepresentation(await self.get_plain_track_size(track), track.mime_type or "audio/mpeg")
 
-    async def build_stream_response(self, request, track, *, cache_control="private, max-age=3600", on_original=None):
+    async def build_stream_response(self, request, track, *, cache_control="private, max-age=3600", on_original=None, require_transcoded=False):
         """Select once: headers, Range, format and body describe the same representation."""
-        representation = await self.resolve_representation(track)
+        representation = await self.resolve_representation(track, require_transcoded=require_transcoded)
         if representation.size <= 0:
             raise HTTPException(status_code=400, detail="Audio file has invalid size.")
         if representation.cached_path is None and on_original is not None:

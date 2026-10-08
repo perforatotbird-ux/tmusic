@@ -90,6 +90,8 @@ class Settings(BaseSettings):
     TRANSCODE_CACHE_DIR: Path = BASE_DIR / "cache" / "music_transcoded"
     TRANSCODE_ENABLED: bool = True
     TRANSCODE_BITRATE_KBPS: int = 320  # CBR 320kbps for maximum quality
+    TRANSCODE_DOWNLOAD_TIMEOUT_SEC: int = Field(1800, ge=30, le=86400)
+    TRANSCODE_TIMEOUT_SEC: int = Field(1800, ge=30, le=86400)
     TRANSCODE_WORKERS: int = 2         # Concurrent background transcode workers
     TRANSCODE_FORMATS_NEED: list = ["m4a", "mp4", "ogg", "opus", "flac", "wma", "aac"]
     TRANSCODE_PREFETCH_COUNT: int = 2   # Number of upcoming tracks to pre-transcode

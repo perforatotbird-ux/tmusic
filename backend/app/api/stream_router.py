@@ -148,6 +148,7 @@ async def get_transcode_status(
         "file_id": file_id,
         "file_name": track.name,
         "status": status.value,
+        "job_active": transcoding_service.has_active_job(file_id),
         "mime_type": track.mime_type,
     }
     if result and result.get("cached_path"):
@@ -245,7 +246,8 @@ async def stream_audio_file(
     file_id: int,
     request: Request,
     db: Session = Depends(get_db),
-    user: AppUser = Depends(get_stream_user)
+    user: AppUser = Depends(get_stream_user),
+    representation: str = Query("auto", pattern="^(auto|mp3)$"),
 ):
     """
     Stream audio track chunk-by-chunk directly from Telegram MTProto or RAM cache.
@@ -261,4 +263,8 @@ async def stream_audio_file(
         if needs_transcoding(track.name, track.mime_type) and request.headers.get("X-Prefetch") != "1":
             transcoding_service.request_transcode(track, priority=0, requester_user_id=user_id)
 
-    return await stream_service.build_stream_response(request, track, on_original=enqueue_original)
+    return await stream_service.build_stream_response(
+        request, track, on_original=enqueue_original,
+        require_transcoded=representation == "mp3",
+        cache_control="private, no-store" if representation == "mp3" else "private, max-age=3600",
+    )

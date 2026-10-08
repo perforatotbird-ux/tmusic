@@ -8,6 +8,7 @@
  */
 
 import { getNativeStorageInfo } from './nativeBridge'
+import { streamApi } from '../api/stream'
 
 const DB_NAME = 'tmusic_offline_cache'
 const DB_VERSION = 1
@@ -671,7 +672,9 @@ export async function downloadTrackForOffline(track, { onProgress } = {}) {
   }
 
   const isAlreadyCached = await hasTrack(fileId)
-  if (isAlreadyCached) {
+  const needsPreparation = streamApi.needsPreparation(track)
+  const existing = isAlreadyCached && needsPreparation ? await getCachedTrack(fileId) : null
+  if (isAlreadyCached && (!needsPreparation || existing?.mimeType === 'audio/mpeg')) {
     // Heal pre-fix rows: fill blank artist/album/cover from the playing
     // track when the play context knows them (no re-download).
     await refreshCachedTrackMeta(track).catch(() => false)
@@ -680,7 +683,9 @@ export async function downloadTrackForOffline(track, { onProgress } = {}) {
 
   const downloadPromise = (async () => {
     try {
-      const streamUrl = track.stream_url || `/api/stream/${fileId}`
+      const streamUrl = needsPreparation
+        ? await streamApi.preparePlayback(fileId)
+        : track.stream_url || `/api/stream/${fileId}`
       const res = await fetch(streamUrl, {
         credentials: 'include',
         headers: { Accept: 'audio/*,*/*' },

@@ -179,9 +179,13 @@ export const usePlayerStore = create((set, get) => {
   let resumeCleanup = null
   let readyCleanup = null
   let audioGeneration = 0
+  let preparationAbort = null
+  let recoveredGeneration = null
 
   function clearRecovery(stopWatchdog = true) {
     audioGeneration += 1
+    if (preparationAbort) preparationAbort.abort()
+    preparationAbort = null
     if (resumeCleanup) resumeCleanup()
     if (readyCleanup) readyCleanup()
     for (const timer of resumeTimers) clearTimeout(timer)
@@ -204,11 +208,12 @@ export const usePlayerStore = create((set, get) => {
   }
 
   /** Point <audio> at track and start playback in the SAME call stack (Android-safe). */
-  function startAudio(fileId, { forceLoad = false, autoplay = true } = {}) {
+  function startAudio(fileId, { forceLoad = false, autoplay = true, bypassCache = false, forcePreparation = false } = {}) {
     const audio = get().audioElement
     if (!audio || fileId == null) return
     clearRecovery(!autoplay)
     const generation = audioGeneration
+    set({ isPreparing: false, playbackFailed: false })
 
     const isOffline = typeof navigator !== 'undefined' && !navigator.onLine
     const offlineState = getOfflineStoreState()
@@ -260,7 +265,32 @@ export const usePlayerStore = create((set, get) => {
 
     function fallbackStream() {
       if (generation !== audioGeneration || get().currentTrack?.id !== fileId) return
-      const url = streamApi.getStreamUrl(fileId)
+      const track = get().currentTrack
+      if (!IS_NATIVE && (forcePreparation || streamApi.needsPreparation?.(track))) {
+        const ctrl = new AbortController()
+        preparationAbort = ctrl
+        set({ isPreparing: true, isBuffering: true })
+        audio.pause()
+        audio.removeAttribute('src')
+        audio.removeAttribute('data-track-id')
+        audio.load()
+        get().pushNotice({ kind: 'info', text: 'Подготовка аудио — дождитесь завершения…' })
+        streamApi.preparePlayback(fileId, { signal: ctrl.signal }).then((url) => {
+          if (generation !== audioGeneration || get().currentTrack?.id !== fileId) return
+          preparationAbort = null
+          set({ isPreparing: false })
+          bindStream(url)
+        }).catch((err) => {
+          if (ctrl.signal.aborted || generation !== audioGeneration) return
+          get().failPlayback(err.message || 'Не удалось подготовить аудио. Нажмите Play для повтора.')
+        })
+        return
+      }
+      bindStream(streamApi.getStreamUrl(fileId))
+    }
+
+    function bindStream(url) {
+      if (generation !== audioGeneration || get().currentTrack?.id !== fileId) return
       audio.src = url
       audio.setAttribute('data-track-id', key)
       audio.removeAttribute('data-is-cached')
@@ -270,9 +300,6 @@ export const usePlayerStore = create((set, get) => {
       } catch {
         /* ignore */
       }
-      streamApi.triggerTranscode(fileId).catch((err) => {
-        log.debug('triggerTranscode failed', { id: fileId, error: err.message })
-      })
 
       // Auto-cache played track if configured in offline settings
       const offlineSettings = offlineState?.settings
@@ -310,7 +337,7 @@ export const usePlayerStore = create((set, get) => {
     if (needsLoad) {
       cleanupBlobUrl()
 
-      if (isCached) {
+      if (isCached && !bypassCache) {
         fetchCachedTrackSafe(fileId).then((cached) => {
           if (generation !== audioGeneration || get().currentTrack?.id !== fileId) return
           if (cached && cached.blob) {
@@ -459,6 +486,31 @@ export const usePlayerStore = create((set, get) => {
     audioElement: null,
     isPlayingFromCache: false,
     _watchdogId: null,
+    isPreparing: false,
+    playbackFailed: false,
+
+    failPlayback: (message) => {
+      clearRecovery()
+      get().audioElement?.pause()
+      set({ isPlaying: false, isPreparing: false, isBuffering: false, playbackFailed: true })
+      setMediaPlaybackState('none')
+      get().setNotice({ kind: 'error', text: message })
+    },
+
+    recoverAudioError: () => {
+      const state = get()
+      const audio = state.audioElement
+      if (!state.currentTrack || state.isPreparing || audio?.getAttribute('data-track-id') !== String(state.currentTrack.id)) return
+      const offline = typeof navigator !== 'undefined' && !navigator.onLine
+      const cached = audio?.getAttribute('data-is-cached') === 'true'
+      const raw = audio?.src && !audio.src.includes('representation=mp3')
+      if (!IS_NATIVE && !offline && (cached || raw) && recoveredGeneration !== audioGeneration) {
+        startAudio(state.currentTrack.id, { forceLoad: true, bypassCache: true, forcePreparation: true })
+        recoveredGeneration = audioGeneration
+        return
+      }
+      get().failPlayback('Не удалось воспроизвести трек. Нажмите Play для повтора или переключите вручную.')
+    },
 
     startTranscodeEvents: () => initTranscodeSSE(),
     stopTranscodeEvents: () => stopTranscodeSSE(),
@@ -578,6 +630,8 @@ export const usePlayerStore = create((set, get) => {
         queueIndex: -1,
         isPlaying: false,
         isBuffering: false,
+        isPreparing: false,
+        playbackFailed: false,
         currentTime: 0,
         duration: 0,
         bufferedUpTo: 0,
@@ -794,10 +848,10 @@ export const usePlayerStore = create((set, get) => {
     togglePlay: () => {
       const { isPlaying, audioElement, currentTrack } = get()
       if (!audioElement || !currentTrack) return
-      if (isPlaying && !audioElement.paused) {
+      if (isPlaying && (get().isPreparing || !audioElement.paused)) {
         audioElement.pause()
         clearRecovery()
-        set({ isPlaying: false })
+        set({ isPlaying: false, isPreparing: false, isBuffering: false })
         setMediaPlaybackState('paused')
         persistSession()
         log.debug('pause', { id: currentTrack.id })
@@ -805,8 +859,8 @@ export const usePlayerStore = create((set, get) => {
         set({ isPlaying: true })
         log.debug('resume', { id: currentTrack.id })
         // Resume existing buffer or re-bind src
-        if (!audioElement.getAttribute('data-track-id')) {
-          startAudio(currentTrack.id)
+        if (get().playbackFailed || !audioElement.getAttribute('data-track-id')) {
+          startAudio(currentTrack.id, { forceLoad: true, bypassCache: get().playbackFailed })
         } else {
           setMediaPlaybackState('playing')
           const generation = audioGeneration
@@ -1014,10 +1068,10 @@ export const usePlayerStore = create((set, get) => {
     /** Manual start from UI after unlock — used by player button. */
     forceResume: () => {
       const { currentTrack, audioElement } = get()
-      if (!currentTrack || !audioElement) return
+      if (!currentTrack || !audioElement || get().isPreparing) return
       set({ isPlaying: true })
-      if (audioElement.getAttribute('data-track-id') !== String(currentTrack.id) || !audioElement.src) {
-        startAudio(currentTrack.id, { forceLoad: true })
+      if (get().playbackFailed || audioElement.getAttribute('data-track-id') !== String(currentTrack.id) || !audioElement.src) {
+        startAudio(currentTrack.id, { forceLoad: true, bypassCache: get().playbackFailed })
       } else {
         setMediaPlaybackState('playing')
         const p = audioElement.play()
@@ -1050,6 +1104,9 @@ export const usePlayerStore = create((set, get) => {
       const offlineState = getOfflineStoreState()
       for (const { i, bytes } of plan) {
         const track = queue[i]
+        // Raw M4A bytes must not be prefetched/cached under the playable URL.
+        // Transcode prefetch has its own sliding window after playback starts.
+        if (!IS_NATIVE && streamApi.needsPreparation?.(track)) continue
         if (!track || precachedTracks.has(track.id) || prefetchAborts.has(track.id) || (offlineState && offlineState.cachedTrackIds.has(Number(track.id)))) continue
         rememberPrecached(track.id)
 
