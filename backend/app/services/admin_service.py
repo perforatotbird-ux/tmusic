@@ -9,12 +9,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import engine
 from app.models.auth import AppSetting, BackupRun
+from app.repositories.backup_run_repository import BackupRunRepository
+from app.repositories.db_stats_repository import DbStatsRepository
+from app.repositories.settings_repository import SettingsRepository
 from app.utils.time import utcnow
 
 logger = logging.getLogger("tmusic.admin.backup")
@@ -41,7 +44,7 @@ def ensure_backup_dir(path: Path) -> Path:
 
 
 def get_setting(db: Session, key: str, default: Optional[str] = None) -> Optional[str]:
-    row = db.get(AppSetting, key)
+    row = SettingsRepository.get(db, key)
     if row is not None and row.value is not None:
         return row.value
     if default is not None:
@@ -52,7 +55,7 @@ def get_setting(db: Session, key: str, default: Optional[str] = None) -> Optiona
 def set_setting(db: Session, key: str, value: str) -> AppSetting:
     if key not in ALLOWED_SETTING_KEYS:
         raise ValueError(f"Unknown setting key: {key}")
-    row = db.get(AppSetting, key)
+    row = SettingsRepository.get(db, key)
     if row is None:
         row = AppSetting(key=key, value=str(value))
         db.add(row)
@@ -66,7 +69,7 @@ def set_setting(db: Session, key: str, value: str) -> AppSetting:
 
 def get_all_settings(db: Session) -> Dict[str, Any]:
     out: Dict[str, Any] = dict(DEFAULT_SETTINGS)
-    for row in db.scalars(select(AppSetting)).all():
+    for row in SettingsRepository.list_all(db):
         if row.key in ALLOWED_SETTING_KEYS:
             out[row.key] = row.value
     # typed convenience
@@ -174,7 +177,7 @@ def _finish_backup_run(
 
 
 def list_backup_runs(db: Session, limit: int = 50) -> List[Dict[str, Any]]:
-    rows = db.scalars(select(BackupRun).order_by(BackupRun.started_at.desc()).limit(limit)).all()
+    rows = BackupRunRepository.list_recent(db, limit)
     return [
         {
             "id": row.id,
@@ -373,50 +376,20 @@ def restore_backup(
 # ─── DB maintenance ──────────────────────────────────────────────────────────
 
 def db_table_stats(db: Session) -> List[Dict[str, Any]]:
-    rows = db.execute(
-        text(
-            """
-            SELECT relname AS table,
-                   n_live_tup AS live_rows,
-                   n_dead_tup AS dead_rows,
-                   pg_size_pretty(pg_total_relation_size(relid)) AS total_size,
-                   last_vacuum,
-                   last_autovacuum,
-                   last_analyze,
-                   last_autoanalyze
-            FROM pg_stat_user_tables
-            ORDER BY n_live_tup DESC
-            LIMIT 100
-            """
-        )
-    ).mappings().all()
-    return [dict(r) for r in rows]
+    return DbStatsRepository.table_stats(db)
 
 
 def db_overview(db: Session) -> Dict[str, Any]:
-    size = db.execute(text("SELECT pg_size_pretty(pg_database_size(current_database())) AS s")).scalar()
-    conns = db.execute(text("SELECT count(*) FROM pg_stat_activity")).scalar()
-    max_conn = db.execute(text("SHOW max_connections")).scalar()
-    version = db.execute(text("SELECT version()")).scalar()
-    uptime = db.execute(text("SELECT now() - pg_postmaster_start_time() AS up")).scalar()
-    tables = db.execute(
-        text(
-            """
-            SELECT count(*) FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-            """
-        )
-    ).scalar()
-    db_size_bytes = db.execute(text("SELECT pg_database_size(current_database())")).scalar()
+    raw = DbStatsRepository.overview(db)
     return {
         "database": settings.DATABASE_URL.rsplit("/", 1)[-1] if settings.DATABASE_URL else None,
-        "db_size": size,
-        "db_size_bytes": int(db_size_bytes or 0),
-        "connections": int(conns or 0),
-        "max_connections": max_conn,
-        "tables": int(tables or 0),
-        "server_version": version,
-        "uptime": str(uptime) if uptime is not None else None,
+        "db_size": raw["db_size"],
+        "db_size_bytes": int(raw["db_size_bytes"] or 0),
+        "connections": int(raw["connections"] or 0),
+        "max_connections": raw["max_connections"],
+        "tables": int(raw["tables"] or 0),
+        "server_version": raw["version"],
+        "uptime": str(raw["uptime"]) if raw["uptime"] is not None else None,
         "reachable": True,
     }
 

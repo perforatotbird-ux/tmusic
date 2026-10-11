@@ -13,10 +13,17 @@ export const streamApi = {
       /(?:mp4|m4a|aac|flac|ogg|opus|wma)/i.test(mime)
   },
 
+  // SECURITY: the wait is bounded. A stuck or very slow transcode job used to
+  // keep every open tab polling /transcode-status at a fixed 1.5s forever; the
+  // budget below is ~25 minutes with backoff, after which the caller gets a
+  // retryable error instead of an endless request stream.
   preparePlayback: async (fileId, { signal } = {}) => {
     signal?.throwIfAborted()
+    const MAX_POLLS = 180
+    const BASE_DELAY_MS = 1500
+    const MAX_DELAY_MS = 8000
     let result = await request(`/api/stream/${fileId}/transcode`, { method: 'POST', signal })
-    for (;;) {
+    for (let attempt = 0; attempt < MAX_POLLS; attempt += 1) {
       signal?.throwIfAborted()
       if (result.status === 'ready' || result.status === 'cached') return streamApi.getStreamUrl(fileId, 'mp3')
       if (result.status === 'not_needed') return streamApi.getStreamUrl(fileId)
@@ -24,13 +31,38 @@ export const streamApi = {
       if (result.status === 'failed') throw new Error('Не удалось подготовить аудио. Нажмите Play для повтора.')
       if (!['pending', 'processing'].includes(result.status)) throw new Error('Неизвестный статус подготовки аудио.')
       await new Promise((resolve, reject) => {
-        const abort = () => { clearTimeout(timer); signal.removeEventListener('abort', abort); reject(signal.reason) }
-        const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve() }, 2000)
-        signal?.addEventListener('abort', abort, { once: true })
-        if (signal?.aborted) abort()
+        const win = typeof window !== 'undefined' ? window : null
+        let timer = null
+        let settled = false
+        // No `{ once: true }` here: it would drop the listener on the first
+        // event for ANY track, so the fast path would never fire and every
+        // iteration would fall back to the timer. Removed explicitly instead.
+        const cleanup = () => {
+          if (settled) return
+          settled = true
+          if (timer) clearTimeout(timer)
+          signal?.removeEventListener('abort', onAbort)
+          win?.removeEventListener('tmusic:transcode-complete', onComplete)
+        }
+        const onAbort = () => { cleanup(); reject(signal?.reason) }
+        const onComplete = (e) => {
+          const id = e?.detail?.file_id ?? e?.file_id
+          if (id === fileId) {
+            cleanup()
+            resolve()
+          }
+        }
+        // Backoff + jitter: long jobs poll slower, and many tabs do not retry
+        // in lockstep.
+        const delay = Math.min(MAX_DELAY_MS, Math.round(BASE_DELAY_MS * Math.pow(1.25, attempt))) + Math.floor(Math.random() * 250)
+        timer = setTimeout(() => { cleanup(); resolve() }, delay)
+        signal?.addEventListener('abort', onAbort)
+        win?.addEventListener('tmusic:transcode-complete', onComplete)
+        if (signal?.aborted) onAbort()
       })
       result = await request(`/api/stream/${fileId}/transcode-status`, { signal })
     }
+    throw new Error('Подготовка аудио заняла слишком долго. Повторите попытку позже.')
   },
 
   // Tracklists change only through catalog ops/VFS imports; those call
@@ -41,19 +73,12 @@ export const streamApi = {
     return memoize(key, cacheTtl.tracks, () => request(key))
   },
 
-  // Short-lived (10 min) single-purpose token for players that cannot send
-  // cookies/headers. Never put the session JWT into ?token= — the backend
-  // rejects full session tokens in the query string.
-  mintStreamToken: () =>
-    request('/api/stream/token', { method: 'POST' }),
-
-  getStreamUrlWithToken: async (fileId) => {
-    const { stream_token } = await streamApi.mintStreamToken()
-    if (!stream_token || typeof stream_token !== 'string') {
-      throw new Error('Stream token unavailable')
-    }
-    return `/api/stream/${fileId}?token=${encodeURIComponent(stream_token)}`
-  },
+  // SECURITY: no ?token= variant of the stream URL in the SPA. A token in the
+  // query string leaks into browser history, Referer and proxy logs. The
+  // backend does expose POST /api/stream/token (10 min, scope=stream) for
+  // native players that cannot send cookies, but the web player always has the
+  // same-origin session cookie, so the mint+query helpers here were dead code
+  // and were removed rather than left as a landmine.
 
   // ─── Transcoding API ────────────────────────────────────────────────────────
 

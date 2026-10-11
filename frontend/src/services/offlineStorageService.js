@@ -9,6 +9,9 @@
 
 import { getNativeStorageInfo } from './nativeBridge'
 import { streamApi } from '../api/stream'
+import { createLogger } from '../utils/logger'
+
+const log = createLogger('offline')
 
 const DB_NAME = 'tmusic_offline_cache'
 const DB_VERSION = 1
@@ -153,7 +156,7 @@ export async function saveCacheSettings(partialSettings) {
 
   notifyCacheUpdated({ type: 'settings_updated', settings: updated })
   // Run eviction when limit or TTL changed
-  setTimeout(() => runEviction().catch(() => {}), 100)
+  setTimeout(() => runEviction().catch((e) => log.debug('eviction on save failed', { error: e?.message })), 100)
   return updated
 }
 
@@ -194,7 +197,7 @@ export async function saveTrack(trackMeta, blob) {
   notifyCacheUpdated({ type: 'track_added', fileId, size: blob.size })
 
   // Trigger eviction check in background
-  setTimeout(() => checkAndEvictSize().catch(() => {}), 200)
+  setTimeout(() => checkAndEvictSize().catch((e) => log.debug('size eviction check failed', { error: e?.message })), 200)
   return item
 }
 
@@ -576,14 +579,13 @@ export async function clearCategory(category) {
     if (category === 'covers' || category === 'all') storesToClear.push('covers')
     if (category === 'metadata' || category === 'all') storesToClear.push('metadata')
 
-    for (const storeName of storesToClear) {
-      await new Promise((resolve, reject) => {
-        const tx = db.transaction(storeName, 'readwrite')
-        const req = tx.objectStore(storeName).clear()
-        req.onsuccess = () => resolve()
-        req.onerror = () => reject(req.error)
-      })
-    }
+    // IDB transactions on distinct object stores may run concurrently.
+    await Promise.all(storesToClear.map((storeName) => new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, 'readwrite')
+      const req = tx.objectStore(storeName).clear()
+      req.onsuccess = () => resolve()
+      req.onerror = () => reject(req.error)
+    })))
 
     notifyCacheUpdated({ type: 'cache_cleared', category })
     return true
@@ -621,7 +623,10 @@ export async function runEviction() {
             resolve()
           }
         }
-        req.onerror = () => resolve()
+        req.onerror = () => {
+          console.warn(`Cache TTL eviction failed for store "${storeName}":`, req.error)
+          resolve()
+        }
       })
     }
   }
@@ -650,7 +655,10 @@ async function checkAndEvictSize(preloadedSettings) {
     const index = store.index('lastAccessedAt')
     const req = index.getAll()
     req.onsuccess = () => resolve(req.result || [])
-    req.onerror = () => resolve([])
+    req.onerror = () => {
+      console.warn('Cache size eviction read failed:', req.error)
+      resolve([])
+    }
   })
 
   // Delete tracks until under limit
@@ -683,9 +691,16 @@ export async function downloadTrackForOffline(track, { onProgress } = {}) {
 
   const downloadPromise = (async () => {
     try {
-      const streamUrl = needsPreparation
+      const fallbackUrl = `/api/stream/${fileId}`
+      const requestedUrl = needsPreparation
         ? await streamApi.preparePlayback(fileId)
-        : track.stream_url || `/api/stream/${fileId}`
+        : track.stream_url
+      // SECURITY: the request below sends credentials, so the URL must stay a
+      // same-origin stream path. A persisted/server-supplied `stream_url` is
+      // never trusted blindly — anything else falls back to the canonical path.
+      const streamUrl = typeof requestedUrl === 'string' && requestedUrl.startsWith('/api/stream/')
+        ? requestedUrl
+        : fallbackUrl
       const res = await fetch(streamUrl, {
         credentials: 'include',
         headers: { Accept: 'audio/*,*/*' },
@@ -701,10 +716,10 @@ export async function downloadTrackForOffline(track, { onProgress } = {}) {
       // Background cache cover and lyrics if configured
       const settings = await getCacheSettings()
       if (settings.cacheCovers && track.coverUrl) {
-        fetchCoverForOffline(track.coverUrl).catch(() => {})
+        fetchCoverForOffline(track.coverUrl).catch((e) => log.debug('cover warm for offline failed', { error: e?.message }))
       }
       if (settings.cacheLyrics) {
-        fetchLyricsForOffline(fileId).catch(() => {})
+        fetchLyricsForOffline(fileId).catch((e) => log.debug('lyrics warm for offline failed', { error: e?.message }))
       }
 
       return true

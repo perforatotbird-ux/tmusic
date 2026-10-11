@@ -188,6 +188,7 @@ function createOfflineServiceContext() {
     Math,
     console,
     getNativeStorageInfo: () => ({ totalBytes: 64000000000, availableBytes: 32000000000 }),
+    createLogger: () => ({ info: () => {}, debug: () => {}, warn: () => {}, error: () => {} }),
   }
 
   const source = fs.readFileSync(path.join(__dirname, '../src/services/offlineStorageService.js'), 'utf8')

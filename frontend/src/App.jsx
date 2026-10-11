@@ -40,6 +40,23 @@ export function App() {
   }, [])
 
   const { user, isAuthenticated, checkAuth, setAuthModalOpen } = useAuthStore()
+  const isPreparing = usePlayerStore((state) => state.isPreparing)
+
+  // Kick audio playback as soon as preparation finishes and real MP3 is bound
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio) return
+    const state = usePlayerStore.getState()
+    // `data-track-id` is only present once a real track source is bound; while
+    // preparing, the element holds the silent pre-roll (blob: URL) and must not
+    // be started.
+    if (state.isPlaying && !isPreparing && audio.paused && audio.src && audio.getAttribute('data-track-id')) {
+      const p = audio.play()
+      if (p && p.catch) {
+        p.catch((err) => log.warn('playback did not resume after preparation', { error: err?.name || String(err) }))
+      }
+    }
+  }, [isPreparing])
 
   useEffect(() => {
     if (isAuthenticated && !user?.password_change_required) {
@@ -66,7 +83,7 @@ export function App() {
       .then((config) => {
         if (config?.site_title) document.title = config.site_title
       })
-      .catch(() => {})
+      .catch((e) => log.debug('system config fetch failed', { error: e?.message }))
   }, [])
 
   useEffect(() => {
@@ -244,6 +261,7 @@ export function App() {
   }, [currentTrack?.id, currentRelease])
 
   const handleTimeUpdate = () => {
+    if (usePlayerStore.getState().isPreparing) return
     const audio = audioRef.current
     if (!audio) return
     const cur = audio.currentTime
@@ -295,10 +313,13 @@ export function App() {
   }
 
   const handleWaiting = () => {
-    if (usePlayerStore.getState().isPlaying) usePlayerStore.getState().setBuffering(true)
+    if (usePlayerStore.getState().isPlaying && !usePlayerStore.getState().isPreparing) {
+      usePlayerStore.getState().setBuffering(true)
+    }
   }
 
   const handlePlaying = () => {
+    if (usePlayerStore.getState().isPreparing) return
     usePlayerStore.getState().setBuffering(false)
     updateMediaSessionPosition(
       audioRef.current?.duration || 0,

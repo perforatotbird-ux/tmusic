@@ -500,16 +500,16 @@ class TranscodingService:
                 raise ValueError(f"Track {job.file_id} not found in DB")
             track = stream_service.snapshot_track(track)
         source = stream_service._source_snapshot(track)
-        expected = track.size or 0
         if track.is_encrypted:
             salt, nonce, block_size = await stream_service._get_encryption_header(source)
-            expected = DecryptionService.encrypted_size_to_plain_size(track.size, block_size)
+            expected = await stream_service.get_plain_track_size(track)
             raw = fast_streamer.stream_file(source=source, offset=32)
             stream = DecryptionService.decrypt_stream(
                 raw_stream=raw, salt=salt, base_nonce=nonce, block_size=block_size,
                 skip_header=True, plain_limit=expected,
             )
         else:
+            expected = track.size or 0
             raw = fast_streamer.stream_file(source=source, offset=0)
             stream = raw
         received = 0

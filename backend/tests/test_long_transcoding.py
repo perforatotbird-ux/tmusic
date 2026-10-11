@@ -156,3 +156,62 @@ def test_explicit_mp3_route_preserves_auth_dependency_range_and_mime(monkeypatch
         assert response.status_code == 409
         assert response.headers['retry-after'] == '2'
     db.close.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_download_encrypted_track_resolves_exact_plain_size_and_does_not_truncate(monkeypatch, tmp_path):
+    from app.core import database
+    from app.repositories.file_repository import FileRepository
+    from app.services.stream_service import stream_service
+    from app.services.decryption_service import DecryptionService
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    import struct
+
+    block_size = 512 * 1024
+    key = b'K' * 32; salt = b'S' * 16; nonce = b'N' * 12
+    plaintext = b'M' * (2 * block_size + 1234)
+    file_key = DecryptionService.derive_file_key(key, salt)
+    aes = AESGCM(file_key)
+
+    header = bytearray(salt + nonce + struct.pack('<I', block_size))
+    blocks_data = bytearray()
+    num_blocks = (len(plaintext) + block_size - 1) // block_size
+    for i in range(num_blocks):
+        b_nonce = ((int.from_bytes(nonce, 'big') + i) % (1 << 96)).to_bytes(12, 'big')
+        chunk = plaintext[i * block_size : (i + 1) * block_size]
+        blocks_data.extend(aes.encrypt(b_nonce, chunk, None))
+
+    encrypted_stream_bytes = bytes(header + blocks_data)
+    # The real DB stores track.size == len(plaintext)
+    track = SimpleNamespace(
+        id=99, name='encrypted.m4a', size=len(plaintext), mime_type='audio/mp4',
+        is_encrypted=True, account_map={'1': {'msg_ids': '10'}}, msg_ids='10'
+    )
+    class DB:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+    monkeypatch.setattr(database, 'SessionLocal', DB)
+    monkeypatch.setattr(FileRepository, 'get_by_id', lambda db, file_id: track)
+    monkeypatch.setattr(type(settings), 'get_master_keys', lambda self: [key])
+
+    # fast_streamer mock
+    async def mock_stream_file(source, offset=0, limit=None):
+        data = encrypted_stream_bytes[offset : offset + limit if limit is not None else None]
+        for i in range(0, len(data), 65536):
+            yield bytes(data[i : i + 65536])
+
+    monkeypatch.setattr(module.fast_streamer, 'stream_file', mock_stream_file)
+    monkeypatch.setattr(module.fast_streamer, 'get_source_media_size', lambda src: len(encrypted_stream_bytes))
+    monkeypatch.setattr('app.services.stream_service.fast_streamer.stream_file', mock_stream_file)
+    monkeypatch.setattr('app.services.stream_service.fast_streamer.get_source_media_size', lambda src: len(encrypted_stream_bytes))
+
+    service = TranscodingService()
+    path = tmp_path / 'decrypted_input.m4a'
+    path.write_bytes(b'')
+
+    test_job = TranscodeJob(99, 'encrypted.m4a', len(plaintext), True, 'audio/mp4', 0, 'e' * 32)
+    downloaded = await service._download_track_to_file(test_job, path)
+    assert downloaded == len(plaintext)
+    assert path.stat().st_size == len(plaintext)
+    assert path.read_bytes() == plaintext
+

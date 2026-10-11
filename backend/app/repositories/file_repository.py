@@ -101,3 +101,40 @@ class FileRepository:
             VFile.mime_type.like("audio/%")
         )
         return db.execute(stmt).scalar() or 0
+
+    @staticmethod
+    def names_in_folders(db: Session, folder_ids) -> list:
+        """(folder_id, name) rows for the given folders (non-trash)."""
+        return db.execute(
+            select(VFile.folder_id, VFile.name).where(
+                VFile.folder_id.in_(folder_ids),
+                VFile.is_trash.is_(False),
+            )
+        ).all()
+
+    @staticmethod
+    def count_in_folder(db: Session, folder_id: int) -> int:
+        return db.execute(
+            select(func.count(VFile.id)).where(VFile.folder_id == folder_id)
+        ).scalar() or 0
+
+    @staticmethod
+    def count_audio_in_folder(db: Session, folder_id: int) -> int:
+        return db.execute(
+            select(func.count(VFile.id)).where(
+                VFile.folder_id == folder_id,
+                VFile.is_trash.is_(False),
+                VFile.mime_type.like("audio/%"),
+            )
+        ).scalar() or 0
+
+    @staticmethod
+    def first_album_track(db: Session, folder_id: int) -> Optional[VFile]:
+        """First playable audio track of an album folder (enrichment helper)."""
+        return db.scalar(
+            select(VFile).where(
+                VFile.folder_id == folder_id,
+                VFile.is_trash.is_(False),
+                VFile.mime_type.like("audio/%"),
+            ).limit(1)
+        )

@@ -3,6 +3,9 @@
  */
 import { playbackApi } from '../api/playback'
 import { usePlayerStore } from '../store/playerStore'
+import { createLogger } from '../utils/logger'
+
+const log = createLogger('playback-progress')
 
 const RESTORE_MIN_SEC = 5
 const RESTORE_MAX_RATIO = 0.92
@@ -39,7 +42,7 @@ function markHistoryStart(fileId, duration, completed = false) {
       track: rel?.title || null,
       album: rel?.title || null,
     })
-    .catch(() => {})
+    .catch((e) => log.debug('history (track changed) not saved', { error: e?.message }))
 }
 
 export function onTrackChanged(fileId) {
@@ -81,7 +84,7 @@ export function onTimeUpdate(audio, fileId, currentTime, duration) {
   state.lastSavedAt = now
   playbackApi
     .savePosition(fileId, currentTime, Number.isFinite(duration) ? duration : null)
-    .catch(() => {})
+    .catch((e) => log.debug('position not saved', { error: e?.message }))
 }
 
 export function onEnded(fileId, currentTime, duration) {
@@ -89,7 +92,7 @@ export function onEnded(fileId, currentTime, duration) {
   const rel = releaseMeta()
   playbackApi
     .savePosition(fileId, 0, Number.isFinite(duration) ? duration : null)
-    .catch(() => {})
+    .catch((e) => log.debug('position reset not saved', { error: e?.message }))
   playbackApi
     .addHistory({
       file_id: fileId,
@@ -100,6 +103,6 @@ export function onEnded(fileId, currentTime, duration) {
       track: rel?.title || null,
       album: rel?.title || null,
     })
-    .catch(() => {})
+    .catch((e) => log.debug('history (ended) not saved', { error: e?.message }))
   state.lastSavedAt = Date.now()
 }

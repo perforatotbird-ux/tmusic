@@ -56,6 +56,7 @@ def decrypt_token(enc: Optional[str]) -> Optional[str]:
     try:
         return f.decrypt(enc.encode()).decode()
     except Exception:
+        logger.debug("Failed to decrypt Subsonic token", exc_info=True)
         return None
 
 

@@ -35,6 +35,57 @@ class FastStreamer:
         while len(self._media_size_cache) > MEDIA_SIZE_CACHE_MAX_ITEMS:
             self._media_size_cache.popitem(last=False)
 
+    def get_source_media_size(self, source: Any) -> Optional[int]:
+        """Returns total Telegram media file size from cache if all parts are known."""
+        account_map = getattr(source, "account_map", None)
+        if not account_map and isinstance(source, dict):
+            account_map = source.get("account_map")
+
+        default_msg_ids = None
+        if hasattr(source, "msg_ids") and source.msg_ids:
+            default_msg_ids = str(source.msg_ids)
+        elif isinstance(source, dict) and source.get("msg_ids"):
+            default_msg_ids = str(source["msg_ids"])
+        elif hasattr(source, "tg_message_id") and source.tg_message_id:
+            default_msg_ids = str(source.tg_message_id)
+        elif isinstance(source, dict) and source.get("tg_message_id"):
+            default_msg_ids = str(source["tg_message_id"])
+        elif isinstance(source, list):
+            default_msg_ids = ",".join(str(m) for m in source)
+        elif isinstance(source, int):
+            default_msg_ids = str(source)
+        elif isinstance(source, str):
+            default_msg_ids = source
+
+        candidates = tg_manager.get_candidate_sources(account_map, default_msg_ids)
+        if not candidates:
+            return None
+
+        account_mids_map: Dict[int, List[int]] = {}
+        max_parts = 0
+        for aid, mids_str in candidates:
+            parsed = parse_msg_ids(mids_str)
+            if parsed:
+                account_mids_map[aid] = parsed
+                max_parts = max(max_parts, len(parsed))
+
+        if max_parts == 0:
+            return None
+
+        total_size = 0
+        for part_idx in range(max_parts):
+            part_size = None
+            for aid, mids_list in account_mids_map.items():
+                if part_idx < len(mids_list):
+                    mid = mids_list[part_idx]
+                    if (aid, mid) in self._media_size_cache:
+                        part_size = self._media_size_cache[(aid, mid)]
+                        break
+            if part_size is None:
+                return None
+            total_size += part_size
+        return total_size
+
     async def stream_file(
         self,
         source: Union[Any, List[int], int, Dict],
@@ -290,7 +341,7 @@ class FastStreamer:
                         try:
                             await stream_gen.aclose()
                         except Exception:
-                            pass
+                            logger.debug("Failed to close stream generator", exc_info=True)
 
 
 fast_streamer = FastStreamer()

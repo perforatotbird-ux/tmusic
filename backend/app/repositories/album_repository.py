@@ -80,3 +80,19 @@ class AlbumRepository:
     def count(db: Session) -> int:
         stmt = select(func.count(MusicAlbum.id))
         return db.execute(stmt).scalar() or 0
+
+    @staticmethod
+    def list_by_folder_ids(db: Session, folder_ids) -> List[MusicAlbum]:
+        return list(db.scalars(select(MusicAlbum).where(MusicAlbum.folder_id.in_(folder_ids))).all())
+
+    @staticmethod
+    def count_by_artist(db: Session, artist_id: int) -> int:
+        return db.execute(
+            select(func.count(MusicAlbum.id)).where(MusicAlbum.artist_id == artist_id)
+        ).scalar() or 0
+
+    @staticmethod
+    def count_by_folder(db: Session, folder_id: int) -> int:
+        return db.execute(
+            select(func.count(MusicAlbum.id)).where(MusicAlbum.folder_id == folder_id)
+        ).scalar() or 0

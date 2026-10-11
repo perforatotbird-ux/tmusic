@@ -158,7 +158,7 @@ async def lifespan(app: FastAPI):
     try:
         await stop_backup_scheduler()
     except Exception:
-        pass
+        logger.debug("Backup scheduler stop failed during shutdown", exc_info=True)
     await discovery_service.stop()
     await transcoding_service.shutdown()
     await tg_manager.stop()
@@ -362,8 +362,10 @@ async def access_log_middleware(request: Request, call_next):
 
 
 # ─── CORS Middleware ─────────────────────────────────────────────────────────
-# 2026-09-29: the private-range regex is gated by CORS_ALLOW_LAN — turn it
-# off once every client is covered by an explicit ALLOWED_ORIGINS entry.
+# 2026-10-11: CORS_ALLOW_LAN now defaults to False — an explicit ALLOWED_ORIGINS
+# entry is preferred. When enabled, the private-range regex below allows any
+# RFC1918/localhost origin *with credentials*, so keep it off unless a LAN client
+# (e.g. a mobile WebView) genuinely cannot be pinned to an explicit origin.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,

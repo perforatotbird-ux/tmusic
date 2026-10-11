@@ -26,6 +26,28 @@ function cleanupBlobUrl() {
   }
 }
 
+// ─── Silent pre-roll (autoplay unlock while a transcode is running) ────────────
+// SECURITY: a `blob:` URL is used instead of a `data:` URI on purpose. The
+// production CSP is `media-src 'self' blob:` and `'self'` does not cover the
+// `data:` scheme, so a `data:` source is rejected there — the dev server sends
+// no CSP, which hid the failure. Created once per session and never revoked:
+// one ~50 byte blob is cheaper than re-creating it on every track switch.
+const SILENT_WAV_BASE64 = 'UklGRiYAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQIAAAAAAA=='
+let silentAudioUrl = null
+function getSilentAudioUrl() {
+  if (silentAudioUrl) return silentAudioUrl
+  try {
+    const raw = atob(SILENT_WAV_BASE64)
+    const bytes = new Uint8Array(raw.length)
+    for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i)
+    silentAudioUrl = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }))
+  } catch {
+    // No Blob/atob/URL (non-browser, tests): fall back to the pre-fix path.
+    silentAudioUrl = null
+  }
+  return silentAudioUrl
+}
+
 // ─── Background Transcoding SSE Listener ─────────────────────────────────────────────────
 let transcodeEventSource = null
 const pendingTranscodeNotifications = new Set()
@@ -43,15 +65,20 @@ function initTranscodeSSE() {
       const state = usePlayerStore.getState()
       const track = state.queue.find((t) => t.id === data.file_id)
 
-      if (data.event === 'transcode_complete' && track) {
-        const msg = `Готово: "${track.title || track.name}" теперь в MP3 320kbps`
-        usePlayerStore.getState().pushNotice({ kind: 'info', text: msg })
-        pendingTranscodeNotifications.add(data.file_id)
-        const timer = setTimeout(() => {
-          transcodeNotificationTimers.delete(timer)
-          pendingTranscodeNotifications.delete(data.file_id)
-        }, 10000)
-        transcodeNotificationTimers.add(timer)
+      if (data.event === 'transcode_complete') {
+        if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('tmusic:transcode-complete', { detail: data }))
+        }
+        if (track) {
+          const msg = `Готово: "${track.title || track.name}" теперь в MP3 320kbps`
+          usePlayerStore.getState().pushNotice({ kind: 'info', text: msg })
+          pendingTranscodeNotifications.add(data.file_id)
+          const timer = setTimeout(() => {
+            transcodeNotificationTimers.delete(timer)
+            pendingTranscodeNotifications.delete(data.file_id)
+          }, 10000)
+          transcodeNotificationTimers.add(timer)
+        }
       } else if (data.event === 'transcode_started' && track) {
         const msg = `Транскодинг: "${track.title || track.name}"`
         usePlayerStore.getState().pushNotice({ kind: 'info', text: msg })
@@ -62,7 +89,10 @@ function initTranscodeSSE() {
         log.debug('Started prefetching transcode for track', { id: data.file_id })
       }
     } catch (e) {
-      log.debug('SSE parse error', { error: e.message })
+      // warn, not debug: prod builds ship at MIN_LEVEL=info, so a debug-level
+      // event never reaches /api/system/client-logs and malformed SSE payloads
+      // would be silently invisible.
+      log.warn('SSE parse error', { error: e?.message || String(e) })
     }
   }
 
@@ -112,10 +142,42 @@ function fetchCachedTrackSafe(fileId) {
   return Promise.resolve(null)
 }
 
+function toIntOrNull(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return Number(value)
+  return null
+}
+
+/**
+ * Reduce an untrusted queue item (restored from localStorage) to validated
+ * scalars. `stream_url` is the dangerous field: it is later fetched with
+ * credentials, so it must stay a same-origin /api/stream/ path.
+ */
+function sanitizeQueueTrack(track) {
+  if (!track || typeof track !== 'object') return null
+  const id = toIntOrNull(track.id)
+  if (id == null || id <= 0) return null
+  const streamUrl = typeof track.stream_url === 'string' && /^\/api\/stream\/\d+(?:[?#][^\s]*)?$/.test(track.stream_url)
+    ? track.stream_url
+    : null
+  return {
+    id,
+    name: typeof track.name === 'string' ? track.name.slice(0, 300) : '',
+    stream_url: streamUrl,
+    folder_id: toIntOrNull(track.folder_id),
+    mime_type: typeof track.mime_type === 'string' ? track.mime_type.slice(0, 120) : null,
+    size: toIntOrNull(track.size),
+    duration: toIntOrNull(track.duration),
+  }
+}
+
 function refreshCachedMetaSafe(track) {
   try {
     if (track && typeof refreshCachedTrackMeta === 'function') {
-      return refreshCachedTrackMeta(track).catch(() => {})
+      return refreshCachedTrackMeta(track).catch((e) => {
+        log.debug('cached meta refresh failed', { error: e?.message })
+        return false
+      })
     }
   } catch {}
   return Promise.resolve(false)
@@ -246,8 +308,13 @@ export const usePlayerStore = create((set, get) => {
       if (!get().isPlaying) return
       const p = audio.play()
       if (p && typeof p.catch === 'function') {
-        p.catch(() => {
+        p.catch((err) => {
+          log.warn('audio.play() rejected', { id: fileId, error: err?.message })
           if (generation !== audioGeneration || get().currentTrack?.id !== fileId || !get().isPlaying) return
+          // Reset buffering state if browser blocked playback so the UI doesn't spin endlessly
+          if (!get().isPreparing) {
+            usePlayerStore.setState({ isBuffering: false })
+          }
           const t = setTimeout(() => {
             resumeTimers.delete(t)
             if (generation === audioGeneration && get().currentTrack?.id === fileId && get().isPlaying && audio.paused) {
@@ -270,18 +337,49 @@ export const usePlayerStore = create((set, get) => {
         const ctrl = new AbortController()
         preparationAbort = ctrl
         set({ isPreparing: true, isBuffering: true })
-        audio.pause()
-        audio.removeAttribute('src')
-        audio.removeAttribute('data-track-id')
-        audio.load()
+        if (typeof audio?.canPlayType === 'function') {
+          // In real browser: unlock media playback synchronously in the click call stack.
+          // Playing silence keeps the HTMLMediaElement active and authorized;
+          // when transcoding completes, changing src to the MP3 will play seamlessly
+          // without triggering browser autoplay blocks (Firefox / Chrome / Safari).
+          // The silent source is a blob: URL — a data: URI is blocked by the
+          // production CSP (`media-src 'self' blob:`).
+          const silent = getSilentAudioUrl()
+          audio.pause()
+          audio.removeAttribute('data-track-id')
+          if (silent) {
+            audio.src = silent
+          } else {
+            audio.removeAttribute('src')
+          }
+          audio.loop = true
+          try {
+            audio.load()
+            const p = audio.play()
+            if (p && typeof p.catch === 'function') {
+              p.catch((err) => log.warn('silent pre-roll playback blocked', { id: fileId, error: err?.name || String(err) }))
+            }
+          } catch (err) {
+            log.warn('silent pre-roll failed to start', { id: fileId, error: err?.message || String(err) })
+          }
+        } else {
+          audio.pause()
+          audio.removeAttribute('src')
+          audio.removeAttribute('data-track-id')
+          audio.load()
+        }
         get().pushNotice({ kind: 'info', text: 'Подготовка аудио — дождитесь завершения…' })
         streamApi.preparePlayback(fileId, { signal: ctrl.signal }).then((url) => {
           if (generation !== audioGeneration || get().currentTrack?.id !== fileId) return
           preparationAbort = null
+          audio.loop = false
           set({ isPreparing: false })
           bindStream(url)
         }).catch((err) => {
           if (ctrl.signal.aborted || generation !== audioGeneration) return
+          audio.loop = false
+          audio.pause()
+          audio.removeAttribute('src')
           get().failPlayback(err.message || 'Не удалось подготовить аудио. Нажмите Play для повтора.')
         })
         return
@@ -291,6 +389,7 @@ export const usePlayerStore = create((set, get) => {
 
     function bindStream(url) {
       if (generation !== audioGeneration || get().currentTrack?.id !== fileId) return
+      audio.loop = false
       audio.src = url
       audio.setAttribute('data-track-id', key)
       audio.removeAttribute('data-is-cached')
@@ -306,7 +405,7 @@ export const usePlayerStore = create((set, get) => {
       if (offlineSettings?.autoCacheOnPlay && offlineSettings?.cacheAudio) {
         const track = get().currentTrack
         if (track && track.id === fileId) {
-          offlineState.cacheTrack(track).catch(() => {})
+          offlineState.cacheTrack(track).catch((e) => log.debug('auto-cache on play failed', { error: e?.message }))
         }
       }
 
@@ -481,6 +580,7 @@ export const usePlayerStore = create((set, get) => {
     // one (e.g. "transcode done" vanished 200ms later when the stream errored).
     // Now a bounded stack so nothing is lost; rendered by <ToastHost>.
     notices: [], // [{ id, kind: 'error' | 'info', text }]
+    notice: null,
     noticeSeq: 0,
     durations: durationsCache, // fileId -> seconds (learned at runtime)
     audioElement: null,
@@ -491,7 +591,11 @@ export const usePlayerStore = create((set, get) => {
 
     failPlayback: (message) => {
       clearRecovery()
-      get().audioElement?.pause()
+      const audio = get().audioElement
+      if (audio) {
+        audio.pause()
+        audio.loop = false
+      }
       set({ isPlaying: false, isPreparing: false, isBuffering: false, playbackFailed: true })
       setMediaPlaybackState('none')
       get().setNotice({ kind: 'error', text: message })
@@ -542,12 +646,13 @@ export const usePlayerStore = create((set, get) => {
       const seq = (get().noticeSeq || 0) + 1
       const entry = { id: `n${seq}`, kind: notice.kind || 'info', text: notice.text }
       // Cap at 3 visible toasts; drop the oldest (FIFO).
-      set({ notices: [...get().notices, entry].slice(-MAX_NOTICES), noticeSeq: seq })
+      set({ notices: [...get().notices, entry].slice(-MAX_NOTICES), notice: entry, noticeSeq: seq })
       return entry.id
     },
     dismissNotice: (id) => {
-      if (id == null) return set({ notices: [] })
-      return set({ notices: get().notices.filter((n) => n.id !== id) })
+      if (id == null) return set({ notices: [], notice: null })
+      const remaining = get().notices.filter((n) => n.id !== id)
+      return set({ notices: remaining, notice: remaining[remaining.length - 1] || null })
     },
 
     /** Audio reported a real duration — remember for lists/queue. */
@@ -578,13 +683,17 @@ export const usePlayerStore = create((set, get) => {
       }
       if (!saved) return false
       if (!Array.isArray(saved.queue) || saved.queue.length === 0) return false
-      const idx = Math.max(0, Math.min(saved.queueIndex ?? 0, saved.queue.length - 1))
-      const track = saved.queue[idx]
-      if (!track?.id) return false
+      // SECURITY: the snapshot is attacker-writable (XSS, extension, shared
+      // device) and its `stream_url` is later fetched with credentials.
+      // Rebuild every item from validated scalars instead of trusting JSON.
+      const queue = saved.queue.map(sanitizeQueueTrack).filter(Boolean)
+      if (!queue.length) return false
+      const idx = Math.max(0, Math.min(Number(saved.queueIndex) || 0, queue.length - 1))
+      const track = queue[idx]
 
-      syncShuffle(saved.queue.length, idx, !!saved.shuffle)
+      syncShuffle(queue.length, idx, !!saved.shuffle)
       set({
-        queue: saved.queue,
+        queue,
         queueIndex: idx,
         currentTrack: track,
         currentRelease: saved.currentRelease || null,
@@ -598,7 +707,7 @@ export const usePlayerStore = create((set, get) => {
       if (audioElement) {
         startAudio(track.id, { forceLoad: true, autoplay: false })
       }
-      log.info('session hydrated', { id: track.id, index: idx, queue: saved.queue.length })
+      log.info('session hydrated', { id: track.id, index: idx, queue: queue.length })
       return true
     },
 
@@ -615,6 +724,7 @@ export const usePlayerStore = create((set, get) => {
       orderPos = -1
       if (audio) {
         audio.pause()
+        audio.loop = false
         audio.removeAttribute('src')
         audio.load()
         audio.removeAttribute('data-track-id')
@@ -637,6 +747,7 @@ export const usePlayerStore = create((set, get) => {
         bufferedUpTo: 0,
         _watchdogId: null,
         notices: [],
+        notice: null,
       })
     },
 
@@ -850,6 +961,7 @@ export const usePlayerStore = create((set, get) => {
       if (!audioElement || !currentTrack) return
       if (isPlaying && (get().isPreparing || !audioElement.paused)) {
         audioElement.pause()
+        audioElement.loop = false
         clearRecovery()
         set({ isPlaying: false, isPreparing: false, isBuffering: false })
         setMediaPlaybackState('paused')

@@ -92,3 +92,13 @@ Main/share/Subsonic builder получает первый непустой chunk
 `GET /api/stream/{file_id}?representation=mp3` требует готовый кэш для форматов с `needs_transcoding`; если его нет — HTTP 409 + Retry-After: 2. Для native-compatible файлов сохраняется обычный stream. Auth/Range остаются прежними; ответ явного MP3 использует `private, no-store`. Web-player вызывает POST transcode и опрашивает transcode-status до готовности, отменяя ожидание при смене трека. См. [[Кэш и стриминг]].
 
 `transcode-status` также возвращает `job_active`: pending без активной задачи (например, после перезапуска процесса) показывает retryable error вместо бесконечного ожидания. Эвиктированный READY-кэш считается FAILED и допускает повторный POST. Browser prep проверяется polling, SSE остаётся каналом уведомлений, а не единственным условием готовности.
+
+## Точный расчет размера зашифрованных треков (2026-10-09)
+
+В `stream_service.py` и `transcoding_service.py` исправлен расчет размера для зашифрованных треков (`is_encrypted=True`). В базе данных `vfiles.size` хранит размер исходного (plaintext) файла. Для предотвращения усечения хвостовых метаданных (атомы `moov`/`stsz` в M4A) размер скачиваемого исходника теперь сопоставляется с медиа-размером Telegram через `FastStreamer.get_source_media_size` и кэшируется в `_plain_size_cache`. См. подробности в [[Кэш и стриминг]].
+
+## Заголовки кэширования и мгновенная нотификация готовности (2026-10-09)
+
+Для эндпоинтов `GET /api/stream/{file_id}/transcode-status` и `POST /api/stream/{file_id}/transcode` добавлены строгие заголовки запрета кэширования ответов (`Cache-Control: no-cache, no-store, must-revalidate`, `Pragma: no-cache`). Во фронтенде ожидание готовности разрешается моментально при получении SSE-события `transcode_complete` через глобальное событие `tmusic:transcode-complete` без задержек полинга. Во время ожидания на `<audio>` удерживается воспроизведение минимального неслышимого WAV (`SILENT_AUDIO_URI`), сохраняя разрешение браузера на автозапуск при подмене потока на MP3.
+
+

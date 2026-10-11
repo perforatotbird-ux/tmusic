@@ -4,15 +4,15 @@ Delivers high-performance audio streams with HTTP Range requests (RFC 7233)
 and transparent on-the-fly AES-256-GCM block decryption.
 Also includes SSE-based transcoding notifications and transcoded MP3 delivery.
 """
-import urllib.parse
 import asyncio
 import json
+import logging
 from datetime import timedelta
 from typing import Optional, List, Annotated
 from pydantic import Field
 from sqlalchemy import select
 from app.core.rate_limiter import limiter
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -21,11 +21,12 @@ from app.core.security import create_access_token
 from app.api.dependencies import get_stream_user, get_current_user
 from app.models.auth import AppUser
 from app.models.vfs import VFile
-from app.repositories.file_repository import FileRepository
 from app.schemas.stream import TrackResponse
 from app.services.stream_service import stream_service
 from app.services.transcoding_service import transcoding_service, TranscodeStatus
-from app.utils.ffmpeg_transcoder import needs_transcoding, get_cached_transcode_path
+from app.utils.ffmpeg_transcoder import needs_transcoding
+
+logger = logging.getLogger("tmusic.stream")
 
 router = APIRouter(prefix="/api/stream", tags=["stream"])
 
@@ -33,6 +34,24 @@ router = APIRouter(prefix="/api/stream", tags=["stream"])
 # into proxy logs, browser history, and Referer headers, so a 12h session JWT
 # must never travel in the query string.
 STREAM_TOKEN_TTL = timedelta(minutes=10)
+
+# Per-user budgets on top of the global per-IP limit. The global window cannot
+# see several users behind one NAT, and a stuck transcode job used to allow an
+# unbounded status poll from every open tab. The client now backs off
+# (1.5s -> 8s) and caps its own attempts, so a normal wait stays far below this;
+# the budget exists to stop runaway/abusive clients.
+TRANSCODE_STATUS_PER_MIN = 60
+TRANSCODE_START_PER_MIN = 30
+TRANSCODE_PREFETCH_PER_MIN = 10
+
+
+def _transcode_budget(user: AppUser, key: str, per_min: int) -> None:
+    if limiter.is_rate_limited(f"transcode{key}:{user.id}", per_min, 60):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many transcoding requests. Slow down.",
+            headers={"Retry-After": "60"},
+        )
 
 
 class ManagedSSEStreamingResponse(StreamingResponse):
@@ -110,7 +129,7 @@ async def transcode_events(
                 yield f"data: {data}\n\n"
                 client_queue.task_done()
         except Exception:
-            pass
+            logger.debug("SSE transcode stream for user %s closed with an error", user_id, exc_info=True)
         finally:
             release()
 
@@ -132,10 +151,15 @@ async def transcode_events(
 @router.get("/{file_id}/transcode-status")
 async def get_transcode_status(
     file_id: int,
+    http_response: Response,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
     """Check transcoding status for a track. Returns current state + cached path if ready."""
+    http_response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    http_response.headers["Pragma"] = "no-cache"
+    _transcode_budget(user, "status", TRANSCODE_STATUS_PER_MIN)
+
     track = stream_service.get_track_or_404(db, file_id)
 
     if not needs_transcoding(track.name, track.mime_type):
@@ -162,10 +186,15 @@ async def get_transcode_status(
 @router.post("/{file_id}/transcode")
 async def trigger_transcode(
     file_id: int,
+    http_response: Response,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
     """Trigger immediate transcoding of a track (priority: playing)."""
+    http_response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    http_response.headers["Pragma"] = "no-cache"
+    _transcode_budget(user, "start", TRANSCODE_START_PER_MIN)
+
     track = stream_service.get_track_or_404(db, file_id)
 
     if not needs_transcoding(track.name, track.mime_type):
@@ -188,8 +217,7 @@ async def prefetch_tracks(
     """Enqueue multiple tracks for background prefetch transcoding."""
     from app.utils.ffmpeg_transcoder import needs_transcoding
 
-    if limiter.is_rate_limited(f"transcode:{user.id}", 10, 60):
-        raise HTTPException(status_code=429, detail="Too many transcoding requests.")
+    _transcode_budget(user, "prefetch", TRANSCODE_PREFETCH_PER_MIN)
 
     enqueued = 0
     already_ready = 0
@@ -233,11 +261,7 @@ async def get_folder_tracks(
     user: AppUser = Depends(get_current_user)
 ):
     """Retrieve all audio tracks belonging to an album or folder with natural sorting and plaintext sizes."""
-    if recursive:
-        vfiles = FileRepository.list_tracks_recursive(db, folder_id, limit=limit, offset=offset)
-    else:
-        vfiles = FileRepository.list_tracks_in_folder(db, folder_id, limit=limit, offset=offset)
-
+    vfiles = stream_service.list_folder_tracks(db, folder_id, recursive=recursive, limit=limit, offset=offset)
     return stream_service.build_track_responses(db, vfiles)
 
 

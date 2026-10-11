@@ -1,60 +1,21 @@
 """
 T-Music VFS folder browsing API (Windows-style hierarchy for the UI).
+
+Thin controller: routing + validation only; folder queries live in VfsService.
 """
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user
 from app.core.database import get_db
 from app.models.auth import AppUser
-from app.models.vfs import Folder, FolderClosure, VFile
-from app.repositories.file_repository import FileRepository
 from app.schemas.stream import TrackResponse
+from app.services.stream_service import stream_service
+from app.services.vfs_service import vfs_service
 
 router = APIRouter(prefix="/api/vfs", tags=["vfs"])
-
-
-def _folder_payload(db: Session, folder: Folder, parent_id: Optional[int]) -> dict:
-    # Count immediate subfolders + audio files (non-recursive fast counts)
-    subfolders = db.scalar(
-        select(func.count(Folder.id)).where(
-            Folder.parent_id == folder.id,
-            Folder.is_trash == False,  # noqa: E712
-        )
-    ) or 0
-    tracks = db.scalar(
-        select(func.count(VFile.id)).where(
-            VFile.folder_id == folder.id,
-            VFile.is_trash == False,  # noqa: E712
-            VFile.mime_type.like("audio/%"),
-        )
-    ) or 0
-    # Recursive audio count via closure (includes this folder as depth 0)
-    recursive_tracks = db.scalar(
-        select(func.count(func.distinct(VFile.id)))
-        .join(FolderClosure, VFile.folder_id == FolderClosure.descendant_id)
-        .where(
-            FolderClosure.ancestor_id == folder.id,
-            VFile.is_trash == False,  # noqa: E712
-            VFile.mime_type.like("audio/%"),
-        )
-    ) or 0
-    return {
-        "id": folder.id,
-        "name": folder.name,
-        "parent_id": parent_id if parent_id is not None else folder.parent_id,
-        "is_trash": bool(folder.is_trash),
-        "is_starred": bool(folder.is_starred),
-        "color": folder.color,
-        "subfolder_count": int(subfolders),
-        "track_count": int(tracks),
-        "recursive_track_count": int(recursive_tracks),
-        "created_at": folder.created_at.isoformat() if folder.created_at else None,
-        "updated_at": folder.updated_at.isoformat() if folder.updated_at else None,
-    }
 
 
 @router.get("/roots")
@@ -63,14 +24,7 @@ async def list_roots(
     user: AppUser = Depends(get_current_user),
 ):
     """Top-level folders (parent_id is NULL), trash excluded."""
-    folders = list(
-        db.scalars(
-            select(Folder)
-            .where(Folder.parent_id.is_(None), Folder.is_trash == False)  # noqa: E712
-            .order_by(Folder.name)
-        ).all()
-    )
-    return [_folder_payload(db, f, None) for f in folders]
+    return [vfs_service.folder_payload(db, f, None) for f in vfs_service.list_roots(db)]
 
 
 @router.get("/folders")
@@ -80,13 +34,7 @@ async def list_folders(
     user: AppUser = Depends(get_current_user),
 ):
     """Child folders of parent_id; omit parent_id for roots."""
-    stmt = select(Folder).where(Folder.is_trash == False)  # noqa: E712
-    if parent_id is None:
-        stmt = stmt.where(Folder.parent_id.is_(None))
-    else:
-        stmt = stmt.where(Folder.parent_id == parent_id)
-    folders = list(db.scalars(stmt.order_by(Folder.name)).all())
-    return [_folder_payload(db, f, parent_id) for f in folders]
+    return [vfs_service.folder_payload(db, f, parent_id) for f in vfs_service.list_children(db, parent_id)]
 
 
 @router.get("/folders/{folder_id}")
@@ -95,21 +43,11 @@ async def get_folder(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
-    folder = db.scalar(select(Folder).where(Folder.id == folder_id))
+    folder = vfs_service.get_folder(db, folder_id)
     if not folder or folder.is_trash:
         raise HTTPException(status_code=404, detail="Folder not found.")
-    payload = _folder_payload(db, folder, folder.parent_id)
-    # breadcrumb
-    crumbs = []
-    cur = folder
-    guard = 0
-    while cur and guard < 32:
-        crumbs.append({"id": cur.id, "name": cur.name})
-        if cur.parent_id is None:
-            break
-        cur = db.scalar(select(Folder).where(Folder.id == cur.parent_id))
-        guard += 1
-    payload["breadcrumb"] = list(reversed(crumbs))
+    payload = vfs_service.folder_payload(db, folder, folder.parent_id)
+    payload["breadcrumb"] = vfs_service.breadcrumb(db, folder)
     return payload
 
 
@@ -119,23 +57,15 @@ async def folder_children(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
-    folder = db.scalar(select(Folder).where(Folder.id == folder_id))
+    folder = vfs_service.get_folder(db, folder_id)
     if not folder or folder.is_trash:
         raise HTTPException(status_code=404, detail="Folder not found.")
-    subfolders = list(
-        db.scalars(
-            select(Folder)
-            .where(Folder.parent_id == folder_id, Folder.is_trash == False)  # noqa: E712
-            .order_by(Folder.name)
-        ).all()
-    )
-    tracks_vf = FileRepository.list_tracks_in_folder(db, folder_id, limit=500)
-    from app.services.stream_service import stream_service
-
+    subfolders = vfs_service.list_children(db, folder_id)
+    tracks_vf = stream_service.list_folder_tracks(db, folder_id, recursive=False, limit=500)
     tracks = stream_service.build_track_responses(db, tracks_vf)
     return {
-        "folder": _folder_payload(db, folder, folder.parent_id),
-        "subfolders": [_folder_payload(db, f, folder_id) for f in subfolders],
+        "folder": vfs_service.folder_payload(db, folder, folder.parent_id),
+        "subfolders": [vfs_service.folder_payload(db, f, folder_id) for f in subfolders],
         "tracks": tracks,
     }
 
@@ -148,13 +78,8 @@ async def folder_tracks_recursive(
     user: AppUser = Depends(get_current_user),
 ):
     """All audio tracks under folder — used when clicking to play."""
-    folder = db.scalar(select(Folder).where(Folder.id == folder_id))
+    folder = vfs_service.get_folder(db, folder_id)
     if not folder or folder.is_trash:
         raise HTTPException(status_code=404, detail="Folder not found.")
-    if recursive:
-        vfiles = FileRepository.list_tracks_recursive(db, folder_id, limit=2000)
-    else:
-        vfiles = FileRepository.list_tracks_in_folder(db, folder_id, limit=2000)
-    from app.services.stream_service import stream_service
-
+    vfiles = stream_service.list_folder_tracks(db, folder_id, recursive=recursive, limit=2000)
     return stream_service.build_track_responses(db, vfiles)

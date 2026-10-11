@@ -266,7 +266,7 @@ def get_mp3_duration(file_path: str) -> Optional[float]:
             data = json.loads(result.stdout)
             return float(data.get("format", {}).get("duration", 0))
     except Exception:
-        pass
+        logger.debug("ffprobe duration parse failed for %s", file_path, exc_info=True)
     return None
 
 

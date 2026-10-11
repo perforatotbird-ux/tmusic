@@ -14,7 +14,7 @@ const log = createLogger('error-boundary')
 export class ErrorBoundary extends React.Component {
   constructor(props) {
     super(props)
-    this.state = { error: null, info: null }
+    this.state = { error: null, info: null, errorId: null }
   }
 
   static getDerivedStateFromError(error) {
@@ -22,8 +22,15 @@ export class ErrorBoundary extends React.Component {
   }
 
   componentDidCatch(error, info) {
-    this.setState({ info })
+    // Log full details server-side under a short, user-reportable id. The raw
+    // message/stack must NOT be rendered to end users (internal disclosure).
+    const errorId = String(
+      globalThis.crypto?.randomUUID?.() ||
+      `eb-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    )
+    this.setState({ info, errorId })
     log.error('render error caught by boundary', {
+      error_id: errorId,
       message: error?.message,
       stack: error?.stack,
       componentStack: info?.componentStack,
@@ -31,7 +38,7 @@ export class ErrorBoundary extends React.Component {
   }
 
   handleReset = () => {
-    this.setState({ error: null, info: null })
+    this.setState({ error: null, info: null, errorId: null })
     try {
       this.props.onReset?.()
     } catch (e) {
@@ -70,24 +77,29 @@ export class ErrorBoundary extends React.Component {
           Интерфейс {label} не смог отрисоваться. Вы можете попробовать снова —
           воспроизведение и очередь будут восстановлены из сохранённой сессии.
         </div>
-        <pre
-          style={{
-            maxWidth: '92vw',
-            maxHeight: 180,
-            overflow: 'auto',
-            padding: '10px 12px',
-            borderRadius: 8,
-            background: 'var(--bg-card)',
-            border: '1px solid var(--line)',
-            color: 'var(--danger)',
-            fontSize: 12,
-            textAlign: 'left',
-            whiteSpace: 'pre-wrap',
-            userSelect: 'text',
-          }}
-        >
-          {String(error?.message || error)}
-        </pre>
+        <div style={{ fontSize: 12.5, color: 'var(--dim)' }}>
+          Код ошибки: <code style={{ userSelect: 'text' }}>{errorId}</code> — сообщите его при обращении.
+        </div>
+        {import.meta.env.DEV && (
+          <pre
+            style={{
+              maxWidth: '92vw',
+              maxHeight: 180,
+              overflow: 'auto',
+              padding: '10px 12px',
+              borderRadius: 8,
+              background: 'var(--bg-card)',
+              border: '1px solid var(--line)',
+              color: 'var(--danger)',
+              fontSize: 12,
+              textAlign: 'left',
+              whiteSpace: 'pre-wrap',
+              userSelect: 'text',
+            }}
+          >
+            {String(error?.message || error)}
+          </pre>
+        )}
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', justifyContent: 'center' }}>
           <button
             type="button"
@@ -124,9 +136,9 @@ export class ErrorBoundary extends React.Component {
             Перезагрузить страницу
           </button>
         </div>
-        {info?.componentStack && (
+        {import.meta.env.DEV && info?.componentStack && (
           <details style={{ maxWidth: '92vw', fontSize: 11.5, color: 'var(--dim)' }}>
-            <summary style={{ cursor: 'pointer' }}>Подробности</summary>
+            <summary style={{ cursor: 'pointer' }}>Подробности (dev)</summary>
             <pre style={{ whiteSpace: 'pre-wrap', userSelect: 'text', marginTop: 8 }}>
               {info.componentStack}
             </pre>
