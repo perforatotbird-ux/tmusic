@@ -27,7 +27,7 @@ def get_lan_ip_addresses() -> list[str]:
             if primary_ip and not primary_ip.startswith("127."):
                 ips.append(primary_ip)
     except Exception:
-        pass
+        logger.debug("Primary IP detection failed", exc_info=True)
 
     try:
         hostname = socket.gethostname()
@@ -36,7 +36,7 @@ def get_lan_ip_addresses() -> list[str]:
             if ip and not ip.startswith("127.") and ip not in ips:
                 ips.append(ip)
     except Exception:
-        pass
+        logger.debug("LAN IP enumeration failed", exc_info=True)
 
     return ips
 
@@ -92,7 +92,7 @@ class DiscoveryService:
             try:
                 self._transport.close()
             except Exception:
-                pass
+                logger.debug("UDP discovery transport close failed", exc_info=True)
             self._transport = None
             logger.info("UDP Discovery Service stopped.")
 

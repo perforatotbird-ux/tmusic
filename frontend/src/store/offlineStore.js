@@ -15,6 +15,9 @@ import {
   runEviction,
   DEFAULT_CACHE_SETTINGS,
 } from '../services/offlineStorageService'
+import { createLogger } from '../utils/logger'
+
+const log = createLogger('offline-store')
 
 export const useOfflineStore = create((set, get) => {
   let isInitialized = false
@@ -88,7 +91,7 @@ export const useOfflineStore = create((set, get) => {
       })
 
       // Run eviction on launch (cleans up any old files based on TTL / limit)
-      runEviction().catch(() => {})
+      runEviction().catch((e) => log.debug('launch eviction failed', { error: e?.message }))
     },
 
     dispose: () => {

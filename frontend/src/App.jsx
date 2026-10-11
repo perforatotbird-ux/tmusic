@@ -30,7 +30,6 @@ export function App() {
   const [passwordChangeOpen, setPasswordChangeOpen] = useState(false)
   // Track id we've already bound restore/metadata for (store owns src/play).
   const boundTrackIdRef = useRef(null)
-  const errorTrackRef = useRef({ id: null, count: 0 })
 
   const { storageModalOpen, setStorageModalOpen, isOffline, cachedTrackIds } = useOfflineStore()
 
@@ -41,6 +40,23 @@ export function App() {
   }, [])
 
   const { user, isAuthenticated, checkAuth, setAuthModalOpen } = useAuthStore()
+  const isPreparing = usePlayerStore((state) => state.isPreparing)
+
+  // Kick audio playback as soon as preparation finishes and real MP3 is bound
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio) return
+    const state = usePlayerStore.getState()
+    // `data-track-id` is only present once a real track source is bound; while
+    // preparing, the element holds the silent pre-roll (blob: URL) and must not
+    // be started.
+    if (state.isPlaying && !isPreparing && audio.paused && audio.src && audio.getAttribute('data-track-id')) {
+      const p = audio.play()
+      if (p && p.catch) {
+        p.catch((err) => log.warn('playback did not resume after preparation', { error: err?.name || String(err) }))
+      }
+    }
+  }, [isPreparing])
 
   useEffect(() => {
     if (isAuthenticated && !user?.password_change_required) {
@@ -67,7 +83,7 @@ export function App() {
       .then((config) => {
         if (config?.site_title) document.title = config.site_title
       })
-      .catch(() => {})
+      .catch((e) => log.debug('system config fetch failed', { error: e?.message }))
   }, [])
 
   useEffect(() => {
@@ -102,7 +118,7 @@ export function App() {
       resumeIfNeeded = () => {
         if (document.visibilityState && document.visibilityState !== 'visible') return
         const { isPlaying, currentTrack: track, audioElement } = usePlayerStore.getState()
-        if (isPlaying && track && audioElement && audioElement.paused) {
+        if (isPlaying && !usePlayerStore.getState().isPreparing && track && audioElement && audioElement.paused) {
           const p = audioElement.play()
           if (p && p.catch) p.catch(() => {})
         }
@@ -148,7 +164,7 @@ export function App() {
       if (key === ' ' || key === 'Spacebar') {
         e.preventDefault()
         const audio = s.audioElement
-        if (s.isPlaying && audio?.paused) s.forceResume()
+        if (s.isPlaying && !s.isPreparing && audio?.paused) s.forceResume()
         else s.togglePlay()
         log.debug('hotkey', { key: 'space' })
         return
@@ -236,7 +252,7 @@ export function App() {
 
     // If store already set src but browser paused — kick play when track appears
     const state = usePlayerStore.getState()
-    if (state.isPlaying && audio.paused) {
+    if (state.isPlaying && !state.isPreparing && audio.paused) {
       const p = audio.play()
       if (p && p.catch) p.catch(() => {})
     }
@@ -245,6 +261,7 @@ export function App() {
   }, [currentTrack?.id, currentRelease])
 
   const handleTimeUpdate = () => {
+    if (usePlayerStore.getState().isPreparing) return
     const audio = audioRef.current
     if (!audio) return
     const cur = audio.currentTime
@@ -296,12 +313,14 @@ export function App() {
   }
 
   const handleWaiting = () => {
-    if (usePlayerStore.getState().isPlaying) usePlayerStore.getState().setBuffering(true)
+    if (usePlayerStore.getState().isPlaying && !usePlayerStore.getState().isPreparing) {
+      usePlayerStore.getState().setBuffering(true)
+    }
   }
 
   const handlePlaying = () => {
+    if (usePlayerStore.getState().isPreparing) return
     usePlayerStore.getState().setBuffering(false)
-    errorTrackRef.current = { id: null, count: 0 }
     updateMediaSessionPosition(
       audioRef.current?.duration || 0,
       audioRef.current?.currentTime || 0
@@ -314,25 +333,8 @@ export function App() {
   }
 
   const handleError = () => {
-    const state = usePlayerStore.getState()
-    if (!state.currentTrack) return
-    state.setBuffering(false)
-    const trackId = state.currentTrack.id
-    const name = (state.currentTrack.name || 'Трек').replace(/\.[^/.]+$/, '')
-    const previous = errorTrackRef.current
-    const count = previous.id === trackId ? previous.count + 1 : 1
-    errorTrackRef.current = { id: trackId, count }
-    if (count >= 2) {
-      state.audioElement?.pause()
-      usePlayerStore.setState({ isPlaying: false })
-      setMediaPlaybackState('none')
-      state.setNotice({ kind: 'error', text: `Не удалось воспроизвести «${name}» — поток недоступен` })
-      return
-    }
-    log.warn('Audio stream error, skipping failed track', { id: trackId })
-    state.setNotice({ kind: 'error', text: `Проблемы с потоком «${name}» — пропускаем` })
-    boundTrackIdRef.current = null
-    state.nextTrack({ skipCurrent: true })
+    // Preparation and browser decode errors are not playlist completion.
+    usePlayerStore.getState().recoverAudioError()
   }
 
   /**

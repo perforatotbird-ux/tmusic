@@ -130,3 +130,24 @@ class ArtistRepository:
             chain.append(row)
             current_id = row
         return chain
+
+    @staticmethod
+    def count_children(db: Session, artist_id: int) -> int:
+        return db.execute(
+            select(func.count(MusicArtist.id)).where(MusicArtist.parent_id == artist_id)
+        ).scalar() or 0
+
+    @staticmethod
+    def count_by_folder(db: Session, folder_id: int) -> int:
+        return db.execute(
+            select(func.count(MusicArtist.id)).where(MusicArtist.folder_id == folder_id)
+        ).scalar() or 0
+
+    @staticmethod
+    def detach_children(db: Session, artist_id: int) -> int:
+        """Detach nested cards (parent_id=NULL) so they survive the parent's deletion."""
+        return db.execute(
+            MusicArtist.__table__.update()
+            .where(MusicArtist.parent_id == artist_id)
+            .values(parent_id=None)
+        ).rowcount

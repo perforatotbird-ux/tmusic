@@ -3,6 +3,7 @@ T-Music Metadata API (Last.fm / Discogs readiness + lookups).
 No secrets in responses.
 """
 import asyncio
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,6 +17,8 @@ from app.models.auth import AppUser
 from app.models.music import MusicArtist
 from app.services import lastfm_service, lyrics_service
 from app.schemas.playback import LyricsResponse
+
+logger = logging.getLogger("tmusic.metadata")
 
 router = APIRouter(prefix="/api/metadata", tags=["metadata"])
 
@@ -137,7 +140,7 @@ def enrich_artist(
 
             asyncio.run(cover_cache.fetch_and_cache(info["image_url"]))
         except Exception:
-            pass
+            logger.debug("Cover cache warm failed for artist %s", artist.id, exc_info=True)
     return {
         "id": artist.id,
         "display_name": artist.display_name,

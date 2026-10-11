@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>T-Music — Комплексный план релиза, аудита и защищённого деплоя на VPS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --bg-card: #111827;
+      --bg-card-hover: #172033;
+      --bg-code: #050811;
+      --border: #1f293d;
+      --border-accent: #374151;
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
+      --text-dim: #6b7280;
+      --primary: #38bdf8;
+      --primary-glow: rgba(56, 189, 248, 0.15);
+      --success: #10b981;
+      --success-glow: rgba(16, 185, 129, 0.15);
+      --warning: #f59e0b;
+      --warning-glow: rgba(245, 158, 11, 0.15);
+      --danger: #ef4444;
+      --danger-glow: rgba(239, 68, 68, 0.15);
+      --purple: #a855f7;
+      --purple-glow: rgba(168, 85, 247, 0.15);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 32px 20px 80px;
+    }
+
+    .container {
+      max-width: 1280px;
+      margin: 0 auto;
+    }
+
+    /* Header */
+    header {
+      background: linear-gradient(180deg, rgba(31, 41, 55, 0.4) 0%, rgba(17, 24, 39, 0) 100%);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 32px;
+      margin-bottom: 28px;
+      backdrop-filter: blur(8px);
+    }
+
+    .header-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      font-size: 28px;
+      font-weight: 800;
+      color: #fff;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 15px;
+      max-width: 850px;
+      margin-top: 6px;
+    }
+
+    /* Badges */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .badge-primary { background: var(--primary-glow); color: var(--primary); border: 1px solid rgba(56, 189, 248, 0.3); }
+    .badge-success { background: var(--success-glow); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.3); }
+    .badge-warning { background: var(--warning-glow); color: var(--warning); border: 1px solid rgba(245, 158, 11, 0.3); }
+    .badge-danger { background: var(--danger-glow); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.3); }
+    .badge-purple { background: var(--purple-glow); color: var(--purple); border: 1px solid rgba(168, 85, 247, 0.3); }
+
+    /* Meta Cards */
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin-top: 24px;
+    }
+
+    .meta-card {
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+    }
+
+    .meta-label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-dim);
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .meta-val {
+      font-size: 16px;
+      font-weight: 700;
+      color: #fff;
+    }
+
+    /* Alerts */
+    .alert {
+      border-radius: 12px;
+      padding: 20px 24px;
+      margin-bottom: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .alert-danger {
+      background: rgba(239, 68, 68, 0.08);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #fca5a5;
+    }
+
+    .alert-warning {
+      background: rgba(245, 158, 11, 0.08);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+      color: #fde68a;
+    }
+
+    .alert-info {
+      background: rgba(56, 189, 248, 0.08);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      color: #bae6fd;
+    }
+
+    .alert-title {
+      font-weight: 700;
+      font-size: 15px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .alert-content {
+      font-size: 14px;
+      line-height: 1.6;
+      color: #e5e7eb;
+    }
+
+    /* Sections */
+    section {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 28px;
+      margin-bottom: 28px;
+    }
+
+    h2 {
+      font-size: 20px;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 20px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    h3 {
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--primary);
+      margin: 20px 0 12px;
+    }
+
+    p { margin-bottom: 14px; color: #d1d5db; font-size: 14.5px; }
+
+    /* Table */
+    .table-responsive {
+      overflow-x: auto;
+      margin: 16px 0;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13.5px;
+      text-align: left;
+    }
+
+    th {
+      background: rgba(0, 0, 0, 0.4);
+      padding: 12px 16px;
+      font-weight: 700;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+      text-transform: uppercase;
+      font-size: 12px;
+      letter-spacing: 0.05em;
+    }
+
+    td {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+      color: #e5e7eb;
+    }
+
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255, 255, 255, 0.02); }
+
+    /* Code blocks */
+    pre {
+      background: var(--bg-code);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      overflow-x: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      line-height: 1.5;
+      color: #e2e8f0;
+      margin: 14px 0;
+    }
+
+    code {
+      font-family: 'JetBrains Mono', monospace;
+      background: rgba(255, 255, 255, 0.06);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 12.5px;
+      color: var(--primary);
+    }
+
+    pre code {
+      background: transparent;
+      padding: 0;
+      color: inherit;
+    }
+
+    /* Diagram card */
+    .diagram-container {
+      background: #060911;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin: 16px 0;
+      overflow-x: auto;
+    }
+
+    /* Checklist */
+    .checklist {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin: 16px 0;
+    }
+
+    .checklist-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      background: rgba(0, 0, 0, 0.2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+
+    .checkbox {
+      width: 20px;
+      height: 20px;
+      border-radius: 6px;
+      border: 2px solid var(--primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    .step-num {
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: var(--primary-glow);
+      color: var(--primary);
+      border: 1px solid var(--primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 13px;
+      flex-shrink: 0;
+    }
+
+    /* Tabs */
+    .tab-nav {
+      display: flex;
+      gap: 8px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 20px;
+    }
+
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 14px;
+      font-weight: 600;
+      padding: 10px 16px;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+    }
+
+    .tab-btn.active {
+      color: var(--primary);
+      border-bottom-color: var(--primary);
+    }
+
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    footer {
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 13px;
+      margin-top: 40px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+
+  <!-- Header -->
+  <header>
+    <div class="header-top">
+      <div>
+        <h1>🔒 T-Music — План релиза и защиты VPS</h1>
+        <div class="subtitle">
+          Глубокий аудит безопасности кодовой базы, защита сессии Telegram от хищения и устойчивость к атакам ботов при выходе в интернет.
+        </div>
+      </div>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <span class="badge badge-success">✓ 427 Tests Passed</span>
+        <span class="badge badge-primary">Docker Ready</span>
+        <span class="badge badge-purple">Zero-Trust Architecture</span>
+      </div>
+    </div>
+
+    <div class="meta-grid">
+      <div class="meta-card">
+        <div class="meta-label">Целевая среда</div>
+        <div class="meta-val">Linux VPS / Public Internet</div>
+      </div>
+      <div class="meta-card">
+        <div class="meta-label">Главный приоритет</div>
+        <div class="meta-val" style="color: var(--success);">Защита сессии Telegram</div>
+      </div>
+      <div class="meta-card">
+        <div class="meta-label">Периметр</div>
+        <div class="meta-val">Nginx TLS + Fail2ban + UFW</div>
+      </div>
+      <div class="meta-card">
+        <div class="meta-label">Парольная политика</div>
+        <div class="meta-val" style="color: var(--warning);">Двухконтурный шлюз</div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Critical Alerts / Decisions -->
+  <div class="alert alert-danger">
+    <div class="alert-title">
+      ⚠️ Критический вопрос: Пароль администратора (123) на публичном VPS
+    </div>
+    <div class="alert-content">
+      Согласно решению владельца проекта от 2026-10-02, локальный пароль админа зафиксирован как <code>123</code>.
+      Однако на публичном сервере в интернете боты непрерывно сканируют порты 80/443 и атакуют словарь паролей (<code>admin:123</code> — один из первых в базах словарей). Бот получит доступ с первой же попытки.
+      <br><br>
+      <strong>Решение плана (Вариант А — Рекомендуемый):</strong> Внутри приложения пароль остаётся <code>123</code>, но на внешнем уровне Nginx вход в панель <code>/api/admin</code> и эндпоинт <code>/api/auth/login</code> закрывается <strong>HTTP Basic Auth шлюзом</strong> (или Cloudflare Turnstile / персональным VPN WireGuard/Tailscale). Боты без логина и пароля внешнего шлюза вообще не дойдут до приложения FastAPI.
+    </div>
+  </div>
+
+  <div class="alert alert-warning">
+    <div class="alert-title">
+      🛡️ Предотвращение обхода UFW через Docker
+    </div>
+    <div class="alert-content">
+      Docker на Linux по умолчанию вставляет правила в <code>iptables</code> перед правилами брандмауэра <code>ufw</code>. Если порт проброшен как <code>8005:8005</code>, он открыт всему интернету напрямую. 
+      <strong>В релизной конфигурации:</strong> порт привязывается исключительно к локальному интерфейсу <code>127.0.0.1:8005:8005</code>, а весь внешний трафик идёт строго через Nginx с валидацией SSL/TLS и фильтрацией ботов.
+    </div>
+  </div>
+
+  <!-- Section: Architecture -->
+  <section>
+    <h2>🏛️ 1. Архитектура защиты периметра на VPS</h2>
+    <p>Многоуровневая эшелонированная оборона (Defense-in-Depth) гарантирует, что даже при целенаправленных сканированиях вредоносные боты отсекаются на ранних стадиях, не достигая ядра приложения и базы данных.</p>
+
+    <div class="diagram-container">
+      <pre class="mermaid">
+flowchart TD
+    subgraph ExtNet["Внешняя сеть (Интернет)"]
+        User["Легитимный пользователь (Браузер / PWA / Android)"]
+        Bot["Вредоносные боты и сканеры"]
+    end
+
+    subgraph HostVPS["VPS Сервер"]
+        subgraph NetWall["1. Сетевой экран UFW"]
+            P443["Порт 443 (HTTPS)"]
+            P80["Порт 80 (HTTP -> 301 Redirect)"]
+        end
+
+        subgraph ReverseProxy["2. Nginx Реверс-прокси"]
+            SSL["TLSv1.2 / TLSv1.3 + HSTS (Certbot Let's Encrypt)"]
+            BotShield["Фильтрация сканеров (.env, .git, wp-admin)"]
+            AdminGate["Защитный шлюз админки (Basic Auth / IP)"]
+            ProxyIP["Нормализация X-Forwarded-For $remote_addr"]
+        end
+
+        subgraph IntrusionPrev["3. Fail2ban Демон"]
+            F2B["Бан IP при >5 ошибках авторизации или 429"]
+        end
+
+        subgraph AppContainer["4. Docker tmusic-app (127.0.0.1:8005)"]
+            NonRoot["User: tmusic (Non-root, cap_drop ALL)"]
+            RateLimit["Sliding-Window Rate Limiter (120 req/min, Auth 10/min)"]
+            SecMid["CSRF Double-Submit + HttpOnly Cookie"]
+            FastFail["Fail-Fast валидация SESSION_SECRET"]
+            FernetCore["Fernet Vault (TG Sessions In-Memory Decryption)"]
+        end
+
+        subgraph DBContainer["5. PostgreSQL (127.0.0.1:5432)"]
+            EncDB["Шифрованные сессии TG at-rest (Fernet)"]
+        end
+    end
+
+    User --> P443
+    Bot -.->|Дроп пакетов| NetWall
+    Bot -->|Атака| SSL
+    SSL --> BotShield
+    BotShield -->|Бан IP в iptables| F2B
+    SSL --> AdminGate
+    AdminGate --> ProxyIP
+    ProxyIP --> NonRoot
+    NonRoot --> RateLimit
+    RateLimit --> SecMid
+    SecMid --> FernetCore
+    FernetCore --> EncDB
+      </pre>
+    </div>
+  </section>
+
+  <!-- Section: Telegram Session Security -->
+  <section>
+    <h2>🔑 2. Анализ и защита сессии Telegram</h2>
+    <p>Сессия Telegram (<code>session_string</code>, <code>api_hash</code>, <code>api_id</code>) даёт полный доступ к аккаунту Telegram владельца и его «Избранному» (Saved Messages). Защита этих данных — наивысший приоритет.</p>
+
+    <div class="table-responsive">
+      <table>
+        <thead>
+          <tr>
+            <th>Вектор атаки / Риск</th>
+            <th>Состояние в коде</th>
+            <th>Реализованная защита и план усиления</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Кража через утечку базы данных (SQL Dump)</strong></td>
+            <td><span class="badge badge-success">Защищено</span></td>
+            <td>Все сессии хранятся в таблице <code>tg_accounts</code> зашифрованными симметричным шифром Fernet (ключ <code>sha256(SESSION_SECRET)</code>). Без секретного ключа из <code>music.env</code> дамп БД бесполезен.</td>
+          </tr>
+          <tr>
+            <td><strong>Запуск с дефолтным или пустым SESSION_SECRET</strong></td>
+            <td><span class="badge badge-danger">SEC-01: Уязвимость</span></td>
+            <td><strong>Внедряется:</strong> При <code>ENVIRONMENT=production</code> сервер не запустится (Fail-Fast), если <code>SESSION_SECRET</code> не задан, короче 32 символов или равен <code>CHANGE_ME</code>. Это исключает хранение сессий в открытом виде.</td>
+          </tr>
+          <tr>
+            <td><strong>Утечка сессии через API бэкенда</strong></td>
+            <td><span class="badge badge-success">Защищено</span></td>
+            <td>Проверены все роутеры: ни один эндпоинт (включая админку) не возвращает поля <code>session_string</code> и <code>api_hash</code>. В API отдаются только ID, имя и флаги статуса соединения.</td>
+          </tr>
+          <tr>
+            <td><strong>Кража через VFS SQL Import</strong></td>
+            <td><span class="badge badge-success">Защищено</span></td>
+            <td>Парсер <code>vfs_import_service.py</code> парсит из <code>tg_accounts</code> только <code>id</code> и <code>name</code>. Секретные строки сессий игнорируются и не попадают во временные файлы или SQLite.</td>
+          </tr>
+          <tr>
+            <td><strong>Утечка в логи приложения</strong></td>
+            <td><span class="badge badge-success">Защищено</span></td>
+            <td>В логгере <code>logs_router.py</code> и middleware маскируются поля <code>session_string</code>, <code>api_hash</code>, <code>token</code>, <code>password</code> строкой <code>[redacted]</code>. Ротированные архивы шифруются AES-256 (pyzipper).</td>
+          </tr>
+          <tr>
+            <td><strong>Чтение из памяти процесса (RAM Dump)</strong></td>
+            <td><span class="badge badge-success">Защищено</span></td>
+            <td>Контейнер работает от непривилегированного пользователя <code>tmusic</code>, включены <code>no-new-privileges: true</code> и <code>cap_drop: ALL</code>. Сессия загружается в память Pyrogram без создания временных SQLite-файлов.</td>
+          </tr>
+          <tr>
+            <td><strong>Перехват сетевого трафика (MITM)</strong></td>
+            <td><span class="badge badge-warning">Требует TLS</span></td>
+            <td><strong>Внедряется:</strong> Принудительный HTTPS с HSTS, флаг cookies <code>COOKIE_SECURE=true</code>, запрещающий передачу cookie сессии по незащищенному HTTP.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Section: Vulnerability Matrix -->
+  <section>
+    <h2>🔍 3. Матрица находок и мер усиления безопасности</h2>
+
+    <div class="table-responsive">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Уязвимость / Слабое место</th>
+            <th>Уровень</th>
+            <th>Затронутые файлы</th>
+            <th>План устранения</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>SEC-01</strong></td>
+            <td>Отсутствие Fail-Fast проверки <code>SESSION_SECRET</code> и <code>SECRET_KEY</code></td>
+            <td><span class="badge badge-danger">High</span></td>
+            <td><code>backend/app/core/config.py</code></td>
+            <td>Добавить блокировку запуска при <code>ENVIRONMENT=production</code> в случае слабых или незаданных секретов.</td>
+          </tr>
+          <tr>
+            <td><strong>SEC-02</strong></td>
+            <td>Открытый UDP-порт 8211 (LAN Discovery) на VPS</td>
+            <td><span class="badge badge-warning">Medium</span></td>
+            <td><code>discovery_service.py</code>, <code>docker-compose.yml</code></td>
+            <td>Добавить настройку <code>DISCOVERY_ENABLED: bool = False</code>. На VPS сервис не открывает UDP сокет.</td>
+          </tr>
+          <tr>
+            <td><strong>SEC-03</strong></td>
+            <td>Проброс порта 8005 на 0.0.0.0 в Docker</td>
+            <td><span class="badge badge-danger">High</span></td>
+            <td><code>docker-compose.yml</code>, <code>docker-compose.prod.yml</code></td>
+            <td>Привязать порт строго к <code>127.0.0.1:8005:8005</code>, исключив прямой доступ в обход Nginx.</td>
+          </tr>
+          <tr>
+            <td><strong>SEC-04</strong></td>
+            <td>Возможность спуфинга IP через <code>X-Forwarded-For</code></td>
+            <td><span class="badge badge-danger">High</span></td>
+            <td><code>backend/app/utils/client_ip.py</code>, <code>tmusic.conf</code></td>
+            <td>Изоляция порта на loopback + принудительная перезапись заголовков в Nginx через <code>$remote_addr</code>.</td>
+          </tr>
+          <tr>
+            <td><strong>SEC-05</strong></td>
+            <td>Отдача <code>200 OK SPA</code> на бот-сканирование <code>.env</code>, <code>.git</code></td>
+            <td><span class="badge badge-warning">Medium</span></td>
+            <td><code>backend/app/main.py (serve_spa)</code></td>
+            <td>Быстрая отсечка с кодом <code>404 Not Found</code> для путей сканеров (<code>.env</code>, <code>.git</code>, <code>wp-admin</code>, <code>*.php</code>).</td>
+          </tr>
+          <tr>
+            <td><strong>SEC-06</strong></td>
+            <td>Опасные дефолты CORS LAN и Cookies для интернета</td>
+            <td><span class="badge badge-danger">High</span></td>
+            <td><code>music.env.prod.example</code></td>
+            <td>В релизном файле задать <code>CORS_ALLOW_LAN=false</code>, <code>COOKIE_SECURE=true</code>, строгий <code>ALLOWED_ORIGINS</code>.</td>
+          </tr>
+          <tr>
+            <td><strong>SEC-07</strong></td>
+            <td>Тестовая ошибка Windows CRLF во фронтенде</td>
+            <td><span class="badge badge-primary">Low</span></td>
+            <td><code>frontend/tests/transcode-wait.test.cjs</code></td>
+            <td>Исправить регулярное выражение на <code>\r?\n</code>, обеспечив 100% прохождение <code>npm test</code> (149 тестов).</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Section: Code Changes -->
+  <section>
+    <h2>💻 4. Детализация кода и конфигураций</h2>
+
+    <h3>1. Fail-Fast защита секретов в backend/app/core/config.py</h3>
+    <pre><code># Добавление в config.py для строгой защиты в production:
+DISCOVERY_ENABLED: bool = True
+
+# Валидация при загрузке:
+if (settings.ENVIRONMENT or "").lower() == "production":
+    if not settings.SESSION_SECRET or settings.SESSION_SECRET in ("CHANGE_ME", "secret") or len(settings.SESSION_SECRET) &lt; 32:
+        raise RuntimeError(
+            "CRITICAL SECURITY CONFIGURATION: SESSION_SECRET must be configured with a "
+            "strong 256-bit secret (min 32 chars) in production to protect Telegram sessions. "
+            "Generate via: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+        )
+    if not settings.SECRET_KEY or settings.SECRET_KEY in ("CHANGE_ME", "secret") or len(settings.SECRET_KEY) &lt; 32:
+        raise RuntimeError(
+            "CRITICAL SECURITY CONFIGURATION: SECRET_KEY must be explicitly configured "
+            "in production. Ephemeral keys are forbidden."
+        )</code></pre>
+
+    <h3>2. Отсечка ботов и сканеров в backend/app/main.py</h3>
+    <pre><code># Блокировка типичных путей вредоносных ботов без расхода ресурсов на SPA:
+_SCANNER_EXTENSIONS = ('.env', '.git', '.php', '.asp', '.aspx', '.sql', '.bak', '.yml', '.yaml')
+_SCANNER_PREFIXES = ('/.env', '/.git', '/wp-', '/wordpress', '/actuator', '/phpmyadmin', '/admin.php')
+
+@app.get("/{full_path:path}")
+async def serve_spa(full_path: str):
+    lower_path = f"/{full_path.lower()}"
+    if any(lower_path.endswith(ext) for ext in _SCANNER_EXTENSIONS) or any(lower_path.startswith(pre) for pre in _SCANNER_PREFIXES):
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
+    # Далее стандартная безопасная проверка с resolve() и is_relative_to()</code></pre>
+
+    <h3>3. Релизный конфиг Nginx (deploy/nginx/tmusic.conf)</h3>
+    <pre><code>server {
+    listen 80;
+    server_name music.yourdomain.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name music.yourdomain.com;
+
+    ssl_certificate /etc/letsencrypt/live/music.yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/music.yourdomain.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+
+    # Блокировка известных вредоносных ботов и сканеров по User-Agent
+    if ($http_user_agent ~* (sqlmap|nikto|wpscan|masscan|zgrab|nmap|morfeus)) {
+        return 403;
+    }
+
+    # Защитный шлюз для панели администратора (Вариант А)
+    location /api/admin/ {
+        auth_basic "Restricted Admin Area";
+        auth_basic_user_file /etc/nginx/.htpasswd_admin;
+        proxy_pass http://127.0.0.1:8005;
+        include /etc/nginx/proxy_params_common;
+    }
+
+    # Потоковое аудио — отключение буферизации для мгновенного Range-ответа
+    location /api/stream/ {
+        proxy_pass http://127.0.0.1:8005;
+        proxy_buffering off;
+        proxy_http_version 1.1;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Основной прокси к FastAPI
+    location / {
+        proxy_pass http://127.0.0.1:8005;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}</code></pre>
+  </section>
+
+  <!-- Section: Runbook -->
+  <section>
+    <h2>🚀 5. Пошаговый регламент деплоя на VPS (Runbook)</h2>
+
+    <ul class="checklist">
+      <li class="checklist-item">
+        <div class="step-num">1</div>
+        <div>
+          <strong>Базовая настройка VPS (Ubuntu/Debian):</strong>
+          <p>Включение UFW (разрешить только SSH, 80, 443). Установка Docker, Docker Compose, Nginx и Fail2ban.</p>
+          <pre><code>sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow 22/tcp
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw enable</code></pre>
+        </div>
+      </li>
+
+      <li class="checklist-item">
+        <div class="step-num">2</div>
+        <div>
+          <strong>Генерация секретов и настройка music.env на сервере:</strong>
+          <p>Сгенерировать криптостойкие 256-битные ключи для <code>SECRET_KEY</code>, <code>SESSION_SECRET</code> и <code>LOG_ARCHIVE_PASSWORD</code>. Установить права доступа <code>chmod 600 music.env</code>.</p>
+          <pre><code>python -c "import secrets; print('SECRET_KEY=' + secrets.token_urlsafe(32))"
+python -c "import secrets; print('SESSION_SECRET=' + secrets.token_urlsafe(32))"
+python -c "import secrets; print('LOG_ARCHIVE_PASSWORD=' + secrets.token_urlsafe(24))"</code></pre>
+        </div>
+      </li>
+
+      <li class="checklist-item">
+        <div class="step-num">3</div>
+        <div>
+          <strong>Инициализация сессии Telegram:</strong>
+          <p>Запуск <code>python scripts/create_session.py</code> на сервере или перенос готовой зашифрованной базы. Проверка шифрования:</p>
+          <pre><code>python scripts/secure_tg_accounts.py --check
+# Должно вывести: Check complete: 0 account(s) with plaintext credentials.</code></pre>
+        </div>
+      </li>
+
+      <li class="checklist-item">
+        <div class="step-num">4</div>
+        <div>
+          <strong>Запуск контейнеров и выпуск SSL сертификата:</strong>
+          <p>Запуск контейнеров через <code>docker compose -f docker-compose.prod.yml up -d --build</code>. Получение бесплатного Let's Encrypt сертификата через certbot и применение конфига Nginx.</p>
+          <pre><code>sudo certbot certonly --webroot -w /var/www/certbot -d music.yourdomain.com
+sudo nginx -t && sudo systemctl reload nginx</code></pre>
+        </div>
+      </li>
+
+      <li class="checklist-item">
+        <div class="step-num">5</div>
+        <div>
+          <strong>Финальная верификация безопасности:</strong>
+          <p>Проверка статуса здоровья (<code>/health</code>), корректности заголовков (HSTS, CSP, nosniff), проверка блокировки брутфорса через Fail2ban.</p>
+        </div>
+      </li>
+    </ul>
+  </section>
+
+  <!-- Section: Verification Plan -->
+  <section>
+    <h2>✅ 6. План верификации и тестирования</h2>
+
+    <div class="table-responsive">
+      <table>
+        <thead>
+          <tr>
+            <th>Категория тестов</th>
+            <th>Команда запуска</th>
+            <th>Ожидаемый результат</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Backend Suite</strong></td>
+            <td><code>pytest backend/tests</code></td>
+            <td><strong>427+ passed</strong>, 0 failed. Guard пароля администратора активен.</td>
+          </tr>
+          <tr>
+            <td><strong>Config Validation</strong></td>
+            <td><code>pytest backend/tests/test_production_config.py</code></td>
+            <td>Новый тест подтверждает, что при <code>ENVIRONMENT=production</code> слабый ключ валит запуск.</td>
+          </tr>
+          <tr>
+            <td><strong>Frontend Unit Tests</strong></td>
+            <td><code>npm --prefix frontend test</code></td>
+            <td><strong>149/149 passed</strong> (100% success после CRLF исправления).</td>
+          </tr>
+          <tr>
+            <td><strong>Production Build</strong></td>
+            <td><code>npm --prefix frontend run build</code></td>
+            <td>Сборка <code>frontend/dist</code> завершается чисто с кодом 0.</td>
+          </tr>
+          <tr>
+            <td><strong>Telegram Vault Check</strong></td>
+            <td><code>python scripts/secure_tg_accounts.py --check</code></td>
+            <td>0 plaintext rows в таблице <code>tg_accounts</code>.</td>
+          </tr>
+          <tr>
+            <td><strong>Admin Password Guard</strong></td>
+            <td><code>python scripts/restore_admin_password.py</code></td>
+            <td><code>VERIFY: '123' accepted = True; account active = True</code>.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    T-Music Knowledge Base & Deployment Architecture · 2026 · Standalone High-Security Music Server
+  </footer>
+
+</div>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      darkMode: true,
+      background: '#060911',
+      primaryColor: '#1e293b',
+      primaryBorderColor: '#38bdf8',
+      primaryTextColor: '#f8fafc',
+      lineColor: '#64748b'
+    }
+  });
+</script>
+
+</body>
+</html>

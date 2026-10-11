@@ -1,13 +1,14 @@
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from app.api.dependencies import get_admin_user, get_backup_admin
 from app.core.database import get_db
+from app.core.rate_limiter import limiter
 from app.models.auth import AdminAuditEvent, AppUser
 from app.models.vfs import Folder, FolderClosure, VFile
 from app.services.vfs_import_service import (
@@ -26,6 +27,20 @@ from app.utils.client_ip import get_client_ip
 from app.utils.time import utcnow
 
 router = APIRouter(prefix="/api/admin/vfs", tags=["admin-vfs"])
+
+# Per-user budget for import runs: a full import rewrites folders/closures and
+# can flood Telegram with media lookups. The global per-IP window is the only
+# other guard.
+IMPORT_RUNS_PER_MIN = 4
+
+
+def _import_budget(user: AppUser, op: str) -> None:
+    if limiter.is_rate_limited(f"vfsimport:{user.id}:{op}", IMPORT_RUNS_PER_MIN, 60):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many import operations. Slow down.",
+            headers={"Retry-After": "60"},
+        )
 
 
 class FolderUpdate(BaseModel):
@@ -56,21 +71,33 @@ class VfsImportRunRequest(BaseModel):
     confirm: bool = False
 
 
+# How a staged import is materialised in the catalog. Mirrors the four options
+# offered by the admin UI; anything else used to silently fall back to
+# "compilation" inside the service, which hid typos and made the request
+# unbounded. Rejected with 422 now.
+CatalogKind = Literal["compilation", "artist", "genre_collection", "none"]
+
+# Bounds so a single request cannot ask the importer to walk an unbounded
+# selection (the body limit does not help: ids are compact).
+MAX_SELECTED_FOLDERS = 5000
+MAX_SELECTED_FILES = 50000
+
+
 class VfsTreePreviewRequest(BaseModel):
-    selected_folder_ids: List[int] = Field(default_factory=list)
-    selected_file_ids: List[int] = Field(default_factory=list)
+    selected_folder_ids: List[int] = Field(default_factory=list, max_length=MAX_SELECTED_FOLDERS)
+    selected_file_ids: List[int] = Field(default_factory=list, max_length=MAX_SELECTED_FILES)
     target_root_id: Optional[int] = None
     preserve_parent_path: bool = True
-    catalog_kind: str = "compilation"
+    catalog_kind: CatalogKind = "compilation"
 
 
 class VfsTreeRunRequest(BaseModel):
-    selected_folder_ids: List[int] = Field(default_factory=list)
-    selected_file_ids: List[int] = Field(default_factory=list)
+    selected_folder_ids: List[int] = Field(default_factory=list, max_length=MAX_SELECTED_FOLDERS)
+    selected_file_ids: List[int] = Field(default_factory=list, max_length=MAX_SELECTED_FILES)
     target_root_id: Optional[int] = None
     confirm: bool = True
     preserve_parent_path: bool = True
-    catalog_kind: str = "compilation"
+    catalog_kind: CatalogKind = "compilation"
 
 
 def _audit(db: Session, request: Request, user: AppUser, action: str, target_type: str, target_id: Any, metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -95,7 +122,7 @@ def _rebuild_closures(db: Session) -> None:
         visited = set()
         while current and current.id not in visited:
             visited.add(current.id)
-            db.add(FolderClosure(ancestor_id=folder.id, descendant_id=current.id, depth=depth))
+            db.add(FolderClosure(ancestor_id=current.id, descendant_id=folder.id, depth=depth))
             current = db.get(Folder, current.parent_id) if current.parent_id else None
             depth += 1
 
@@ -193,6 +220,8 @@ def run_vfs_sql_import(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_backup_admin),
 ):
+    _import_budget(user, "run")
+
     def record_audit(transaction, result):
         _audit(
             transaction,
@@ -307,6 +336,8 @@ def run_vfs_tree_import_route(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_backup_admin),
 ):
+    _import_budget(user, "tree-run")
+
     def record_audit(transaction, result):
         _audit(
             transaction,
@@ -379,6 +410,7 @@ async def get_live_vfs_children(
         files = list(
             db.scalars(
                 select(VFile)
+                .options(load_only(VFile.id, VFile.name, VFile.folder_id, VFile.size, VFile.mime_type))
                 .where(
                     or_(VFile.folder_id.is_(None), VFile.folder_id == 0),
                     VFile.is_trash.is_(False),
@@ -400,29 +432,36 @@ async def get_live_vfs_children(
         files = list(
             db.scalars(
                 select(VFile)
+                .options(load_only(VFile.id, VFile.name, VFile.folder_id, VFile.size, VFile.mime_type))
                 .where(VFile.folder_id == parent_id, VFile.is_trash.is_(False))
                 .order_by(VFile.name)
             ).all()
         )
 
+    # One grouped count per relation instead of two count queries per folder (was N+1).
+    folder_ids = [f.id for f in folders]
+    sub_counts = dict(
+        db.execute(
+            select(Folder.parent_id, func.count(Folder.id))
+            .where(Folder.parent_id.in_(folder_ids), Folder.is_trash.is_(False))
+            .group_by(Folder.parent_id)
+        ).all()
+    ) if folder_ids else {}
+    file_counts = dict(
+        db.execute(
+            select(VFile.folder_id, func.count(VFile.id))
+            .where(VFile.folder_id.in_(folder_ids), VFile.is_trash.is_(False))
+            .group_by(VFile.folder_id)
+        ).all()
+    ) if folder_ids else {}
     folder_rows = []
     for folder in folders:
-        subfolder_count = db.scalar(
-            select(func.count(Folder.id)).where(
-                Folder.parent_id == folder.id, Folder.is_trash.is_(False)
-            )
-        ) or 0
-        file_count = db.scalar(
-            select(func.count(VFile.id)).where(
-                VFile.folder_id == folder.id, VFile.is_trash.is_(False)
-            )
-        ) or 0
         folder_rows.append({
             "id": folder.id,
             "name": folder.name,
             "parent_id": folder.parent_id,
-            "subfolder_count": int(subfolder_count),
-            "file_count": int(file_count),
+            "subfolder_count": int(sub_counts.get(folder.id, 0)),
+            "file_count": int(file_counts.get(folder.id, 0)),
         })
     file_rows = [
         {

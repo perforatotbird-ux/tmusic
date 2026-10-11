@@ -16,13 +16,15 @@ backward-compatible explicit fetch, but cards must not emit it.
 from typing import Optional, List
 from datetime import datetime
 from fastapi import HTTPException
-from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from app.models.music import MusicArtist, MusicAlbum
 from app.models.vfs import VFile
-from app.repositories.artist_repository import ArtistRepository
 from app.repositories.album_repository import AlbumRepository
+from app.repositories.artist_repository import ArtistRepository
+from app.repositories.catalog_repository import CatalogRepository
+from app.repositories.file_repository import FileRepository
+from app.repositories.folder_repository import FolderRepository
 from app.schemas.library import (
     MusicArtistCard, MusicAlbumCard, MusicArtistDetail, LibraryStats
 )
@@ -99,9 +101,13 @@ class MusicLibraryService:
         db: Session,
         search: Optional[str] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
+        artist_id: Optional[int] = None,
     ) -> List[MusicAlbumCard]:
-        albums = AlbumRepository.list_albums(db, search=search, limit=limit, offset=offset)
+        if artist_id is not None:
+            albums = AlbumRepository.list_by_artist_id(db, artist_id, limit=limit, offset=offset, search=search)
+        else:
+            albums = AlbumRepository.list_albums(db, search=search, limit=limit, offset=offset)
         result = []
         for alb in albums:
             cov_url, c_url = cls._cover_pair(alb.cover_url, alb.custom_image_key, alb.enriched_at)
@@ -119,6 +125,24 @@ class MusicLibraryService:
                 enriched_at=alb.enriched_at
             ))
         return result
+
+    @classmethod
+    def get_artist(cls, db: Session, artist_id: int) -> Optional[MusicArtist]:
+        """Raw artist entity (repository access stays in the service layer)."""
+        return ArtistRepository.get_by_id(db, artist_id)
+
+    @classmethod
+    def get_album(cls, db: Session, album_id: int) -> Optional[MusicAlbum]:
+        return AlbumRepository.get_by_id(db, album_id)
+
+    @classmethod
+    def count_artist_children(cls, db: Session, artist_id: int) -> int:
+        return ArtistRepository.count_children(db, artist_id)
+
+    @classmethod
+    def first_album_track(cls, db: Session, folder_id: int) -> Optional[VFile]:
+        """First playable audio track of an album folder (enrichment helper)."""
+        return FileRepository.first_album_track(db, folder_id)
 
     @classmethod
     def get_artist_detail(cls, db: Session, artist_id: int) -> MusicArtistDetail:
@@ -195,15 +219,7 @@ class MusicLibraryService:
     @classmethod
     def get_stats(cls, db: Session) -> LibraryStats:
         """Single round-trip for all catalog aggregates."""
-        audio = (VFile.is_trash.is_(False)) & (VFile.mime_type.like("audio/%"))
-        row = db.execute(
-            select(
-                select(func.count(MusicArtist.id)).scalar_subquery(),
-                select(func.count(MusicAlbum.id)).scalar_subquery(),
-                select(func.count(VFile.id)).where(audio).scalar_subquery(),
-                select(func.coalesce(func.sum(VFile.size), 0)).where(audio).scalar_subquery(),
-            )
-        ).one()
+        row = CatalogRepository.stats(db)
         return LibraryStats(
             artists_count=row[0] or 0,
             albums_count=row[1] or 0,
@@ -354,23 +370,17 @@ class CatalogAdminService:
     @staticmethod
     def delete_artist(db: Session, artist_id: int) -> dict:
         """Delete an artist/collection entry. Refuses when albums or files remain."""
-        from app.models.vfs import Folder, FolderClosure
-
         artist = ArtistRepository.get_by_id(db, artist_id)
         if not artist:
             raise HTTPException(status_code=404, detail="Artist not found.")
 
-        album_count = db.execute(
-            select(func.count(MusicAlbum.id)).where(MusicAlbum.artist_id == artist.id)
-        ).scalar() or 0
+        album_count = AlbumRepository.count_by_artist(db, artist.id)
         if album_count:
             raise HTTPException(
                 status_code=400,
                 detail=f"Cannot delete: {album_count} album(s) still belong here. Move them first.",
             )
-        file_count = db.execute(
-            select(func.count(VFile.id)).where(VFile.folder_id == artist.folder_id)
-        ).scalar() or 0
+        file_count = FileRepository.count_in_folder(db, artist.folder_id)
         if file_count:
             raise HTTPException(
                 status_code=400,
@@ -380,28 +390,20 @@ class CatalogAdminService:
         folder_id = artist.folder_id
         # Detach nested cards first: they are independent catalog entries and
         # must survive the parent's deletion (never cascade into real artists).
-        detached = db.execute(
-            MusicArtist.__table__.update()
-            .where(MusicArtist.parent_id == artist.id)
-            .values(parent_id=None)
-        ).rowcount
+        detached = ArtistRepository.detach_children(db, artist.id)
         db.delete(artist)
         db.flush()
         # Remove the backing folder only if nothing else references it.
         still_used = (
-            db.execute(select(func.count(MusicArtist.id)).where(MusicArtist.folder_id == folder_id)).scalar() or 0
-        ) + (
-            db.execute(select(func.count(MusicAlbum.id)).where(MusicAlbum.folder_id == folder_id)).scalar() or 0
-        ) + (
-            db.execute(select(func.count(Folder.id)).where(Folder.parent_id == folder_id)).scalar() or 0
+            ArtistRepository.count_by_folder(db, folder_id)
+            + AlbumRepository.count_by_folder(db, folder_id)
+            + FolderRepository.count_children(db, folder_id)
         )
         if not still_used:
-            db.execute(FolderClosure.__table__.delete().where(
-                (FolderClosure.ancestor_id == folder_id) | (FolderClosure.descendant_id == folder_id)
-            ))
-            folder = db.get(Folder, folder_id)
+            FolderRepository.delete_closures_for(db, folder_id)
+            folder = FolderRepository.get(db, folder_id)
             if folder:
-                db.delete(folder)
+                FolderRepository.delete(db, folder)
         db.commit()
         return {"ok": True, "id": artist_id, "detached_children": detached or 0}
 

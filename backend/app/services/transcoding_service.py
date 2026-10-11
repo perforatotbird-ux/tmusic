@@ -283,7 +283,11 @@ class TranscodingService:
         job = self._jobs.get(file_id)
         if job:
             if job.status == TranscodeStatus.READY:
-                return TranscodeStatus.READY
+                if get_cached_transcode_path(job.cache_key):
+                    return TranscodeStatus.READY
+                job.status = TranscodeStatus.FAILED
+                job.error = "cache_evicted"
+                return TranscodeStatus.FAILED
             if job.status == TranscodeStatus.PROCESSING:
                 return TranscodeStatus.PROCESSING
             if job.status in (TranscodeStatus.PENDING, TranscodeStatus.FAILED):
@@ -298,6 +302,10 @@ class TranscodingService:
             return TranscodeStatus.READY
 
         return job.status if job and job.status == TranscodeStatus.FAILED else TranscodeStatus.PENDING
+
+    def has_active_job(self, file_id: int) -> bool:
+        job = self._jobs.get(file_id)
+        return bool(job and job.status in (TranscodeStatus.PENDING, TranscodeStatus.PROCESSING))
 
     def get_result(self, file_id: int) -> Optional[Dict[str, Any]]:
         """Get detailed transcode result — cached path, size, duration."""
@@ -461,100 +469,66 @@ class TranscodingService:
 
     # ─── Core transcoding logic ──────────────────────────────────────────────
 
-    async def _download_track_bytes(self, job: TranscodeJob) -> bytes:
-        """
-        Download the entire raw audio file from Telegram as plaintext bytes.
-        Handles both encrypted and unencrypted files.
-        """
-        from sqlalchemy import select
+    @staticmethod
+    async def _disk_call(func, *args):
+        """Finish an in-flight filesystem call before cancellation removes paths."""
+        task = asyncio.create_task(asyncio.to_thread(func, *args))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    pass
+            task.result()
+            raise
+
+    @staticmethod
+    def _append_file(path: Path, data: bytes) -> None:
+        with path.open("ab") as target:
+            target.write(data)
+
+    async def _download_track_to_file(self, job: TranscodeJob, path: Path) -> int:
+        """Spool decrypted chunks to a seekable file; never retain the whole input."""
         from app.core.database import SessionLocal
         from app.repositories.file_repository import FileRepository
-
-        db = SessionLocal()
-        try:
+        from app.services.stream_service import stream_service
+        with SessionLocal() as db:
             track = FileRepository.get_by_id(db, job.file_id)
             if not track:
                 raise ValueError(f"Track {job.file_id} not found in DB")
-
-            from app.services.stream_service import stream_service
             track = stream_service.snapshot_track(track)
-            db.close()
-
-            # Build source_data dict for fast_streamer (same as stream_service does)
-            source_data = {
-                "account_map": dict(track.account_map or {}) if track.account_map else {},
-                "msg_ids": str(track.msg_ids) if track.msg_ids else None,
-                "tg_message_id": track.tg_message_id,
-                "is_encrypted": bool(track.is_encrypted),
-                "size": track.size,
-                "encryption_salt": track.encryption_salt,
-                "id": track.id,
-                "name": track.name,
-            }
-
-            if not track.is_encrypted:
-                # Unencrypted: just stream all bytes from Telegram
-                raw_bytes = bytearray()
-                stream_gen = fast_streamer.stream_file(source=source_data, offset=0)
-                try:
-                    async for chunk in stream_gen:
-                        raw_bytes.extend(chunk)
-                finally:
-                    if hasattr(stream_gen, "aclose"):
-                        await stream_gen.aclose()
-                return bytes(raw_bytes)
-
-            # Encrypted: stream + decrypt
-            # Read the 32-byte header first
-            header_gen = fast_streamer.stream_file(source=source_data, offset=0, limit=32)
-            header_bytes = b""
-            try:
-                async for c in header_gen:
-                    header_bytes += c
-                    if len(header_bytes) >= 32:
-                        break
-            finally:
-                if hasattr(header_gen, "aclose"):
-                    await header_gen.aclose()
-
-            if len(header_bytes) < 32:
-                raise RuntimeError("Failed to read encryption header")
-
-            salt, base_nonce, block_size = DecryptionService.parse_header(header_bytes[:32])
-
-            # Stream encrypted data starting after the header
-            total_plain = stream_service_get_plain_size(track)
-            enc_offset = 32
-            raw_stream = fast_streamer.stream_file(source=source_data, offset=enc_offset)
-
-            dec_stream = DecryptionService.decrypt_stream(
-                raw_stream=raw_stream,
-                salt=salt,
-                base_nonce=base_nonce,
-                block_size=block_size,
-                skip_header=True,
-                plain_limit=total_plain,
+        source = stream_service._source_snapshot(track)
+        if track.is_encrypted:
+            salt, nonce, block_size = await stream_service._get_encryption_header(source)
+            expected = await stream_service.get_plain_track_size(track)
+            raw = fast_streamer.stream_file(source=source, offset=32)
+            stream = DecryptionService.decrypt_stream(
+                raw_stream=raw, salt=salt, base_nonce=nonce, block_size=block_size,
+                skip_header=True, plain_limit=expected,
             )
-
-            plain_bytes = bytearray()
-            try:
-                async for chunk in dec_stream:
-                    plain_bytes.extend(chunk)
-            finally:
-                if hasattr(dec_stream, "aclose"):
-                    await dec_stream.aclose()
-                if hasattr(raw_stream, "aclose"):
-                    await raw_stream.aclose()
-
-            return bytes(plain_bytes)
-
+        else:
+            expected = track.size or 0
+            raw = fast_streamer.stream_file(source=source, offset=0)
+            stream = raw
+        received = 0
+        try:
+            async for chunk in stream:
+                received += len(chunk)
+                if expected and received > expected:
+                    raise RuntimeError("Downloaded audio exceeds its expected size")
+                await self._disk_call(self._append_file, path, chunk)
+            if not received or (expected and received != expected):
+                raise RuntimeError("Downloaded audio is incomplete")
+            return received
         finally:
-            db.close()
-
-    @staticmethod
-    def _write_file(path: Path, data: bytes) -> None:
-        with open(path, "wb") as f:
-            f.write(data)
+            try:
+                if hasattr(stream, "aclose"):
+                    await stream.aclose()
+            finally:
+                if stream is not raw and hasattr(raw, "aclose"):
+                    await raw.aclose()
 
     async def _transcode_track(self, job: TranscodeJob):
         """Download track bytes, transcode to MP3, cache to disk, and notify."""
@@ -564,78 +538,51 @@ class TranscodingService:
         if not ensure_ffmpeg_binaries():
             raise RuntimeError("ffmpeg binaries not available")
 
-        # Download raw bytes
-        logger.info("Downloading raw audio for file %d (%s)", job.file_id, job.file_name)
-        self._notify({
-            "event": "transcode_downloading",
-            "file_id": job.file_id,
-            "file_name": job.file_name,
-            "timestamp": time.time(),
-        }, job.requester_user_ids)
-
-        raw_bytes = await self._download_track_bytes(job)
-        logger.info("Downloaded %d bytes for file %d", len(raw_bytes), job.file_id)
-
-        # Transcode to MP3 320kbps CBR using ffmpeg subprocess
-        logger.info("Transcoding file %d to MP3 320kbps...", job.file_id)
-
-        # Write raw bytes to a temp file off the event loop: MP4/M4A inputs with
-        # the moov atom at the end require seeking, which is impossible on a non-seekable pipe.
+        # M4A requires a seekable input (moov may live at the end of the file).
+        # Input and output are disk-backed; only individual download chunks use RAM.
         ext = safe_src_ext(job.file_name)
         src_tmp = settings.TRANSCODE_CACHE_DIR / f"{job.cache_key}.src.{ext}"
+        output_tmp = settings.TRANSCODE_CACHE_DIR / f"{job.cache_key}.part.mp3"
+        logger.info("Downloading raw audio for file %d (%s)", job.file_id, job.file_name)
+        self._notify({
+            "event": "transcode_downloading", "file_id": job.file_id,
+            "file_name": job.file_name, "timestamp": time.time(),
+        }, job.requester_user_ids)
         try:
-            await asyncio.to_thread(self._write_file, src_tmp, raw_bytes)
-
+            await self._disk_call(src_tmp.write_bytes, b"")
+            downloaded = await asyncio.wait_for(
+                self._download_track_to_file(job, src_tmp),
+                timeout=settings.TRANSCODE_DOWNLOAD_TIMEOUT_SEC,
+            )
+            logger.info("Downloaded %d bytes for file %d", downloaded, job.file_id)
             cmd = [
-                str(FFMPEG_EXE),
-                "-y",
-                "-i", str(src_tmp),
-                "-vn",
-                "-c:a", "libmp3lame",
+                str(FFMPEG_EXE), "-y", "-nostats", "-loglevel", "error",
+                "-i", str(src_tmp), "-vn", "-c:a", "libmp3lame",
                 "-b:a", f"{settings.TRANSCODE_BITRATE_KBPS}k",
-                "-cutoff", "20000",
-                "-map_metadata", "0",
-                "-f", "mp3",
-                "pipe:1",
+                "-cutoff", "20000", "-map_metadata", "0", "-f", "mp3", str(output_tmp),
             ]
-
+            logger.info("Transcoding file %d to MP3...", job.file_id)
             proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                *cmd, stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
             )
-
-            stdout_data, stderr_data = await communicate_with_cleanup(
-                proc,
-                timeout=600,  # 10 minute timeout for large files
+            _, stderr_data = await communicate_with_cleanup(
+                proc, timeout=settings.TRANSCODE_TIMEOUT_SEC,
             )
+            if proc.returncode != 0:
+                detail = (stderr_data or b"").decode("utf-8", errors="replace")[-800:]
+                raise RuntimeError(f"ffmpeg failed (code {proc.returncode}): {detail}")
+            if not output_tmp.is_file() or output_tmp.stat().st_size < 1024:
+                raise RuntimeError("ffmpeg produced invalid MP3")
+            # Publish only a complete file; the manifest gates cache discovery.
+            await self._disk_call(output_tmp.replace, output_path)
         finally:
-            try:
-                src_tmp.unlink(missing_ok=True)
-            except OSError:
-                pass
-
-        if proc.returncode != 0:
-            stderr_text = stderr_data.decode("utf-8", errors="replace") if stderr_data else ""
-            # Show the tail of stderr — the actual error is at the end,
-            # after the version banner and stream info.
-            raise RuntimeError(f"ffmpeg failed (code {proc.returncode}): {stderr_text[-800:]}")
-
-        # Validate output: reject empty/garbage MP3s (e.g. header-only output)
-        if len(stdout_data) < 1024:
-            stderr_text = stderr_data.decode("utf-8", errors="replace") if stderr_data else ""
-            raise RuntimeError(
-                f"ffmpeg produced invalid MP3 ({len(stdout_data)} bytes): {stderr_text[-800:]}"
-            )
-
-        # Write transcoded MP3 to disk cache in worker thread
-        await asyncio.to_thread(self._write_file, output_path, stdout_data)
+            await self._disk_call(src_tmp.unlink, True)
+            await self._disk_call(output_tmp.unlink, True)
 
         mp3_size = output_path.stat().st_size
         job.mp3_size = mp3_size
         job.finished_at = time.time()
-        job.status = TranscodeStatus.READY
 
         # Get duration using ffprobe in worker thread
         duration = await asyncio.to_thread(get_mp3_duration, str(output_path))
@@ -653,10 +600,13 @@ class TranscodingService:
             "bitrate_kbps": settings.TRANSCODE_BITRATE_KBPS,
             "created_at": time.time(),
         }
-        await asyncio.to_thread(write_cache_manifest, job.cache_key, manifest_payload)
+        await self._disk_call(write_cache_manifest, job.cache_key, manifest_payload)
+        if not get_cached_transcode_path(job.cache_key):
+            raise RuntimeError("Transcode cache manifest could not be published")
+        job.status = TranscodeStatus.READY
 
         # Clean up cache in worker thread if it's growing too large
-        await asyncio.to_thread(self._cleanup_cache)
+        await asyncio.to_thread(self._cleanup_cache, job.cache_key)
 
         # Notify only users who requested this job.
         self._notify({
@@ -707,17 +657,17 @@ class TranscodingService:
                 continue
         return None
 
-    def _cleanup_cache(self):
+    def _cleanup_cache(self, protected_key=None):
         """Evict oldest cached files when cache exceeds max size."""
         try:
             cache_dir = settings.TRANSCODE_CACHE_DIR
-            total_size = sum(f.stat().st_size for f in cache_dir.glob("*.mp3") if f.is_file())
+            total_size = sum(f.stat().st_size for f in cache_dir.glob("*.mp3") if f.is_file() and not f.name.endswith(".part.mp3") and ".src." not in f.name)
             if total_size <= settings.TRANSCODE_CACHE_MAX_BYTES:
                 return
 
             # Sort MP3 files by mtime (oldest first)
             mp3_files = sorted(
-                cache_dir.glob("*.mp3"),
+                (f for f in cache_dir.glob("*.mp3") if not f.name.endswith(".part.mp3") and ".src." not in f.name and f.stem != protected_key),
                 key=lambda f: f.stat().st_mtime
             )
             for f in mp3_files:

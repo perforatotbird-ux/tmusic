@@ -3,27 +3,25 @@ T-Music Admin Catalog API
 Admin-only curation: rename artists/albums/collections, change kinds,
 create/delete collections, move albums between collections.
 """
+import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_catalog_user
 from app.core.database import get_db
 from app.models.auth import AppUser
-from app.models.music import MusicAlbum, MusicArtist
-from app.models.vfs import VFile
 from app.services import lastfm_service
 from app.utils.time import utcnow
-from app.repositories.album_repository import AlbumRepository
-from app.repositories.artist_repository import ArtistRepository
 from app.schemas.library import MusicAlbumCard, MusicArtistCard
 from app.services.music_library_service import (
     CatalogAdminService,
     library_service,
 )
+
+logger = logging.getLogger("tmusic.admin.catalog")
 
 router = APIRouter(prefix="/api/admin/catalog", tags=["admin-catalog"])
 
@@ -101,11 +99,9 @@ async def catalog_update_artist(
     )
     parent_name = None
     if artist.parent_id:
-        parent = ArtistRepository.get_by_id(db, artist.parent_id)
+        parent = library_service.get_artist(db, artist.parent_id)
         parent_name = parent.display_name if parent else None
-    children_count = (
-        db.execute(select(func.count(MusicArtist.id)).where(MusicArtist.parent_id == artist.id)).scalar() or 0
-    )
+    children_count = library_service.count_artist_children(db, artist.id)
     cards = library_service.list_artists(db, search=artist.display_name, limit=500)
     for card in cards:
         if card.id == artist.id:
@@ -138,7 +134,7 @@ async def catalog_scan_artist(
 ):
     if not lastfm_service.metadata_ready():
         raise HTTPException(status_code=503, detail="Last.fm metadata is not configured.")
-    artist = db.get(MusicArtist, artist_id)
+    artist = library_service.get_artist(db, artist_id)
     if not artist:
         raise HTTPException(status_code=404, detail="Artist not found.")
     info = lastfm_service.get_artist_info(artist.display_name)
@@ -160,7 +156,7 @@ async def catalog_scan_artist(
 
             await cover_cache.fetch_and_cache(info["image_url"])
         except Exception:
-            pass
+            logger.debug("Cover cache warm failed for artist %s", artist.id, exc_info=True)
     return {"ok": True, "id": artist.id, "updated": True, "mbid": artist.mbid}
 
 
@@ -175,7 +171,7 @@ async def catalog_create_collection(
     )
     parent_name = None
     if artist.parent_id:
-        parent = ArtistRepository.get_by_id(db, artist.parent_id)
+        parent = library_service.get_artist(db, artist.parent_id)
         parent_name = parent.display_name if parent else None
     return MusicArtistCard(
         id=artist.id,
@@ -213,27 +209,7 @@ async def catalog_albums(
 ):
     if search in ("null", "undefined") or not (search or "").strip():
         search = None
-    if artist_id is not None:
-        albums = AlbumRepository.list_by_artist_id(db, artist_id, limit=limit, offset=offset, search=search)
-    else:
-        albums = AlbumRepository.list_albums(db, search=search, limit=limit, offset=offset)
-    result = []
-    for alb in albums:
-        cov_url, c_url = library_service._cover_pair(alb.cover_url, alb.custom_image_key, alb.enriched_at)
-        result.append(MusicAlbumCard(
-            id=alb.id,
-            folder_id=alb.folder_id,
-            artist_id=alb.artist_id,
-            title=alb.title,
-            year=alb.year,
-            mbid=alb.mbid,
-            cover_url=cov_url,
-            custom_image_url=c_url,
-            confidence=alb.confidence,
-            is_tracks=False,
-            enriched_at=alb.enriched_at,
-        ))
-    return result
+    return library_service.list_albums(db, search=search, artist_id=artist_id, limit=limit, offset=offset)
 
 
 @router.patch("/albums/{album_id}", response_model=MusicAlbumCard)
@@ -270,19 +246,13 @@ async def catalog_scan_album(
 ):
     if not lastfm_service.metadata_ready():
         raise HTTPException(status_code=503, detail="Last.fm metadata is not configured.")
-    album = db.get(MusicAlbum, album_id)
+    album = library_service.get_album(db, album_id)
     if not album:
         raise HTTPException(status_code=404, detail="Album not found.")
-    artist = db.get(MusicArtist, album.artist_id)
+    artist = library_service.get_artist(db, album.artist_id)
     if not artist:
         raise HTTPException(status_code=404, detail="Album artist not found.")
-    file = db.scalar(
-        select(VFile).where(
-            VFile.folder_id == album.folder_id,
-            VFile.is_trash.is_(False),
-            VFile.mime_type.like("audio/%"),
-        ).limit(1)
-    )
+    file = library_service.first_album_track(db, album.folder_id)
     if not file:
         raise HTTPException(status_code=404, detail="Album has no playable track for enrichment.")
     track_artist, track_title, _ = lastfm_service.parse_track_meta(
@@ -307,7 +277,7 @@ async def catalog_scan_album(
 
             await cover_cache.fetch_and_cache(info["image_url"])
         except Exception:
-            pass
+            logger.debug("Cover cache warm failed for album %s", album.id, exc_info=True)
     return {"ok": True, "id": album.id, "updated": True, "mbid": album.mbid}
 
 

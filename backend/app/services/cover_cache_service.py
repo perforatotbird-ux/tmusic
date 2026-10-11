@@ -294,7 +294,7 @@ class CoverCacheService:
                     try:
                         ct = meta_path.read_text(encoding="utf-8").strip() or ct
                     except Exception:
-                        pass
+                        logger.debug("Failed to read cover meta file %s", meta_path, exc_info=True)
                 mime = _detect_mime_and_validate(data) or ct
                 return data, mime
 

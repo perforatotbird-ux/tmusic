@@ -174,6 +174,7 @@ export function MusicLibraryPlayer() {
     queueIndex,
     isPlaying,
     isBuffering,
+    isPreparing,
     currentTime,
     duration,
     bufferedUpTo,
@@ -311,7 +312,7 @@ export function MusicLibraryPlayer() {
   // Android: store may say "playing" while <audio> is paused after lockscreen.
   const handlePlayPause = () => {
     const audio = usePlayerStore.getState().audioElement
-    if (isPlaying && audio?.paused) {
+    if (isPlaying && !isPreparing && audio?.paused) {
       forceResume()
       return
     }
@@ -360,11 +361,15 @@ export function MusicLibraryPlayer() {
   const swipeProps = {
     onTouchStart: (e) => {
       if (e.target.closest('.tm-scrub, button, .tmusic-nowplaying-queue')) return
-      swipeStart.current = e.touches[0].clientY
+      const touch = e.touches[0]
+      if (!touch) return
+      swipeStart.current = touch.clientY
     },
     onTouchMove: (e) => {
       if (swipeStart.current == null) return
-      const dy = e.touches[0].clientY - swipeStart.current
+      const touch = e.touches[0]
+      if (!touch) return
+      const dy = touch.clientY - swipeStart.current
       if (dy > 0) setSwipeY(Math.min(dy * 0.85, 220))
     },
     onTouchEnd: () => {
@@ -783,7 +788,7 @@ export function MusicLibraryPlayer() {
                 />
                 {isBuffering && (
                   <span className="tm-buffer-badge">
-                    <Loader2 size={13} className="tmusic-spin" /> Буферизация
+                    <Loader2 size={13} className="tmusic-spin" /> {isPreparing ? 'Подготовка аудио…' : 'Буферизация'}
                   </span>
                 )}
               </div>

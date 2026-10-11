@@ -32,3 +32,61 @@ test('prepareQueue immediately clears watchdog and autoplay recovery', async () 
   assert.equal(p.c.intervals.size + p.c.timers.size, 0)
   assert.equal(p.document.count() + p.window.count(), 0)
 })
+
+const deferredPreparation = () => { let resolve, reject; const promise = new Promise((a,b) => { resolve=a; reject=b }); return {promise,resolve,reject} }
+function preparingPlayer() {
+  const p=player({play:()=>Promise.resolve()}), pending=[]
+  p.ctx.streamApi.needsPreparation=t=>/\.m4a$/.test(t?.name || '')
+  p.ctx.streamApi.preparePlayback=(id,{signal})=>{const d=deferredPreparation();pending.push({id,signal,...d});return d.promise}
+  p.pending=pending
+  return p
+}
+const longTracks=[{id:31,name:'Long.m4a'},{id:32,name:'Other.m4a'}]
+test('long M4A retains queue slot until prepared and binds only explicit MP3',async()=>{
+  const p=preparingPlayer();p.store.getState().playQueue(longTracks)
+  assert.equal(p.store.getState().isPreparing,true);assert.equal(p.store.getState().queueIndex,0)
+  assert.equal(p.audio.src,undefined)
+  p.store.getState().recoverAudioError();assert.equal(p.pending.length,1)
+  p.pending[0].resolve('/api/stream/31?representation=mp3');await tick()
+  assert.equal(p.store.getState().isPreparing,false);assert.equal(p.audio.src,'/api/stream/31?representation=mp3')
+  assert.equal(p.store.getState().currentTrack.id,31);p.store.getState().reset()
+})
+test('A -> B -> A aborts wait and late completion cannot bind old source',async()=>{
+  const p=preparingPlayer();p.store.getState().playQueue(longTracks)
+  p.store.getState().nextTrack();assert.equal(p.pending[0].signal.aborted,true)
+  p.store.getState().playQueue(longTracks);assert.equal(p.pending[1].signal.aborted,true)
+  p.pending[0].resolve('/old-A');p.pending[1].resolve('/old-B');await tick();assert.equal(p.audio.src,undefined)
+  p.pending[2].resolve('/fresh-A');await tick();assert.equal(p.audio.src,'/fresh-A');p.store.getState().reset()
+})
+test('pause and reset abort preparation without advancing or late autoplay',async()=>{
+  const p=preparingPlayer();p.store.getState().playQueue(longTracks);p.store.getState().togglePlay()
+  assert.equal(p.pending[0].signal.aborted,true);assert.equal(p.store.getState().isPlaying,false)
+  p.pending[0].resolve('/late');await tick();assert.equal(p.audio.src,undefined)
+  p.store.getState().forceResume();assert.equal(p.pending.length,2)
+  p.store.getState().reset();assert.equal(p.pending[1].signal.aborted,true)
+  p.pending[1].resolve('/later');await tick();assert.equal(p.store.getState().currentTrack,null);assert.equal(p.audio.src,undefined)
+})
+test('failed preparation stops current track, manual Play retries',async()=>{
+  const p=preparingPlayer();p.store.getState().playQueue(longTracks);p.pending[0].reject(Error('synthetic failure'));await tick()
+  assert.equal(p.store.getState().playbackFailed,true);assert.equal(p.store.getState().queueIndex,0)
+  assert.equal(p.store.getState().isPlaying,false)
+  p.store.getState().forceResume();assert.equal(p.pending.length,2)
+  p.pending[1].resolve('/api/stream/31?representation=mp3');await tick();assert.equal(p.store.getState().playbackFailed,false);p.store.getState().reset()
+})
+test('bad cached Blob recovers online once and never skips on repeated decode failure',async()=>{
+  const p=preparingPlayer();p.ctx.navigator={onLine:true}
+  p.ctx.useOfflineStore={getState:()=>({cachedTrackIds:new Set([31]),settings:{}})}
+  p.ctx.getCachedTrack=async()=>({blob:{}});p.ctx.URL={createObjectURL:()=> 'blob:synthetic',revokeObjectURL:noop}
+  p.store.getState().playQueue(longTracks);await tick();assert.equal(p.audio.src,'blob:synthetic')
+  p.store.getState().recoverAudioError();assert.equal(p.pending.length,1)
+  p.pending[0].resolve('/api/stream/31?representation=mp3');await tick()
+  p.store.getState().recoverAudioError();assert.equal(p.pending.length,1);assert.equal(p.store.getState().queueIndex,0)
+  assert.equal(p.store.getState().isPlaying,false);p.store.getState().reset()
+})
+test('offline decode failure stops instead of attempting server or skipping',async()=>{
+  const p=preparingPlayer();p.ctx.navigator={onLine:false}
+  p.ctx.useOfflineStore={getState:()=>({cachedTrackIds:new Set([31]),settings:{}})}
+  p.ctx.getCachedTrack=async()=>({blob:{}});p.ctx.URL={createObjectURL:()=> 'blob:synthetic',revokeObjectURL:noop}
+  p.store.getState().playQueue(longTracks);await tick();p.store.getState().recoverAudioError()
+  assert.equal(p.pending.length,0);assert.equal(p.store.getState().queueIndex,0);assert.equal(p.store.getState().playbackFailed,true);p.store.getState().reset()
+})

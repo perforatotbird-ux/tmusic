@@ -31,11 +31,20 @@ def _fernet_for_secret(secret: str) -> Fernet:
 
 
 def encrypt_session_string(plain_str: Optional[str], secret: Optional[str]) -> Optional[str]:
-    """Encrypts a session string / api_hash with Fernet for at-rest storage."""
+    """Encrypts a session string / api_hash with Fernet for at-rest storage.
+
+    Refuses to fall back to plaintext: an unencrypted Telegram session string or
+    api_hash hands full account access to anyone who reads the DB or a backup.
+    SESSION_SECRET is required at boot (see app.core.config), so a missing
+    secret here is a programming error, not a valid state.
+    """
     if not plain_str:
         return plain_str
     if not secret:
-        return plain_str  # Cannot encrypt without a secret — stored as-is
+        raise TGCredentialError(
+            "SESSION_SECRET is required to encrypt Telegram credentials; "
+            "refusing to store them in plaintext."
+        )
     return _fernet_for_secret(secret).encrypt(plain_str.encode()).decode()
 
 
@@ -371,6 +380,7 @@ class TelegramManager:
                     if mids:
                         candidates.append((aid, mids))
                 except Exception:
+                    logger.debug("Skipping account %s while collecting message ids", aid, exc_info=True)
                     continue
 
         # Fallback to primary client or any client with default_msg_ids (only if clients are active)

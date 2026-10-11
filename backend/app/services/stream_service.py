@@ -23,8 +23,7 @@ from app.repositories.file_repository import FileRepository
 from app.services.ram_cache_service import ram_cache
 from app.services.decryption_service import DecryptionService
 from app.tg.downloader import fast_streamer
-from app.core.config import settings
-from app.utils.ffmpeg_transcoder import needs_transcoding, TranscodeStatus
+from app.utils.ffmpeg_transcoder import needs_transcoding
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +58,8 @@ class StreamService:
     def __init__(self):
         # Cache for encryption headers: file_id -> (salt, base_nonce, block_size)
         self._header_cache: OrderedDict[int, Tuple[bytes, bytes, int]] = OrderedDict()
+        # Cache for resolved plaintext sizes of encrypted tracks: file_id -> plain_size
+        self._plain_size_cache: OrderedDict[int, int] = OrderedDict()
 
     @staticmethod
     def get_track_or_404(db: Session, file_id: int) -> VFile:
@@ -71,14 +72,16 @@ class StreamService:
     def snapshot_track(cls, track):
         """Copy scalar stream/job fields before releasing the read transaction."""
         return SimpleNamespace(**cls._source_snapshot(track),
-                               mime_type=getattr(track, "mime_type", None),
-                               updated_at=getattr(track, "updated_at", None))
+                                mime_type=getattr(track, "mime_type", None),
+                                updated_at=getattr(track, "updated_at", None))
 
     def get_track_size(self, track: VFile) -> Optional[int]:
         """Known plaintext size; encrypted cards stay unknown until header resolution."""
         if not track.size or track.size <= 0:
             return 0
         if getattr(track, "is_encrypted", False):
+            if track.id in self._plain_size_cache:
+                return self._plain_size_cache[track.id]
             header = self._header_cache.get(track.id)
             if header is None:
                 return None  # Never silently assume a 1 MiB encrypted block.
@@ -102,6 +105,13 @@ class StreamService:
         cached = self._header_cache.get(file_id)
         if cached is not None:
             self._header_cache.move_to_end(file_id)
+            if file_id not in self._plain_size_cache:
+                tg_size = fast_streamer.get_source_media_size(source_data)
+                if tg_size is not None:
+                    plain_size = DecryptionService.encrypted_size_to_plain_size(tg_size, cached[2])
+                else:
+                    plain_size = DecryptionService.encrypted_size_to_plain_size(source_data.get("size"), cached[2])
+                self._plain_size_cache[file_id] = plain_size
             return cached
         raw = fast_streamer.stream_file(source=source_data, offset=0, limit=32)
         header_bytes = bytearray()
@@ -120,23 +130,36 @@ class StreamService:
         self._header_cache.move_to_end(file_id)
         while len(self._header_cache) > self.HEADER_CACHE_MAX_ITEMS:
             self._header_cache.popitem(last=False)
+
+        tg_size = fast_streamer.get_source_media_size(source_data)
+        if tg_size is not None:
+            plain_size = DecryptionService.encrypted_size_to_plain_size(tg_size, header[2])
+        else:
+            plain_size = DecryptionService.encrypted_size_to_plain_size(source_data.get("size"), header[2])
+        self._plain_size_cache[file_id] = plain_size
+        self._plain_size_cache.move_to_end(file_id)
+        while len(self._plain_size_cache) > self.HEADER_CACHE_MAX_ITEMS:
+            self._plain_size_cache.popitem(last=False)
+
         return header
 
     async def get_plain_track_size(self, track) -> int:
-        size = self.get_track_size(track)
-        if size is not None:
-            return size
+        if getattr(track, "is_encrypted", False) and track.id in self._plain_size_cache:
+            return self._plain_size_cache[track.id]
         ram_data = await ram_cache.get(track.id)
         if ram_data is not None:
             return len(ram_data)
+        if not getattr(track, "is_encrypted", False):
+            return track.size or 0
         try:
-            header = await self._get_encryption_header(self._source_snapshot(track))
-            return DecryptionService.encrypted_size_to_plain_size(track.size, header[2])
+            source = self._source_snapshot(track)
+            await self._get_encryption_header(source)
+            return self._plain_size_cache.get(track.id) or track.size or 0
         except Exception:
             logger.exception("Failed to resolve encryption header for track %d", track.id)
             raise HTTPException(status_code=503, detail="Streaming service temporarily unavailable.")
 
-    async def resolve_representation(self, track) -> StreamRepresentation:
+    async def resolve_representation(self, track, *, require_transcoded=False) -> StreamRepresentation:
         from app.services.transcoding_service import transcoding_service
         if needs_transcoding(track.name, track.mime_type):
             result = transcoding_service.get_result(track.id)
@@ -148,11 +171,13 @@ class StreamService:
                         return StreamRepresentation(size, "audio/mpeg", path)
                 except OSError:
                     pass  # Cache disappeared: select the original before headers.
+        if require_transcoded and needs_transcoding(track.name, track.mime_type):
+            raise HTTPException(status_code=409, detail="Transcoded audio is not ready.", headers={"Retry-After": "2"})
         return StreamRepresentation(await self.get_plain_track_size(track), track.mime_type or "audio/mpeg")
 
-    async def build_stream_response(self, request, track, *, cache_control="private, max-age=3600", on_original=None):
+    async def build_stream_response(self, request, track, *, cache_control="private, max-age=3600", on_original=None, require_transcoded=False):
         """Select once: headers, Range, format and body describe the same representation."""
-        representation = await self.resolve_representation(track)
+        representation = await self.resolve_representation(track, require_transcoded=require_transcoded)
         if representation.size <= 0:
             raise HTTPException(status_code=400, detail="Audio file has invalid size.")
         if representation.cached_path is None and on_original is not None:
@@ -239,6 +264,20 @@ class StreamService:
             return result["mp3_size"]
         return None
 
+    def list_folder_tracks(
+        self,
+        db: Session,
+        folder_id: int,
+        *,
+        recursive: bool = True,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> list:
+        """Audio tracks in a folder (optionally recursive) via the file repository."""
+        if recursive:
+            return FileRepository.list_tracks_recursive(db, folder_id, limit=limit, offset=offset)
+        return FileRepository.list_tracks_in_folder(db, folder_id, limit=limit, offset=offset)
+
     def build_track_responses(self, db: Session, vfiles: list) -> list:
         """TrackResponse list with plaintext size + best-known duration.
 
@@ -254,7 +293,7 @@ class StreamService:
         out = []
         for vf in vfiles:
             needs_transcode = needs_transcoding(vf.name, vf.mime_type)
-            transcode_status = transcribing_status = None
+            transcode_status = None
             if needs_transcode:
                 transcode_status = transcoding_service.get_status(vf.id)
                 if transcode_status == TranscodeStatus.READY:

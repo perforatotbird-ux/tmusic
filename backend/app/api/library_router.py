@@ -2,10 +2,9 @@
 T-Music Library API Router
 Endpoints for artist lists, album discographies, direct album catalog, statistics, and secure cover proxying.
 """
-import os
 import re
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, Response as RawResponse
 from sqlalchemy.orm import Session
 
@@ -13,7 +12,7 @@ from app.core.database import get_db
 from app.api.dependencies import get_admin_user, get_current_user
 from app.models.auth import AppUser
 from app.schemas.library import (
-    MusicArtistCard, MusicArtistDetail, MusicAlbumCard, LibraryStats, SetCoverRequest
+    MusicArtistCard, MusicArtistDetail, MusicAlbumCard, LibraryStats
 )
 from app.services.music_library_service import library_service
 from app.services.cover_cache_service import cover_cache, is_safe_host, MAX_IMAGE_BYTES
@@ -102,7 +101,8 @@ async def get_covers_manifest(
         raise HTTPException(status_code=400, detail="No keys provided.")
     for k in raw:
         if not _MANIFEST_KEY_RE.match(k):
-            raise HTTPException(status_code=400, detail=f"Invalid key format: {k[:32]}")
+            # Fixed text: never echo client input back in an error detail.
+            raise HTTPException(status_code=400, detail="Invalid key format.")
 
     is_custom = custom == 1
     found = {}

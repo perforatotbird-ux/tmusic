@@ -2,6 +2,7 @@
 T-Music JWT revocation store
 Persists revoked token IDs (jti) so logout actually invalidates access tokens.
 """
+import logging
 import time
 from datetime import datetime
 from typing import Dict
@@ -12,6 +13,8 @@ from sqlalchemy.orm import Session
 from app.core.security import decode_access_token, token_expiry_from_payload
 from app.models.auth import RevokedToken
 from app.utils.time import utcnow
+
+logger = logging.getLogger("tmusic.tokens")
 
 # Negative cache: jti -> timestamp until which "not revoked" is trusted.
 # Every authenticated request hits is_token_revoked, so caching the common
@@ -45,7 +48,7 @@ def revoke_access_token(db: Session, token: str) -> bool:
     try:
         purge_expired_revocations(db)
     except Exception:
-        pass
+        logger.debug("Opportunistic revocation purge failed", exc_info=True)
     return True
 
 

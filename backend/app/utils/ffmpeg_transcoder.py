@@ -33,8 +33,8 @@ logger = logging.getLogger("tmusic.transcoder")
 FFMPEG_BIN_DIR: Path = Path(
     os.environ.get("FFMPEG_BIN_DIR") or (Path(__file__).parent / "ffmpeg")
 )
-FFMPEG_EXE = FFMPEG_BIN_DIR / "ffmpeg.exe"
-FFPROBE_EXE = FFMPEG_BIN_DIR / "ffprobe.exe"
+FFMPEG_EXE = FFMPEG_BIN_DIR / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+FFPROBE_EXE = FFMPEG_BIN_DIR / ("ffprobe.exe" if os.name == "nt" else "ffprobe")
 
 
 class TranscodeStatus(Enum):
@@ -266,7 +266,7 @@ def get_mp3_duration(file_path: str) -> Optional[float]:
             data = json.loads(result.stdout)
             return float(data.get("format", {}).get("duration", 0))
     except Exception:
-        pass
+        logger.debug("ffprobe duration parse failed for %s", file_path, exc_info=True)
     return None
 
 

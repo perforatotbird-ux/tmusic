@@ -47,6 +47,7 @@ function fmtBytes(n) {
   const u = ['B', 'KB', 'MB', 'GB', 'TB']
   let i = 0
   let v = Number(n)
+  if (!Number.isFinite(v)) return '—'
   while (v >= 1024 && i < u.length - 1) {
     v /= 1024
     i++

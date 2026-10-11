@@ -4,7 +4,7 @@ Database access layer for high-speed catalog searching.
 Strictly isolated from HTTP/FastAPI concerns (ADR-001).
 """
 import logging
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple
 from sqlalchemy import select, func, case, or_, text
 from sqlalchemy.orm import Session
 
@@ -37,7 +37,7 @@ class SearchRepository:
             try:
                 db.rollback()
             except Exception:
-                pass
+                logger.debug("Rollback after search index setup failure failed", exc_info=True)
 
     @staticmethod
     def search_artists(
