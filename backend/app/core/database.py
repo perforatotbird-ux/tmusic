@@ -125,14 +125,19 @@ def ensure_catalog_schema() -> None:
     """Additive schema patch for the music catalog hierarchy.
 
     music_artists.parent_id enables the admin card-nesting feature (drag an
-    artist/collection card into another card). Safe to run on every startup:
-    ADD COLUMN IF NOT EXISTS + conditional index creation.
+    artist/collection card into another card). vfiles.custom_image_key lets the
+    admin assign artwork to an individual track, exactly like artists/albums.
+    Safe to run on every startup: ADD COLUMN IF NOT EXISTS + conditional index
+    creation.
     """
     _run_schema_step(
         "Catalog schema",
         "ALTER TABLE music_artists "
         "ADD COLUMN IF NOT EXISTS parent_id INTEGER REFERENCES music_artists(id) ON DELETE SET NULL",
         "CREATE INDEX IF NOT EXISTS idx_music_artists_parent ON music_artists (parent_id)",
+        "ALTER TABLE vfiles "
+        "ADD COLUMN IF NOT EXISTS custom_image_key VARCHAR(128)",
+        "CREATE INDEX IF NOT EXISTS idx_vfiles_custom_image_key ON vfiles (custom_image_key)",
     )
 
 

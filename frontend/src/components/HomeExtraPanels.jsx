@@ -366,6 +366,11 @@ export function LibraryPanel({ section, onRefreshKey }) {
         </section>
       )}
 
+      {/* Legacy: встроенная панель плейлистов. С 2026-10-12 «Плейлисты» из меню
+          профиля открываются отдельным окном (components/PlaylistsModal.jsx),
+          поэтому эта ветка больше не выбирается через onSelectSection. Оставлена
+          как есть до отдельной уборки вместе со своими regression-тестами
+          (tests/error-handling.test.cjs). */}
       {section === 'playlists' && (
         <section>
           <div className="tmusic-panel-head">

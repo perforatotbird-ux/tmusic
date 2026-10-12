@@ -54,6 +54,9 @@ class FolderUpdate(BaseModel):
 
 
 class FileUpdate(BaseModel):
+    # Track rename. VFile.name IS the displayed track title (there is no
+    # separate title column), so the catalog rename goes through here.
+    name: Optional[str] = Field(default=None, min_length=1, max_length=500)
     folder_id: Optional[int] = None
     set_folder: bool = False
     is_trash: Optional[bool] = None
@@ -161,6 +164,12 @@ def _file_payload(file: VFile) -> Dict[str, Any]:
         "is_starred": bool(file.is_starred),
         "pending_deletion": bool(file.pending_deletion),
         "note": file.note,
+        # Same contract as artist/album cards: never a remote URL.
+        "custom_image_url": (
+            f"/api/library/cover?key={file.custom_image_key}&custom=1"
+            if file.custom_image_key
+            else None
+        ),
         "updated_at": file.updated_at.isoformat() if file.updated_at else None,
     }
 
@@ -577,6 +586,11 @@ async def update_admin_file(
     file = db.get(VFile, file_id)
     if not file:
         raise HTTPException(status_code=404, detail="File not found")
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="File name must not be empty")
+        file.name = name
     if body.set_folder:
         if body.folder_id is not None:
             folder = db.get(Folder, body.folder_id)

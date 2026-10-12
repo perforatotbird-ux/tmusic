@@ -2,6 +2,7 @@
 External provider disk cache: TTL, negative caching, budgets, namespaces,
 and integration with the lyrics/lastfm services (all network stubbed).
 """
+import asyncio
 import sys
 import time
 from pathlib import Path
@@ -154,3 +155,100 @@ def test_lastfm_caches_positive_and_negative(tmp_path, monkeypatch):
     miss2 = lastfm_service.get_artist_info("Zzz")
     assert miss is None and miss2 is None
     assert calls == ["Queen", "Zzz"]  # each unique identity fetched exactly once
+
+
+# ── Cover cache: a hand-picked cover must not be served a stale entry ────────
+# Regression for the reported bug «устанавливается другая картинка из кеша»:
+# the custom-cover path used fetch_and_cache, which short-circuits on the
+# URL-keyed cache. That cache is keyed by scheme://netloc/path only, so a
+# picture stored for another purpose (an enriched album cover, or an older
+# version of the same URL) was handed back and saved as the hand-picked cover.
+
+async def _always_safe(url):
+    return True
+
+
+async def _always_blocked(url):  # noqa: ARG001 - signature mirrors is_safe_host
+    return False
+
+
+def _png(rgb):
+    import zlib
+    def chunk(tag, payload):
+        body = tag + payload
+        return len(payload).to_bytes(4, "big") + body + zlib.crc32(body).to_bytes(4, "big")
+    ihdr = (1).to_bytes(4, "big") + (1).to_bytes(4, "big") + bytes([8, 2, 0, 0, 0])
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(b"\x00" + bytes(rgb)))
+        + chunk(b"IEND", b"")
+    )
+
+
+def test_fetch_fresh_bypasses_the_url_keyed_cache(monkeypatch, tmp_path):
+    from app.services import cover_cache_service
+
+    # Redirect the disk cache into a temp dir — never write into the live one.
+    img_dir = tmp_path / "images"
+    img_dir.mkdir()
+    monkeypatch.setattr(cover_cache_service.settings, "IMG_CACHE_DIR", img_dir)
+    monkeypatch.setattr(cover_cache_service, "is_safe_host", _always_safe)
+
+    first, second = _png((220, 30, 30)), _png((30, 30, 220))
+    served = []
+
+    async def _fetch(session, url):
+        served.append(len(served))
+        return first if len(served) == 1 else second
+
+    monkeypatch.setattr(cover_cache_service, "_fetch_safe", _fetch)
+
+    url = "https://example.test/moved.png"
+    asyncio.run(cover_cache_service.cover_cache.fetch_and_cache(url))
+    # The URL-keyed cache now holds `first`.
+    assert asyncio.run(cover_cache_service.cover_cache.fetch_and_cache(url))[0] == first
+    # A hand-picked cover must re-download instead of reusing that entry.
+    assert asyncio.run(cover_cache_service.cover_cache.fetch_fresh(url))[0] == second
+    # The fresh fetch refreshes the shared entry, so later readers see bytes2.
+    key = cover_cache_service.cover_cache.url_to_key(url)
+    assert cover_cache_service.cover_cache.get_cached_item(key, is_custom=False)[0] == second
+    # Enrichment still short-circuits (cache-first is correct there).
+    assert len(served) == 2
+
+
+def test_fetch_fresh_saves_a_content_keyed_custom_cover(monkeypatch, tmp_path):
+    """End-to-end for the reported bug: a second, different image must win."""
+    from app.services import cover_cache_service
+
+    img_dir = tmp_path / "images"
+    img_dir.mkdir()
+    cover_dir = tmp_path / "covers"
+    cover_dir.mkdir()
+    monkeypatch.setattr(cover_cache_service.settings, "IMG_CACHE_DIR", img_dir)
+    monkeypatch.setattr(cover_cache_service.settings, "COVER_CACHE_DIR", cover_dir)
+    monkeypatch.setattr(cover_cache_service, "is_safe_host", _always_safe)
+
+    first, second = _png((220, 30, 30)), _png((30, 30, 220))
+    served = []
+
+    async def _fetch(session, url):
+        served.append(url)
+        return first if url.endswith("a.png") else second
+
+    monkeypatch.setattr(cover_cache_service, "_fetch_safe", _fetch)
+
+    cache = cover_cache_service.cover_cache
+    url_a, url_b = "https://example.test/a.png", "https://example.test/b.png"
+    key_a = cache.save_custom_cover(asyncio.run(cache.fetch_fresh(url_a))[0])
+    key_b = cache.save_custom_cover(asyncio.run(cache.fetch_fresh(url_b))[0])
+    assert key_a != key_b
+    assert (cover_dir / key_a).read_bytes() == first
+    assert (cover_dir / key_b).read_bytes() == second
+
+
+def test_fetch_fresh_returns_none_for_a_blocked_host(monkeypatch):
+    from app.services import cover_cache_service
+
+    monkeypatch.setattr(cover_cache_service, "is_safe_host", _always_blocked)
+    assert asyncio.run(cover_cache_service.cover_cache.fetch_fresh("http://127.0.0.1/x.png")) == (None, None)

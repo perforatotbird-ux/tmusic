@@ -15,9 +15,13 @@ import {
   MoreVertical,
   ScanLine,
   FolderInput,
+  ListMusic,
 } from 'lucide-react'
 import { adminApi } from '../api/admin'
 import { bustCatalogCache } from '../api/library'
+import { trackRenamePatch } from '../utils/adminEdits'
+import { describeScan } from '../utils/scanReport'
+import { useScanStore } from '../store/scanStore'
 import { useConfirm } from './ui/useConfirm'
 
 const KINDS = [
@@ -122,6 +126,7 @@ export function AdminCatalog({ onOpenCoverPicker }) {
   const [artists, setArtists] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [notice, setNotice] = useState(null)
   const [expanded, setExpanded] = useState(null)
   const [albumsByArtist, setAlbumsByArtist] = useState({})
   const [editingArtist, setEditingArtist] = useState(null)
@@ -136,6 +141,13 @@ export function AdminCatalog({ onOpenCoverPicker }) {
   const [selectedAlbums, setSelectedAlbums] = useState([])
   const [moveTarget, setMoveTarget] = useState('')
   const [menu, setMenu] = useState(null)
+  // Track level of the catalog: an album's tracks are VFiles, so they are
+  // loaded lazily per album and edited through the generic admin file API.
+  const [expandedAlbum, setExpandedAlbum] = useState(null)
+  const [tracksByAlbum, setTracksByAlbum] = useState({})
+  const [tracksLoading, setTracksLoading] = useState(null)
+  const [editingTrack, setEditingTrack] = useState(null)
+  const [trackBusyId, setTrackBusyId] = useState(null)
   const { confirm, confirmDialog } = useConfirm()
   const loadSeq = useRef(0)
 
@@ -177,12 +189,33 @@ export function AdminCatalog({ onOpenCoverPicker }) {
     return () => clearTimeout(timer)
   }, [loadArtists])
 
+  // The cover picker lives outside this component (App.jsx), so without a
+  // listener a saved cover or rename never reached this list: the row kept
+  // showing the previous artwork and the action read as if it had done nothing
+  // at all. Reload the data but keep the expansion/selection state intact —
+  // `refresh()` would collapse an expanded artist mid-edit.
+  useEffect(() => {
+    const onChanged = () => {
+      loadArtists()
+      for (const artistId of Object.keys(albumsByArtist)) {
+        loadAlbums(Number(artistId))
+      }
+    }
+    window.addEventListener('tmusic:catalog-changed', onChanged)
+    return () => window.removeEventListener('tmusic:catalog-changed', onChanged)
+  }, [loadArtists, albumsByArtist])
+
   const refresh = useCallback(async () => {
     bustCatalogCache()
     setAlbumsByArtist({})
     setSelectedArtists([])
     setSelectedAlbums([])
     setMenu(null)
+    // Track caches are keyed by album id — drop them so a rename/move cannot
+    // leave a stale row behind in an expanded album.
+    setTracksByAlbum({})
+    setExpandedAlbum(null)
+    setEditingTrack(null)
     await loadArtists()
   }, [loadArtists])
 
@@ -192,6 +225,55 @@ export function AdminCatalog({ onOpenCoverPicker }) {
       setAlbumsByArtist((prev) => ({ ...prev, [artistId]: data || [] }))
     } catch (e) {
       setError(e.message || 'Не удалось загрузить альбомы')
+    }
+  }
+
+  // ─── Track level ──────────────────────────────────────────────────────────
+  const loadAlbumTracks = async (album) => {
+    if (!album.folder_id) {
+      setTracksByAlbum((prev) => ({ ...prev, [album.id]: [] }))
+      return
+    }
+    setTracksLoading(album.id)
+    try {
+      const data = await adminApi.vfsFiles({ folder_id: album.folder_id, limit: 500 })
+      setTracksByAlbum((prev) => ({ ...prev, [album.id]: data?.items || [] }))
+    } catch (e) {
+      setError(e.message || 'Не удалось загрузить треки')
+      setTracksByAlbum((prev) => ({ ...prev, [album.id]: [] }))
+    } finally {
+      setTracksLoading(null)
+    }
+  }
+
+  const toggleAlbumTracks = (album) => {
+    if (expandedAlbum === album.id) {
+      setExpandedAlbum(null)
+      return
+    }
+    setExpandedAlbum(album.id)
+    if (!tracksByAlbum[album.id]) loadAlbumTracks(album)
+  }
+
+  const saveTrackName = async (album, track) => {
+    const body = trackRenamePatch(editingTrack?.draft, track.name)
+    if (!body) {
+      setEditingTrack(null)
+      return
+    }
+    setTrackBusyId(track.id)
+    try {
+      await adminApi.patchVfsFile(track.id, body)
+      setTracksByAlbum((prev) => ({
+        ...prev,
+        [album.id]: (prev[album.id] || []).map((t) => (t.id === track.id ? { ...t, name: body.name } : t)),
+      }))
+      setEditingTrack(null)
+      bustCatalogCache()
+    } catch (e) {
+      setError(e.message || 'Не удалось переименовать трек')
+    } finally {
+      setTrackBusyId(null)
     }
   }
 
@@ -354,10 +436,15 @@ export function AdminCatalog({ onOpenCoverPicker }) {
   const scanArtist = async (artist) => {
     setBusyId(`scan-a${artist.id}`)
     setMenu(null)
+    setNotice(null)
     try {
-      await adminApi.scanArtist(artist.id)
-      bustCatalogCache()
-      await refresh()
+      // The scan is a background job now: this only starts it. Progress and the
+      // final report are shown by ScanProgressHost (top-left), which also
+      // broadcasts `tmusic:catalog-changed` when the job commits.
+      const started = await useScanStore.getState().startArtistScan(artist.id, artist.display_name)
+      if (!started) {
+        setNotice({ kind: 'muted', text: `«${artist.display_name}»: сканирование не запущено.` })
+      }
     } catch (e) {
       setError(e.message || 'Не удалось просканировать карточку')
     } finally {
@@ -368,10 +455,15 @@ export function AdminCatalog({ onOpenCoverPicker }) {
   const scanAlbum = async (album, artistId) => {
     setBusyId(`scan-b${album.id}`)
     setMenu(null)
+    setNotice(null)
     try {
-      await adminApi.scanAlbum(album.id)
+      const report = await adminApi.scanAlbum(album.id)
       bustCatalogCache()
       await loadAlbums(artistId)
+      setNotice({
+        kind: report?.updated ? 'ok' : 'muted',
+        text: `«${album.title}»: ${describeScan(report)}`,
+      })
     } catch (e) {
       setError(e.message || 'Не удалось просканировать альбом')
     } finally {
@@ -432,6 +524,32 @@ export function AdminCatalog({ onOpenCoverPicker }) {
         >
           <AlertTriangle size={14} /> {error}
           <button type="button" onClick={() => setError(null)} style={{ ...iconBtn, marginLeft: 'auto' }} aria-label="Закрыть">
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {notice && (
+        <div
+          role="status"
+          style={{
+            marginBottom: 12,
+            padding: '10px 12px',
+            borderRadius: 8,
+            fontSize: 12,
+            fontWeight: 600,
+            // 'muted' means the scan ran but Last.fm had nothing new — it must
+            // not look like a success.
+            background: notice.kind === 'muted' ? 'var(--bg)' : 'var(--accent-muted)',
+            color: notice.kind === 'muted' ? 'var(--dim)' : 'var(--accent)',
+            border: '1px solid var(--line)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+          }}
+        >
+          <ScanLine size={14} /> {notice.text}
+          <button type="button" onClick={() => setNotice(null)} style={{ ...iconBtn, marginLeft: 'auto' }} aria-label="Закрыть">
             <X size={14} />
           </button>
         </div>
@@ -551,6 +669,14 @@ export function AdminCatalog({ onOpenCoverPicker }) {
                     <select value={artist.kind} disabled={busy} onClick={(e) => e.stopPropagation()} onChange={(e) => changeKind(artist, e.target.value)} title="Тип карточки" aria-label={`Тип карточки: ${artist.display_name}`} style={{ ...inputStyle, minHeight: 36, fontSize: 12, maxWidth: 150 }}>
                       {KINDS.map((k) => <option key={k.id} value={k.id}>{k.label}</option>)}
                     </select>
+                    {/* Cover art is admin curation, not a rare action — it used
+                        to live only inside the ⋮ menu, which made «сменить
+                        обложку» effectively undiscoverable. */}
+                    {onOpenCoverPicker && (
+                      <button type="button" onClick={(e) => { e.stopPropagation(); onOpenCoverPicker({ type: 'artist', id: artist.id, displayName: artist.display_name, hasCustom: !!artist.custom_image_url }) }} style={iconBtn} title="Изменить обложку" aria-label={`Изменить обложку: ${artist.display_name}`}>
+                        <ImageIcon size={15} />
+                      </button>
+                    )}
                     <button type="button" onClick={(e) => { e.stopPropagation(); setMenu(menu?.type === 'artist' && menu.id === artist.id ? null : { type: 'artist', id: artist.id }) }} style={iconBtn} title="Действия" aria-label={`Действия: ${artist.display_name}`}><MoreVertical size={15} /></button>
                   </>
                 )}
@@ -618,6 +744,11 @@ export function AdminCatalog({ onOpenCoverPicker }) {
                           </select>
                           {/* UI-04: keyboard-reachable trigger for the album menu (the
                               row itself contains form controls and can't be a button). */}
+                          {onOpenCoverPicker && (
+                            <button type="button" onClick={(e) => { e.stopPropagation(); onOpenCoverPicker({ type: 'album', id: album.id, title: album.title, hasCustom: !!album.custom_image_url }) }} style={iconBtn} title="Изменить обложку" aria-label={`Изменить обложку альбома ${album.title}`}>
+                              <ImageIcon size={15} />
+                            </button>
+                          )}
                           <button type="button" onClick={(e) => { e.stopPropagation(); setMenu(menu?.type === 'album' && menu.id === album.id ? null : { type: 'album', id: album.id, artistId: artist.id }) }} style={iconBtn} title="Действия" aria-label={`Действия: ${album.title}`}><MoreVertical size={15} /></button>
                         </div>
                         {menu?.type === 'album' && menu.id === album.id && menu.artistId === artist.id && (
@@ -625,7 +756,78 @@ export function AdminCatalog({ onOpenCoverPicker }) {
                             <MenuAction icon={Pencil} onClick={() => { setEditingAlbum({ id: album.id, title: album.title, year: album.year || '' }); setMenu(null) }}>Переименовать</MenuAction>
                             {onOpenCoverPicker && <MenuAction icon={ImageIcon} onClick={() => { onOpenCoverPicker({ type: 'album', id: album.id, title: album.title, hasCustom: !!album.custom_image_url }); setMenu(null) }}>Изменить обложку</MenuAction>}
                             <MenuAction icon={ScanLine} disabled={busyId === `scan-b${album.id}`} onClick={() => scanAlbum(album, artist.id)}>Сканировать</MenuAction>
+                            <MenuAction icon={ListMusic} onClick={() => { toggleAlbumTracks(album); setMenu(null) }}>
+                              {expandedAlbum === album.id ? 'Скрыть треки' : 'Треки'}
+                            </MenuAction>
                           </ActionMenu>
+                        )}
+                        {expandedAlbum === album.id && (
+                          <div style={{ margin: '0 8px 8px 44px', border: '1px solid var(--line)', borderRadius: 8, background: 'var(--bg)', padding: '6px 8px' }}>
+                            {tracksLoading === album.id && (
+                              <div style={{ fontSize: 12, color: 'var(--dim)', padding: '6px 0', display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <Loader2 size={13} className="animate-spin" /> Загрузка треков…
+                              </div>
+                            )}
+                            {tracksLoading !== album.id && (tracksByAlbum[album.id] || []).length === 0 && (
+                              <div style={{ fontSize: 12, color: 'var(--dim)', padding: '6px 0' }}>Треков не найдено</div>
+                            )}
+                            {(tracksByAlbum[album.id] || []).map((track) => {
+                              const trEditing = editingTrack?.id === track.id
+                              const trBusy = trackBusyId === track.id
+                              return (
+                                <div
+                                  key={track.id}
+                                  style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 2px', borderBottom: '1px solid var(--line)', flexWrap: 'wrap' }}
+                                >
+                                  {track.custom_image_url ? (
+                                    <img
+                                      src={track.custom_image_url}
+                                      alt=""
+                                      aria-hidden="true"
+                                      style={{ width: 26, height: 26, borderRadius: 5, objectFit: 'cover', border: '1px solid var(--line)', flexShrink: 0 }}
+                                    />
+                                  ) : (
+                                    <span style={{ width: 26, height: 26, borderRadius: 5, border: '1px dashed var(--line)', flexShrink: 0 }} />
+                                  )}
+                                  {trEditing ? (
+                                    <>
+                                      <input
+                                        value={editingTrack.draft}
+                                        onChange={(e) => setEditingTrack({ id: track.id, draft: e.target.value })}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') saveTrackName(album, track)
+                                          if (e.key === 'Escape') setEditingTrack(null)
+                                        }}
+                                        autoFocus
+                                        aria-label={`Новое название трека ${track.name}`}
+                                        style={{ ...inputStyle, flex: 1, minWidth: 140 }}
+                                      />
+                                      <button type="button" onClick={() => saveTrackName(album, track)} disabled={trBusy} style={iconBtn} aria-label="Сохранить трек">
+                                        {trBusy ? <Loader2 size={14} className="animate-spin" /> : <Check size={15} style={{ color: 'var(--accent)' }} />}
+                                      </button>
+                                      <button type="button" onClick={() => setEditingTrack(null)} style={iconBtn} aria-label="Отмена"><X size={15} /></button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <span style={{ flex: 1, minWidth: 140, fontSize: 12.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{track.name}</span>
+                                      <button type="button" onClick={() => setEditingTrack({ id: track.id, draft: track.name })} style={iconBtn} title="Переименовать трек" aria-label={`Переименовать ${track.name}`}><Pencil size={14} /></button>
+                                      {onOpenCoverPicker && (
+                                        <button
+                                          type="button"
+                                          onClick={() => onOpenCoverPicker({ type: 'track', id: track.id, title: track.name, hasCustom: !!track.custom_image_url })}
+                                          style={iconBtn}
+                                          title="Обложка трека"
+                                          aria-label={`Обложка трека ${track.name}`}
+                                        >
+                                          <ImageIcon size={14} />
+                                        </button>
+                                      )}
+                                    </>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
                         )}
                       </React.Fragment>
                     )
@@ -637,7 +839,7 @@ export function AdminCatalog({ onOpenCoverPicker }) {
         })}
       </div>
       <div style={{ fontSize: 11.5, color: 'var(--dim)', marginTop: 8 }}>
-        Нажмите на карточку или альбом, чтобы открыть меню. Для переноса выберите несколько карточек/альбомов, укажите целевую карточку или создайте новую.
+        Нажмите на карточку или альбом, чтобы открыть меню. Для переноса выберите несколько карточек/альбомов, укажите целевую карточку или создайте новую. В меню альбома пункт «Треки» открывает список треков: там можно переименовать любой трек и задать ему отдельную обложку.
       </div>
     </div>
   )

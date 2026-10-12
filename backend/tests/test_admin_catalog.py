@@ -13,13 +13,67 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.core.database import SessionLocal
+from app.models import vfs
+from app.models.music import MusicAlbum
 from app.repositories.album_repository import AlbumRepository
 from app.repositories.artist_repository import ArtistRepository
 from app.services import lastfm_service
 from app.services.music_library_service import CatalogAdminService, library_service
-from app.api.admin_catalog_router import catalog_scan_artist
+from app.services import scan_service
+from app.services.scan_service import ScanBusy, ScanMissing, ScanUnavailable
 
 client = TestClient(app)
+
+# Two distinct "real" artwork URLs plus the shared asset Last.fm serves for
+# every artist that has no picture of its own.
+REAL_ART = "https://lastfm.freetls.fastly.net/i/u/300x300/nevermind.png"
+OTHER_ART = "https://lastfm.freetls.fastly.net/i/u/300x300/bleach.png"
+PLACEHOLDER_ART = (
+    "https://lastfm.freetls.fastly.net/i/u/300x300/2a96cbd8b46e442fc41c2b86b821562f.png"
+)
+
+
+def _stub_cover_cache(monkeypatch, warmed):
+    """Record cache warms instead of hitting the network during a scan."""
+    from app.services import cover_cache_service
+
+    async def _warm(url):
+        warmed.append(url)
+        return None, None
+
+    monkeypatch.setattr(cover_cache_service.cover_cache, "fetch_and_cache", _warm)
+
+
+def _make_artist(db, kind="artist"):
+    return CatalogAdminService.create_collection(db, f"T_SCAN_{uuid.uuid4().hex[:8]}", kind)
+
+
+def _make_album(db, artist, title="Nevermind"):
+    folder = vfs.Folder(name=f"T_SCAN_F_{uuid.uuid4().hex[:8]}")
+    db.add(folder)
+    db.flush()
+    album = MusicAlbum(folder_id=folder.id, artist_id=artist.id, title=title)
+    db.add(album)
+    db.commit()
+    db.refresh(album)
+    return album
+
+
+def run_scan(artist, db):
+    """Run the scan through the service and collect the progress trail.
+
+    The old coroutine was awaited inline; now the work lives in
+    `scan_service.scan_artist_in_db` and reports progress through a callback —
+    the same path the background job uses.
+    """
+    stages = []
+
+    def report(stage, message, current=None, total=None):
+        stages.append((stage, current, total))
+
+    result = asyncio.run(scan_service.scan_artist_in_db(db, artist.id, report))
+    result["_stages"] = stages
+    return result
 
 
 def test_catalog_endpoints_require_admin():
@@ -92,26 +146,212 @@ def test_collection_lifecycle_rename_delete():
 
 
 def test_admin_scan_artist_refreshes_metadata(monkeypatch):
+    """A scan must write the fresh biography, MBID and cover — and say so."""
+    db = SessionLocal()
+    artist = None
+    warmed = []
+    try:
+        artist = _make_artist(db)
+        monkeypatch.setattr(lastfm_service, "metadata_ready", lambda: True)
+        # The provider getter is called with force=True by the scan, so the
+        # stub has to accept the keyword — that is the whole point of the flag.
+        monkeypatch.setattr(lastfm_service, "get_artist_info", lambda name, force=False: {
+            "summary": "Updated biography",
+            "mbid": "scan-mbid",
+            "image_url": REAL_ART,
+        })
+        _stub_cover_cache(monkeypatch, warmed)
+
+        result = run_scan(artist, db)
+        db.refresh(artist)
+
+        assert result["updated"] is True
+        assert result["fields"] == ["bio", "mbid", "image_url"]
+        assert result["image_source"] == "lastfm"
+        assert result["albums_scanned"] == 0
+        assert result["albums_updated"] == 0
+
+        assert artist.bio == "Updated biography"
+        assert artist.mbid == "scan-mbid"
+        assert artist.image_url == REAL_ART
+        assert artist.enriched_at is not None
+        # Cards resolve covers through the local disk cache, so the chosen picture
+        # must have been warmed once or the card would 404 on display.
+        assert warmed == [REAL_ART]
+    finally:
+        try:
+            if artist is not None:
+                CatalogAdminService.delete_artist(db, artist.id)
+        except Exception:
+            pass
+        db.close()
+
+
+def test_admin_scan_artist_takes_cover_from_album_when_provider_has_none(monkeypatch):
+    """artist.getInfo has no real artwork → the album cover becomes the artist's.
+
+    This is the regression guard for the bug where the shared placeholder asset
+    was written into every scanned artist, collapsing them onto one picture.
+    """
+    db = SessionLocal()
+    artist = album = None
+    warmed = []
+    try:
+        artist = _make_artist(db)
+        album = _make_album(db, artist)
+        monkeypatch.setattr(lastfm_service, "metadata_ready", lambda: True)
+        monkeypatch.setattr(lastfm_service, "get_artist_info", lambda name, force=False: {
+            # `clean_bio` already stripped the «Read more on Last.fm» stub and
+            # `pick_image` already dropped the placeholder before this point.
+            "summary": "",
+            "mbid": None,
+            "image_url": None,
+        })
+        monkeypatch.setattr(
+            lastfm_service, "get_album_info",
+            lambda name, title, force=False: {"image_url": REAL_ART},
+        )
+        _stub_cover_cache(monkeypatch, warmed)
+
+        result = run_scan(artist, db)
+        db.refresh(artist)
+        db.refresh(album)
+
+        assert result["albums_scanned"] == 1
+        assert result["albums_updated"] == 1
+        assert album.cover_url == REAL_ART
+        assert result["image_source"] == "album"
+        assert artist.image_url == REAL_ART
+        assert PLACEHOLDER_ART not in (artist.image_url or "")
+        # No biography is better than the stub.
+        assert not (artist.bio or "").strip()
+        assert warmed == [REAL_ART]
+    finally:
+        try:
+            if album is not None:
+                folder_id = album.folder_id
+                db.delete(album)
+                db.flush()
+                folder = db.get(vfs.Folder, folder_id)
+                if folder is not None:
+                    db.delete(folder)
+                db.commit()
+        except Exception:
+            db.rollback()
+        try:
+            if artist is not None:
+                CatalogAdminService.delete_artist(db, artist.id)
+        except Exception:
+            pass
+        db.close()
+
+
+def test_admin_scan_artist_never_downgrades_existing_cover_and_is_idempotent(monkeypatch):
+    """A hand-picked/real cover survives, and a second scan reports no change."""
+    db = SessionLocal()
+    artist = None
+    warmed = []
+    try:
+        artist = _make_artist(db)
+        artist.bio = "Existing biography"
+        artist.mbid = "existing-mbid"
+        artist.image_url = REAL_ART
+        db.commit()
+        db.refresh(artist)
+
+        monkeypatch.setattr(lastfm_service, "metadata_ready", lambda: True)
+        monkeypatch.setattr(lastfm_service, "get_artist_info", lambda name, force=False: {
+            "summary": "Existing biography",
+            "mbid": "existing-mbid",
+            # A different (still real) provider image: it must NOT win over the
+            # one already on the row.
+            "image_url": OTHER_ART,
+        })
+        _stub_cover_cache(monkeypatch, warmed)
+
+        result = run_scan(artist, db)
+        db.refresh(artist)
+
+        assert result["updated"] is False
+        assert result["fields"] == []
+        assert result["image_source"] == "existing"
+        assert artist.image_url == REAL_ART
+        assert warmed == []
+    finally:
+        try:
+            if artist is not None:
+                CatalogAdminService.delete_artist(db, artist.id)
+        except Exception:
+            pass
+        db.close()
+
+
+def test_admin_scan_artist_replaces_placeholder_cover(monkeypatch):
+    """A placeholder already stored on the row is upgraded to real artwork."""
+    db = SessionLocal()
+    artist = None
+    warmed = []
+    try:
+        artist = _make_artist(db)
+        artist.image_url = PLACEHOLDER_ART
+        db.commit()
+        db.refresh(artist)
+
+        monkeypatch.setattr(lastfm_service, "metadata_ready", lambda: True)
+        monkeypatch.setattr(lastfm_service, "get_artist_info", lambda name, force=False: {
+            "summary": "",
+            "mbid": None,
+            "image_url": REAL_ART,
+        })
+        _stub_cover_cache(monkeypatch, warmed)
+
+        result = run_scan(artist, db)
+        db.refresh(artist)
+
+        assert result["updated"] is True
+        assert result["fields"] == ["image_url"]
+        assert result["image_source"] == "lastfm"
+        assert artist.image_url == REAL_ART
+        assert warmed == [REAL_ART]
+    finally:
+        try:
+            if artist is not None:
+                CatalogAdminService.delete_artist(db, artist.id)
+        except Exception:
+            pass
+        db.close()
+
+
+def test_admin_scan_artist_reports_lastfm_miss(monkeypatch):
+    """Unknown artist on Last.fm → 404, not a silent no-op."""
     db = SessionLocal()
     artist = None
     try:
-        artist = CatalogAdminService.create_collection(db, f"T_SCAN_{uuid.uuid4().hex[:8]}", "artist")
+        artist = _make_artist(db)
         monkeypatch.setattr(lastfm_service, "metadata_ready", lambda: True)
-        monkeypatch.setattr(lastfm_service, "get_artist_info", lambda name: {
-            "summary": "Updated biography",
-            "mbid": "scan-mbid",
-            "image_url": "https://example.test/cover.jpg",
-        })
-        result = asyncio.run(catalog_scan_artist(
-            artist.id,
-            db=db,
-            user=SimpleNamespace(id=1, username="admin"),
-        ))
-        db.refresh(artist)
-        assert result["updated"] is True
-        assert artist.bio == "Updated biography"
-        assert artist.mbid == "scan-mbid"
-        assert artist.enriched_at is not None
+        monkeypatch.setattr(lastfm_service, "get_artist_info", lambda name, force=False: None)
+
+        with pytest.raises(ScanMissing) as exc:
+            run_scan(artist, db)
+        assert exc.value.status == 404
+    finally:
+        try:
+            if artist is not None:
+                CatalogAdminService.delete_artist(db, artist.id)
+        except Exception:
+            pass
+        db.close()
+
+
+def test_admin_scan_artist_requires_metadata_provider(monkeypatch):
+    db = SessionLocal()
+    artist = None
+    try:
+        artist = _make_artist(db)
+        monkeypatch.setattr(lastfm_service, "metadata_ready", lambda: False)
+        with pytest.raises(ScanUnavailable) as exc:
+            run_scan(artist, db)
+        assert exc.value.status == 503
     finally:
         try:
             if artist is not None:

@@ -314,6 +314,11 @@ class StreamService:
                     stream_url=f"/api/stream/{vf.id}",
                     created_at=vf.created_at,
                     duration=durations.get(vf.id),
+                    custom_image_url=(
+                        f"/api/library/cover?key={vf.custom_image_key}&custom=1"
+                        if getattr(vf, "custom_image_key", None)
+                        else None
+                    ),
                 )
             )
         return out

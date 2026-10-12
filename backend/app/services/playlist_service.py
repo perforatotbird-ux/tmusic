@@ -81,6 +81,21 @@ class PlaylistService:
             raise
 
     @staticmethod
+    def rename_playlist(db: Session, user_id: int, playlist_id: int, name: str) -> Optional[Playlist]:
+        """Rename an owned playlist. Returns None when it does not belong to the user."""
+        normalized = name.strip() if isinstance(name, str) else ""
+        if not normalized or len(normalized) > 120:
+            raise HTTPException(status_code=400, detail="Playlist name must contain 1 to 120 characters.")
+        pl = PlaylistService.get_playlist(db, user_id, playlist_id, for_update=True)
+        if not pl:
+            return None
+        pl.name = normalized
+        pl.updated_at = utcnow()
+        db.commit()
+        db.refresh(pl)
+        return pl
+
+    @staticmethod
     def delete_playlist(db: Session, user_id: int, playlist_id: int) -> bool:
         pl = PlaylistRepository.get(db, user_id, playlist_id, for_update=True)
         if not pl:

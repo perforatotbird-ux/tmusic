@@ -16,6 +16,7 @@ import { MusicLibrary } from './components/MusicLibrary'
 import { MusicLibraryPlayer } from './components/MusicLibraryPlayer'
 import { CoverPicker } from './components/CoverPicker'
 import { StorageSettingsModal } from './components/StorageSettingsModal'
+import { ScanProgressHost } from './components/ScanProgressHost'
 import { ToastHost } from './components/ui/ToastHost'
 import { useOfflineStore } from './store/offlineStore'
 import { createLogger } from './utils/logger'
@@ -456,15 +457,16 @@ export function App() {
       {/* Cover Art Picker Modal */}
       {coverTarget && (
         <CoverPicker
+          // Remount per target: a stale `url`/`preview` from the previously
+          // edited row must never be submitted for a different artist/album.
+          key={`${coverTarget.type}:${coverTarget.id}`}
           target={coverTarget}
           onClose={() => setCoverTarget(null)}
-          // UI-08: refetch the catalog instead of reloading the whole page — a
-          // hard reload killed playback, the queue and the Media Session while
-          // the user was listening. MusicLibrary listens for this event.
-          onUpdated={() => {
-            // Tell the library view to re-fetch without a page reload.
-            window.dispatchEvent(new CustomEvent('tmusic:catalog-changed'))
-          }}
+          // UI-08: no hard reload — it killed playback, the queue and the Media
+          // Session. The API layer emits `tmusic:catalog-changed` with the
+          // touched row; MusicLibrary / AdminCatalog listen and refresh in
+          // place.
+          onUpdated={() => {}}
         />
       )}
 
@@ -472,6 +474,10 @@ export function App() {
       {storageModalOpen && (
         <StorageSettingsModal onClose={() => setStorageModalOpen(false)} />
       )}
+
+      {/* Catalog scans run as background jobs: their progress lives here so it
+          survives navigating away from the admin panel mid-scan. */}
+      <ScanProgressHost />
     </div>
   )
 }

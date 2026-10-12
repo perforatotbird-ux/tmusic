@@ -27,6 +27,7 @@
   --z-sheet: 8600;         /* album bottom-sheet: must clear the bottom nav */
   --z-menu: 8800;          /* portaled dropdowns (profile menu): above player/nav */
   --z-offline: 9000;
+  --z-scan: 9300;           /* floating scan progress: above player/nav, below modals */
   --z-picker: 9200;        /* CoverPicker: above the fullscreen player */
   --z-nowplaying: 9500;
   --z-modal: 10000;
@@ -269,6 +270,37 @@ input[type="range"].tm-scrub-input {
 .tmusic-card:focus-within .tmusic-card-play-btn {
   opacity: 1;
   transform: translateY(0);
+}
+/* Admin cover action. Sits top-right (the play button owns bottom-right) and
+   follows the same hover/focus/touch rules so it is never invisible but
+   hit-testable, and always reachable by keyboard. */
+.tmusic-card-cover-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background-color: var(--bg-card);
+  color: var(--ink);
+  border: 1px solid var(--line-bright);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+@media (hover: none) {
+  .tmusic-card-cover-btn {
+    opacity: 1;
+  }
+}
+.tmusic-card:hover .tmusic-card-cover-btn,
+.tmusic-card:focus-within .tmusic-card-cover-btn,
+.tmusic-card-cover-btn:focus-visible {
+  opacity: 1;
 }
 @media (hover: hover) {
   .tmusic-card:hover {
@@ -586,6 +618,366 @@ input[type="range"].tm-scrub-input {
   justify-content: center;
   cursor: pointer;
   flex-shrink: 0;
+}
+
+/* ── Отдельное окно «Плейлисты» (PlaylistsModal) ─────────────────────────
+   Открывается из выпадающего меню профиля. На широком экране — две колонки
+   (список + содержимое), на узком — поочерёдно с кнопкой «Назад». */
+.tmusic-pl {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.tmusic-pl-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.tmusic-pl-head-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--ink);
+  flex: 1;
+  min-width: 0;
+}
+.tmusic-pl-head-sub {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--dim);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+.tmusic-pl-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px 14px 0;
+  padding: 8px 12px;
+  border-radius: 9px;
+  background: rgba(220, 38, 38, 0.12);
+  border: 1px solid rgba(220, 38, 38, 0.35);
+  color: var(--danger);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.tmusic-pl-error-btn {
+  margin-left: auto;
+  min-height: 34px;
+  padding: 4px 12px;
+  border-radius: 8px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font-weight: 800;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tmusic-pl-body {
+  display: grid;
+  grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+}
+.tmusic-pl-side {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px 14px;
+  border-right: 1px solid var(--line);
+}
+.tmusic-pl-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 14px 14px;
+}
+.tmusic-pl-create {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.tmusic-pl-create input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  border-radius: 9px;
+  padding: 8px 12px;
+  min-height: 40px;
+  font-size: 13.5px;
+}
+.tmusic-pl-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.tmusic-pl-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  padding: 2px 4px 2px 0;
+}
+.tmusic-pl-item:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.tmusic-pl-item.active {
+  background: var(--accent-muted);
+  border-color: var(--accent);
+}
+.tmusic-pl-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  background: none;
+  border: none;
+  padding: 8px 10px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-height: 44px;
+}
+.tmusic-pl-item-name {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.tmusic-pl-item.active .tmusic-pl-item-name {
+  color: var(--accent);
+}
+.tmusic-pl-item-sub {
+  font-size: 11px;
+  color: var(--dim);
+}
+.tmusic-pl-icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--dim);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+}
+.tmusic-pl-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.tmusic-pl-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--dim);
+  font-size: 13px;
+  padding: 10px 2px;
+}
+.tmusic-pl-empty-center {
+  flex-direction: column;
+  justify-content: center;
+  text-align: center;
+  gap: 12px;
+  height: 100%;
+  min-height: 180px;
+  max-width: 320px;
+  margin: 0 auto;
+}
+.tmusic-pl-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 6px 0;
+  min-height: 40px;
+}
+.tmusic-pl-rename {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tmusic-pl-rename input {
+  flex: 1 1 200px;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  border-radius: 9px;
+  padding: 8px 12px;
+  min-height: 40px;
+  font-size: 14.5px;
+  font-weight: 700;
+}
+.tmusic-pl-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.tmusic-pl-count {
+  font-size: 12px;
+  color: var(--dim);
+  font-weight: 600;
+}
+.tmusic-pl-add {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.tmusic-pl-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tmusic-pl-search input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  border-radius: 9px;
+  padding: 8px 12px;
+  min-height: 40px;
+  font-size: 13.5px;
+}
+.tmusic-pl-results {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.tmusic-pl-result {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 6px;
+  border-radius: 8px;
+}
+.tmusic-pl-result:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.tmusic-pl-result-main {
+  flex: 1;
+  min-width: 0;
+}
+.tmusic-pl-result-title {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tmusic-pl-result-sub {
+  font-size: 11px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tmusic-pl-tracks {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.tmusic-pl-track {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 9px;
+  padding: 2px 4px;
+  cursor: grab;
+}
+.tmusic-pl-track:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.tmusic-pl-track-main {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 8px 4px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-height: 44px;
+}
+.tmusic-pl-track-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  min-width: 0;
+}
+.tmusic-pl-track-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.tmusic-pl-track-num {
+  color: var(--dim);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.tmusic-pl-cached {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--success);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  flex-shrink: 0;
+}
+@media (max-width: 760px) {
+  .tmusic-pl-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .tmusic-pl-side {
+    border-right: none;
+  }
 }
 
 /* Folder tree: «+» expander on the left */
@@ -1827,6 +2219,32 @@ audio {
   user-select: text;
   -webkit-user-select: text;
 }
+
+/* ── Floating scan progress (top-left, see ScanProgressHost) ─────────────── */
+.tmusic-scan-card {
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  animation: tmusic-scan-pop 0.16s ease;
+}
+/* Indeterminate stripe for stages whose total is not known yet. */
+.tmusic-scan-indeterminate {
+  animation: tmusic-scan-slide 1.1s ease-in-out infinite;
+}
+@keyframes tmusic-scan-pop {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes tmusic-scan-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tmusic-scan-card,
+  .tmusic-scan-indeterminate {
+    animation: none;
+  }
+}
+
 
 /* Now-playing indicator over album card covers (Spotify-style) */
 .tmusic-card-eq {

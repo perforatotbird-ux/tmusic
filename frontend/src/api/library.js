@@ -12,6 +12,21 @@ function toQuery(params = {}) {
   return q.toString()
 }
 
+/**
+ * Tell every open view that one catalog row changed.
+ *
+ * `detail` names the row so a listener can patch it in place; without it the
+ * listeners still refetch (the old behaviour). Covers/renames used to fire an
+ * empty event, and views that did not listen — the admin catalog — silently
+ * kept showing the previous artwork, which is indistinguishable from the
+ * feature being broken.
+ */
+function emitCatalogChanged(detail) {
+  window.dispatchEvent(
+    new CustomEvent('tmusic:catalog-changed', { detail: detail || null })
+  )
+}
+
 export const libraryApi = {
   getArtists: (params = {}) => {
     const qs = toQuery(params)
@@ -45,6 +60,9 @@ export const libraryApi = {
     return request('/api/library/cover', {
       method: 'POST',
       body: formData,
+    }).then((res) => {
+      emitCatalogChanged({ type: targetType, id: targetId, custom_key: res?.custom_key })
+      return res
     })
   },
 
@@ -57,6 +75,9 @@ export const libraryApi = {
     return request('/api/library/cover', {
       method: 'POST',
       body: formData,
+    }).then((res) => {
+      emitCatalogChanged({ type: targetType, id: targetId, custom_key: res?.custom_key })
+      return res
     })
   },
 
@@ -64,6 +85,9 @@ export const libraryApi = {
     bustCatalogCache()
     return request(`/api/library/cover?target_type=${targetType}&target_id=${targetId}`, {
       method: 'DELETE',
+    }).then((res) => {
+      emitCatalogChanged({ type: targetType, id: targetId, custom_key: null })
+      return res
     })
   },
 

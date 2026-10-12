@@ -311,15 +311,23 @@ class CoverCacheService:
                     return target
         return None
 
-    async def fetch_and_cache(self, url: str) -> Tuple[Optional[bytes], Optional[str]]:
-        """Fetch remote image with in-flight deduplication, SSRF defense, and permanent disk caching."""
+    async def fetch_and_cache(self, url: str, force: bool = False) -> Tuple[Optional[bytes], Optional[str]]:
+        """Fetch remote image with in-flight deduplication, SSRF defense, and permanent disk caching.
+
+        ``force=True`` skips the URL-keyed cache hit. Enrichment wants the cache
+        (same URL → same picture, zero network), but a hand-picked cover must
+        reflect the URL that was just typed: the cache is keyed by
+        ``scheme://netloc/path`` only, so a stale entry from another context can
+        serve bytes for a URL that has since changed. See ``fetch_fresh``.
+        """
         generation = self._generation
         key = self.url_to_key(url)
 
         # Check local cache first
-        cached = self.get_cached_item(key, is_custom=False)
-        if cached:
-            return cached
+        if not force:
+            cached = self.get_cached_item(key, is_custom=False)
+            if cached:
+                return cached
 
         # SSRF validation
         if not await is_safe_host(url):
@@ -340,6 +348,18 @@ class CoverCacheService:
                 task.add_done_callback(self._fetch_tasks.discard)
 
         return await asyncio.shield(future)
+
+    async def fetch_fresh(self, url: str) -> Tuple[Optional[bytes], Optional[str]]:
+        """Download an image for a hand-picked cover, bypassing the URL cache.
+
+        ``fetch_and_cache`` is right for enrichment, but a custom cover goes
+        through ``save_custom_cover``, which keys by *content* hash. Reusing the
+        URL-keyed cache here means a picture fetched for a different purpose —
+        an enriched album cover, or an older version of the same URL — can end
+        up stored as the admin's hand-picked artwork. The fetch still writes the
+        URL-keyed entry, so enriched display paths keep their cache.
+        """
+        return await self.fetch_and_cache(url, force=True)
 
     async def _do_fetch(self, url: str, key: str, future: asyncio.Future):
         result = (None, None)

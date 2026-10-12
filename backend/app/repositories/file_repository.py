@@ -19,6 +19,7 @@ _TRACK_LIST_COLUMNS = (
     VFile.folder_id,
     VFile.is_encrypted,
     VFile.encryption_salt,
+    VFile.custom_image_key,
     VFile.created_at,
 )
 

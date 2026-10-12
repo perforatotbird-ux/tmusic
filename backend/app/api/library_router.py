@@ -208,7 +208,10 @@ async def set_cover(
     elif url:
         if not await is_safe_host(url):
             raise HTTPException(status_code=400, detail="Restricted or invalid image URL.")
-        data, _ = await cover_cache.fetch_and_cache(url)
+        # A hand-picked cover must be the bytes for THIS url. fetch_and_cache
+        # short-circuits on the URL-keyed cache (right for enrichment), which
+        # could hand back a picture stored for a different purpose.
+        data, _ = await cover_cache.fetch_fresh(url)
         if not data:
             raise HTTPException(status_code=502, detail="Failed to download image from provided URL.")
         custom_key = cover_cache.save_custom_cover(data)

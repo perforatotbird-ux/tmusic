@@ -6,6 +6,7 @@ import { metadataApi } from '../api/metadata'
 import { playbackApi } from '../api/playback'
 import { missingCoverKeys, probedCoverKeys, markCoverProbed, parseCoverKey } from '../services/coverMissing'
 import { resolveCoverUrl } from '../utils/cover'
+import { trackRenamePatch } from '../utils/adminEdits'
 import {
   groupCachedTracks,
   cachedArtistCard,
@@ -18,6 +19,7 @@ import { LibraryPanel } from './HomeExtraPanels'
 import { FolderBrowser } from './FolderBrowser'
 import { AdminPanel } from './AdminPanel'
 import { ProfileMenu, roleLabel } from './ProfileMenu'
+import { PlaylistsModal } from './PlaylistsModal'
 import { usePlayerStore } from '../store/playerStore'
 import { useAuthStore } from '../store/authStore'
 import { useFavoritesStore } from '../store/favoritesStore'
@@ -44,11 +46,28 @@ import {
   AlertTriangle,
   Star,
   HardDrive,
+  Pencil,
+  Check,
 } from 'lucide-react'
 import { useOfflineStore } from '../store/offlineStore'
 import { useSearchStore } from '../store/searchStore'
 import { UnifiedSearchModal } from './search/UnifiedSearchModal'
 import { ClickableRow } from './ui/ClickableRow'
+
+// Small square control for the admin-only inline editors in the artist header.
+const artistHeaderBtn = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: '34px',
+  height: '34px',
+  flexShrink: 0,
+  borderRadius: '8px',
+  border: '1px solid var(--line)',
+  background: 'transparent',
+  color: 'var(--dim)',
+  cursor: 'pointer',
+}
 
 // Deterministic hue generator based on string hash for generative badges
 function hashHue(str) {
@@ -241,8 +260,11 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       return 'covers'
     }
   })
-  // Top bar section: catalog is default; recent/playlists open panels
-  const [libSection, setLibSection] = useState(null) // null | 'recent' | 'playlists'
+  // Top bar section: catalog is default; 'recent' opens an inline panel
+  const [libSection, setLibSection] = useState(null) // null | 'recent'
+  // «Плейлисты» из меню профиля открываются отдельным окном-редактором,
+  // а не встроенной панелью: нужно править и название, и содержимое.
+  const [playlistsOpen, setPlaylistsOpen] = useState(false)
   const [showAdmin, setShowAdmin] = useState(false)
   // Треки раздела «Любимые»: виртуальный сборник строится на клиенте,
   // поэтому сырые строки избранного живут отдельно от каталожных items.
@@ -262,6 +284,32 @@ export function MusicLibrary({ onOpenCoverPicker }) {
 
   // Catalog curation (rename / covers / collections) is admin-only.
   const isAdmin = user?.role === 'admin' || user?.username === 'admin'
+
+  // Inline rename of the open artist card. The name is written back into
+  // `selectedArtist` so the header updates without refetching the detail.
+  const [renamingArtist, setRenamingArtist] = useState(false)
+  const [artistNameDraft, setArtistNameDraft] = useState('')
+  const [artistRenameBusy, setArtistRenameBusy] = useState(false)
+
+  const saveArtistName = async () => {
+    const body = trackRenamePatch(artistNameDraft, selectedArtist?.display_name)
+    if (!body) {
+      setRenamingArtist(false)
+      return
+    }
+    setArtistRenameBusy(true)
+    try {
+      await adminApi.patchArtist(selectedArtist.id, { display_name: body.name })
+      setSelectedArtist((prev) => (prev ? { ...prev, display_name: body.name } : prev))
+      bustCatalogCache()
+      setRenamingArtist(false)
+    } catch (e) {
+      console.error('Artist rename failed:', e)
+      usePlayerStore.getState().pushNotice({ kind: 'warn', text: 'Не удалось переименовать артиста.' })
+    } finally {
+      setArtistRenameBusy(false)
+    }
+  }
 
   // Which catalog section is on screen: the Артисты/Альбомы tabs are fixed views,
   // everything else follows the category strip picked under Медиатека.
@@ -671,7 +719,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       playQueue(tracks, 0, {
         title: album.title,
         artistName: (artist && artist.display_name) || album.title || 'Кэш устройства',
-        coverUrl: resolveCoverUrl(album, artist, null),
+        coverUrl: resolveCoverUrl(album, null),
       })
       return
     }
@@ -682,7 +730,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       const tracks = await streamApi.getFolderTracks(album.folder_id, !album.is_tracks)
       if (tracks && tracks.length > 0) {
         const artistName = (artist && artist.display_name) || album.title || 'Альбом'
-        const coverUrl = resolveCoverUrl(album, artist)
+        const coverUrl = resolveCoverUrl(album)
 
         // Stream rows carry no artist/album/cover — attach the release context
         // to each queue track so the offline cache stores it and «В кэше»
@@ -691,7 +739,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         const queueTracks = withReleaseMeta(tracks, {
           artist: artistName,
           album: album.title,
-          coverUrl: resolveCoverUrl(album, artist, null),
+          coverUrl: resolveCoverUrl(album, null),
         })
         playQueue(queueTracks, 0, {
           title: album.title,
@@ -728,11 +776,11 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       const tracks = await streamApi.getFolderTracks(album.folder_id, !album.is_tracks)
       if (!tracks || tracks.length === 0) return
       const artistName = (artist && artist.display_name) || album.title || 'Альбом'
-      const coverUrl = resolveCoverUrl(album, artist)
+      const coverUrl = resolveCoverUrl(album)
       const queueTracks = withReleaseMeta(tracks, {
         artist: artistName,
         album: album.title,
-        coverUrl: resolveCoverUrl(album, artist, null),
+        coverUrl: resolveCoverUrl(album, null),
       })
       prepareQueue(queueTracks, 0, { title: album.title, artistName, coverUrl })
       setPlayerExpanded(true)
@@ -903,7 +951,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       playQueue(tracks, 0, {
         title: artist.display_name,
         artistName: artist.display_name,
-        coverUrl: resolveCoverUrl(artist, null, null),
+        coverUrl: resolveCoverUrl(artist, null),
       })
       return
     }
@@ -915,7 +963,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         // tracks under the real artist instead of «Без исполнителя».
         const queueTracks = withReleaseMeta(tracks, {
           artist: artist.display_name,
-          coverUrl: resolveCoverUrl(artist, null, null),
+          coverUrl: resolveCoverUrl(artist, null),
         })
         playQueue(queueTracks, 0, {
           title: 'Все треки',
@@ -957,7 +1005,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       : {}
 
   const renderArtistCard = (artist) => {
-    const cover = resolveCoverUrl(artist, null, null)
+    const cover = resolveCoverUrl(artist, null)
     const isDragging = dragItem?.type === 'artist' && dragItem.id === artist.id
     const isDropTarget = dropKey === `artist:${artist.id}`
     const subParts = [
@@ -1015,6 +1063,42 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               <Unlink size={13} />
             </button>
           )}
+          {/* Admin cover curation straight from the grid — for artists and for
+              collections alike. Otherwise the only route was the small overlay
+              button on the artist page. */}
+          {isAdmin && onOpenCoverPicker && !artist.is_cached_group && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                onOpenCoverPicker({
+                  type: 'artist',
+                  id: artist.id,
+                  displayName: artist.display_name,
+                  hasCustom: !!artist.custom_image_url,
+                })
+              }}
+              title="Изменить обложку (админ)"
+              aria-label={`Изменить обложку ${artist.display_name}`}
+              style={{
+                position: 'absolute',
+                top: '6px',
+                right: '6px',
+                width: '26px',
+                height: '26px',
+                borderRadius: '50%',
+                backgroundColor: 'rgba(20, 18, 16, 0.85)',
+                border: '1px solid var(--line-bright)',
+                color: 'var(--ink)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                padding: 0,
+              }}
+            >
+              <ImageIcon size={13} />
+            </button>
+          )}
         </div>
         <div className="tmusic-artist-card-name">{artist.display_name}</div>
         <div className="tmusic-artist-card-sub">
@@ -1026,7 +1110,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     }
 
   const renderAlbumCard = (album, artist = null) => {
-    const cover = resolveCoverUrl(album, artist, null)
+    const cover = resolveCoverUrl(album, null)
     const title = album.title || album.display_name
     const isDragging = dragItem?.type === 'album' && dragItem.id === album.id
     const isDropTarget = dropKey === `album:${album.id}`
@@ -1064,6 +1148,27 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               <i />
               <i />
             </span>
+          )}
+          {/* Admin cover curation straight from the grid. It used to require
+              opening the album and hunting a small overlay button, which made
+              «сменить обложку альбома» effectively undiscoverable. */}
+          {isAdmin && onOpenCoverPicker && !album.is_cached_album && (
+            <button
+              className="tmusic-card-cover-btn"
+              onClick={(e) => {
+                e.stopPropagation()
+                onOpenCoverPicker({
+                  type: 'album',
+                  id: album.id,
+                  title,
+                  hasCustom: !!album.custom_image_url,
+                })
+              }}
+              title="Изменить обложку (админ)"
+              aria-label={`Изменить обложку альбома ${title}`}
+            >
+              <ImageIcon size={14} />
+            </button>
           )}
           <button
             className="tmusic-card-play-btn"
@@ -1223,6 +1328,12 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                 onProfileChanged={checkAuth}
                 libSection={libSection}
                 onSelectSection={(id) => {
+                  if (id === 'playlists') {
+                    // Отдельное окно с редактором плейлистов.
+                    setLibSection(null)
+                    setPlaylistsOpen(true)
+                    return
+                  }
                   setLibSection(id)
                   setMobileTab('library')
                   setSelectedArtist(null)
@@ -1320,7 +1431,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                 <ImgWithFallback
                   name={selectedArtist.display_name}
                   kind="artist"
-                  src={resolveCoverUrl(selectedArtist, null, null)}
+                  src={resolveCoverUrl(selectedArtist, null)}
                   size={180}
                   className="tmusic-artist-avatar"
                   style={{
@@ -1373,9 +1484,63 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                 >
                   {(selectedArtist.kind || 'artist').toUpperCase()}
                 </div>
-                <h2 className="title-zine" style={{ fontSize: '32px', margin: '6px 0 12px 0' }}>
-                  {selectedArtist.display_name}
-                </h2>
+                {renamingArtist ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '6px 0 12px 0', maxWidth: '520px' }}>
+                    <input
+                      value={artistNameDraft}
+                      onChange={(e) => setArtistNameDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') saveArtistName()
+                        if (e.key === 'Escape') setRenamingArtist(false)
+                      }}
+                      autoFocus
+                      aria-label="Новое имя артиста"
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        fontSize: '20px',
+                        fontWeight: 800,
+                        padding: '8px 10px',
+                        borderRadius: '8px',
+                        border: '1px solid var(--line-bright)',
+                        background: 'var(--bg)',
+                        color: 'var(--ink)',
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={saveArtistName}
+                      disabled={artistRenameBusy}
+                      aria-label="Сохранить имя артиста"
+                      style={{ ...artistHeaderBtn, opacity: artistRenameBusy ? 0.6 : 1 }}
+                    >
+                      {artistRenameBusy ? <Loader2 size={16} className="tmusic-spin" /> : <Check size={17} style={{ color: 'var(--accent)' }} />}
+                    </button>
+                    <button type="button" onClick={() => setRenamingArtist(false)} aria-label="Отмена" style={artistHeaderBtn}>
+                      <X size={17} />
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                    <h2 className="title-zine" style={{ fontSize: '32px', margin: '6px 0 12px 0' }}>
+                      {selectedArtist.display_name}
+                    </h2>
+                    {isAdmin && !selectedArtist.is_cached_group && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setArtistNameDraft(selectedArtist.display_name || '')
+                          setRenamingArtist(true)
+                        }}
+                        title="Переименовать артиста (админ)"
+                        aria-label={`Переименовать ${selectedArtist.display_name}`}
+                        style={{ ...artistHeaderBtn, marginBottom: '12px' }}
+                      >
+                        <Pencil size={15} />
+                      </button>
+                    )}
+                  </div>
+                )}
                 {selectedArtist.bio && (
                   <p style={{ color: 'var(--dim)', fontSize: '13px', lineHeight: '1.6', marginBottom: '18px', maxWidth: '780px' }}>
                     {selectedArtist.bio}
@@ -1979,6 +2144,9 @@ export function MusicLibrary({ onOpenCoverPicker }) {
           })
         }
       />
+
+      {/* Playlists editor window (opened from the avatar menu → «Плейлисты») */}
+      <PlaylistsModal open={playlistsOpen} onClose={() => setPlaylistsOpen(false)} />
 
       {/* Admin curation error toast (drag-and-drop / create failures) */}
       {actionError && (

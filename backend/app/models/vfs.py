@@ -88,6 +88,10 @@ class VFile(Base):
     is_encrypted: Mapped[bool] = mapped_column(Boolean, default=False)
     note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     custom_icon: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Admin-uploaded track artwork. Mirrors music_artists/music_albums so a
+    # single cover pipeline (cover_cache keys + /api/library/cover) serves all
+    # three catalog levels. NULL means "inherit the album/artist artwork".
+    custom_image_key: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
     account_map: Mapped[Optional[Dict]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)

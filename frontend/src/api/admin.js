@@ -149,6 +149,9 @@ export const adminApi = {
       body: JSON.stringify(body),
     }),
   scanArtist: (id) => request(`/api/admin/catalog/artists/${id}/scan`, { method: 'POST' }),
+  // The scan itself is a background job: the POST only starts it and returns the
+  // job snapshot, progress is read back through this endpoint.
+  getScanJob: (jobId) => request(`/api/admin/catalog/scan/${encodeURIComponent(jobId)}`),
   scanAlbum: (id) => request(`/api/admin/catalog/albums/${id}/scan`, { method: 'POST' }),
   patchArtist: (id, body) =>
     request(`/api/admin/catalog/artists/${id}`, {

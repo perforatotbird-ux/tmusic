@@ -136,6 +136,13 @@ class MusicLibraryService:
         return AlbumRepository.get_by_id(db, album_id)
 
     @classmethod
+    def list_artist_albums(
+        cls, db: Session, artist_id: int, limit: Optional[int] = None
+    ) -> List[MusicAlbum]:
+        """Album entities of one artist, ordered by year/title (admin scan pass)."""
+        return AlbumRepository.list_by_artist_id(db, artist_id, limit=limit)
+
+    @classmethod
     def count_artist_children(cls, db: Session, artist_id: int) -> int:
         return ArtistRepository.count_children(db, artist_id)
 
@@ -229,12 +236,22 @@ class MusicLibraryService:
 
     @staticmethod
     def set_custom_cover(db: Session, target_type: str, target_id: int, key: Optional[str]):
+        """Attach (or clear, with key=None) a custom cover on any catalog level.
+
+        All three levels share one storage contract — a cover_cache key in
+        ``custom_image_key`` — so the admin UI needs a single upload path.
+        """
         if target_type == "artist":
             entity = ArtistRepository.get_by_id(db, target_id)
         elif target_type == "album":
             entity = AlbumRepository.get_by_id(db, target_id)
+        elif target_type == "track":
+            entity = FileRepository.get_by_id(db, target_id)
         else:
-            raise HTTPException(status_code=400, detail="Invalid target_type. Must be 'artist' or 'album'.")
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid target_type. Must be 'artist', 'album' or 'track'.",
+            )
 
         if not entity:
             raise HTTPException(status_code=404, detail=f"{target_type.capitalize()} not found.")

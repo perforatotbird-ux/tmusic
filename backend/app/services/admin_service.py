@@ -5,9 +5,10 @@ import logging
 import os
 import re
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -370,6 +371,7 @@ def restore_backup(
         _finish_backup_run(db, run, "failed", error=error)
         raise RuntimeError(error)
     _finish_backup_run(db, run, "success", size_bytes=path.stat().st_size)
+    invalidate_db_overview()
     return {"ok": True, "name": name, "dry_run": False, "size_bytes": path.stat().st_size}
 
 
@@ -379,9 +381,30 @@ def db_table_stats(db: Session) -> List[Dict[str, Any]]:
     return DbStatsRepository.table_stats(db)
 
 
+# Opening the admin panel asks for the DB overview up to three times
+# (`/admin/overview` + `/admin/system/health`, plus `/admin/db/stats` when the
+# tab is opened). Every round-trip spends ~0.26 s in pg_database_size() alone,
+# which cannot be made cheaper — so the answer is memoised for a few seconds.
+# The dashboard is a monitoring surface, not a ledger: a 10 s-old connection
+# count is harmless, while the cold-open latency it removes is not. Maintenance
+# paths that legitimately change the numbers invalidate the entry explicitly.
+_DB_OVERVIEW_TTL_SECONDS = 10.0
+_db_overview_cache: Optional[Tuple[float, Dict[str, Any]]] = None
+
+
+def invalidate_db_overview() -> None:
+    """Drop the memoised DB overview (call after VACUUM/ANALYZE/REINDEX)."""
+    global _db_overview_cache
+    _db_overview_cache = None
+
+
 def db_overview(db: Session) -> Dict[str, Any]:
+    global _db_overview_cache
+    now = time.monotonic()
+    if _db_overview_cache is not None and now - _db_overview_cache[0] < _DB_OVERVIEW_TTL_SECONDS:
+        return dict(_db_overview_cache[1])
     raw = DbStatsRepository.overview(db)
-    return {
+    payload = {
         "database": settings.DATABASE_URL.rsplit("/", 1)[-1] if settings.DATABASE_URL else None,
         "db_size": raw["db_size"],
         "db_size_bytes": int(raw["db_size_bytes"] or 0),
@@ -392,6 +415,8 @@ def db_overview(db: Session) -> Dict[str, Any]:
         "uptime": str(raw["uptime"]) if raw["uptime"] is not None else None,
         "reachable": True,
     }
+    _db_overview_cache = (now, payload)
+    return dict(payload)
 
 
 def run_vacuum(db: Session, analyze: bool = True) -> Dict[str, Any]:
@@ -401,6 +426,7 @@ def run_vacuum(db: Session, analyze: bool = True) -> Dict[str, Any]:
     try:
         conn = conn.execution_options(isolation_level="AUTOCOMMIT")
         conn.execute(text(stmt))
+        invalidate_db_overview()
         return {"ok": True, "action": stmt}
     finally:
         conn.close()
@@ -411,6 +437,7 @@ def run_analyze(db: Session) -> Dict[str, Any]:
     try:
         conn = conn.execution_options(isolation_level="AUTOCOMMIT")
         conn.execute(text("ANALYZE"))
+        invalidate_db_overview()
         return {"ok": True, "action": "ANALYZE"}
     finally:
         conn.close()
@@ -422,6 +449,7 @@ def run_reindex(db: Session) -> Dict[str, Any]:
         conn = conn.execution_options(isolation_level="AUTOCOMMIT")
         dbname = conn.execute(text("SELECT current_database()")).scalar()
         conn.execute(text(f'REINDEX DATABASE "{dbname}"'))
+        invalidate_db_overview()
         return {"ok": True, "action": "REINDEX DATABASE", "database": dbname}
     finally:
         conn.close()
