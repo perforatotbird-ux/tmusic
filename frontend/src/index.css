@@ -1857,6 +1857,9 @@ input[type="range"].tm-scrub-input {
     align-items: center;
     gap: 6px;
     flex-shrink: 0;
+    /* M-02: never let the action cluster itself shrink — with 44px coarse
+       targets inside, shrinking means overlapping hit areas. */
+    min-width: 0;
   }
   .tmusic-player-mobile-actions button {
     touch-action: manipulation;
@@ -1995,6 +1998,9 @@ audio {
   display: flex;
   align-items: center;
   gap: 8px;
+  /* M-02: the mini-player row must never squeeze the volume block — a
+     shrunken fixed-width slider overflows and lands on neighbouring buttons. */
+  flex-shrink: 0;
 }
 .tm-volume button {
   background: none;
@@ -2484,6 +2490,30 @@ input[type="range"]:focus-visible {
   border-radius: 999px;
   background: var(--line-bright);
 }
+/* M-01 · Volume thumb centering (мобильный аудит 2026-10-15).
+   The 24px hit-box input paints a 4px rail; without an explicit margin-top
+   Chromium docks the 12px thumb to the rail's top edge, so the knob hangs
+   ~8px below the rail — «слайдер звука вниз уехал». (4-12)/2 = -4px centers
+   it, the same recipe the scrubber already uses. Firefox centers
+  ::-moz-range-thumb on its own, declared here for parity. */
+.tm-volume input[type="range"]::-webkit-slider-thumb,
+.tm-compact-volume input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+.tm-volume input[type="range"]::-moz-range-thumb,
+.tm-compact-volume input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    UI-16 · Long lists
@@ -2594,6 +2624,71 @@ select:focus-visible {
 @media (hover: none) {
   .tm-search-action-btn {
     opacity: 1;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MOBILE AUDIT 2026-10-15 (M-02, M-03, M-06, M-07)
+   Жалобы: «слайдер звука вниз уехал» (M-01, см. выше у .tm-volume),
+   «кнопки друг на друга наезжают» на телефонах 320–390px.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* M-02 · Mini-player on narrow phones (≤380px).
+   play 44 + next 44 + volume ~104 + expand 44 + gaps ≈ 254px leaves no room
+   for the track info — the row overflowed and the expand button / slider
+   landed on neighbouring controls. Spotify-style: the fullscreen player owns
+   volume; the mini bar keeps only the mute toggle. */
+@media (max-width: 380px) {
+  .tm-compact-volume input[type="range"] {
+    display: none;
+  }
+  .tm-compact-volume {
+    gap: 0;
+  }
+  .tmusic-player-mobile-actions {
+    gap: 2px;
+  }
+}
+
+/* M-03 · Queue / lyrics header (fullscreen player side panel).
+   Title + panel volume (~108px) + «Очистить» (~90px) overflow a 360px sheet.
+   Let the header wrap instead of overlapping; shrink the panel slider a bit. */
+@media (max-width: 640px) {
+  .tm-queue-head {
+    flex-wrap: wrap;
+    row-gap: 10px;
+  }
+  .tm-panel-volume input[type="range"] {
+    width: 48px;
+  }
+}
+
+/* M-06 · Album-sheet track rows on phones.
+   Number + duration + three 44px coarse buttons crushed the title down to
+   ~20px. Duration already shows in the queue and fullscreen, so hide it here
+   and tighten the row gap (inline gap:12 loses to this !important). */
+@media (max-width: 640px) {
+  .tm-track-dur {
+    display: none;
+  }
+  .tmusic-track-row {
+    gap: 8px !important;
+  }
+}
+
+/* M-07 · Short screens (landscape phones, ~360–640px height).
+   min(270px, 68vw, 100dvh-360px) collapses to ≤0 below ~630px height and the
+   `overflow: hidden` body then clips transport + volume with no way to reach
+   them. Floor the artwork and let the art column scroll. */
+@media (max-width: 900px) {
+  .tmusic-nowplaying-art img {
+    max-width: min(270px, 68vw, max(140px, calc(100dvh - 380px))) !important;
+  }
+}
+@media (max-width: 900px) and (max-height: 640px) {
+  .tmusic-nowplaying-art {
+    overflow-y: auto;
+    min-height: 0;
   }
 }
 

@@ -1002,7 +1002,10 @@ export function MusicLibraryPlayer() {
             >
               {showLyrics ? (
                 <>
+                  {/* M-03: tm-queue-head may wrap on narrow phones instead of
+                      overlapping the volume slider. */}
                   <div
+                    className="tm-queue-head"
                     style={{
                       padding: '16px 20px',
                       borderBottom: '1px solid var(--line)',
@@ -1081,7 +1084,10 @@ export function MusicLibraryPlayer() {
                 </>
               ) : (
                 <>
+                  {/* M-03: tm-queue-head may wrap on narrow phones instead of
+                      overlapping the volume slider / «Очистить». */}
                   <div
+                    className="tm-queue-head"
                     style={{
                       padding: '14px 20px',
                       borderBottom: '1px solid var(--line)',

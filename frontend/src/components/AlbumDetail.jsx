@@ -150,9 +150,11 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker, 
     }
   }, [])
 
-  // UI-29: anchored menus (track ⋮ and playlist picker) are positioned once.
-  // Recompute is impossible without the source node, so close them on any
-  // viewport change instead of leaving them stranded off-screen.
+  // UI-29 + M-05: anchored menus (track ⋮ and playlist picker) are positioned
+  // once. Recompute is impossible without the source node, so close them on
+  // any viewport change — and on scroll (capture): the menu is position:fixed
+  // while its ⋮ anchor scrolls away inside the sheet, leaving the menu
+  // floating over unrelated rows on touch devices.
   useEffect(() => {
     const closeMenus = () => {
       setTrackMenu(null)
@@ -160,9 +162,11 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker, 
     }
     window.addEventListener('resize', closeMenus)
     window.addEventListener('orientationchange', closeMenus)
+    window.addEventListener('scroll', closeMenus, true)
     return () => {
       window.removeEventListener('resize', closeMenus)
       window.removeEventListener('orientationchange', closeMenus)
+      window.removeEventListener('scroll', closeMenus, true)
     }
   }, [])
 
@@ -751,7 +755,9 @@ export function AlbumDetail({ album, artist = null, onClose, onOpenCoverPicker, 
                       </span>
                     )}
                   </div>
-                  <span style={{ fontSize: '11px', color: 'var(--dim)', flexShrink: 0, minWidth: '38px', textAlign: 'right' }}>
+                  {/* M-06: hidden on phones — duration + three 44px buttons
+                      crushed the title to ~20px on a 360px sheet. */}
+                  <span className="tm-track-dur" style={{ fontSize: '11px', color: 'var(--dim)', flexShrink: 0, minWidth: '38px', textAlign: 'right' }}>
                     {dur || formatSizeHint(t)}
                   </span>
                   {isAuthenticated && (

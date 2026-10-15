@@ -8,6 +8,7 @@ import {
   onTrackChanged,
   tryRestorePosition,
   onTimeUpdate as playbackOnTimeUpdate,
+  onPause as playbackOnPause,
   onEnded as playbackOnEnded,
 } from './services/playbackProgress'
 import { AuthModal } from './components/AuthModal'
@@ -31,8 +32,29 @@ export function App() {
   const [passwordChangeOpen, setPasswordChangeOpen] = useState(false)
   // Track id we've already bound restore/metadata for (store owns src/play).
   const boundTrackIdRef = useRef(null)
+  // M-04: the fixed offline banner overlaps the sticky topbar unless the
+  // topbar is pushed down by its real height (it wraps to two lines on
+  // narrow phones, so a hardcoded value would lie).
+  const bannerRef = useRef(null)
 
   const { storageModalOpen, setStorageModalOpen, isOffline, cachedTrackIds } = useOfflineStore()
+
+  // M-04: keep --offline-banner-h in sync with the real banner height so the
+  // sticky topbar (MusicLibrary) and the scan-progress host sit below it.
+  useEffect(() => {
+    const root = document.documentElement
+    if (!isOffline) {
+      root.style.setProperty('--offline-banner-h', '0px')
+      return undefined
+    }
+    const update = () => {
+      const h = bannerRef.current?.offsetHeight || 0
+      root.style.setProperty('--offline-banner-h', `${h}px`)
+    }
+    update()
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+  }, [isOffline, cachedTrackIds.size])
 
   useEffect(() => {
     const offlineMgr = useOfflineStore.getState()
@@ -338,6 +360,18 @@ export function App() {
     usePlayerStore.getState().recoverAudioError()
   }
 
+  const handlePause = () => {
+    const audio = audioRef.current
+    const trackId = usePlayerStore.getState().currentTrack?.id
+    if (audio && trackId) {
+      playbackOnPause(
+        trackId,
+        audio.currentTime,
+        Number.isFinite(audio.duration) ? audio.duration : null
+      )
+    }
+  }
+
   /**
    * Playlist auto-advance: must start the next file in this same event
    * callback — a later React effect is too late on Android 14 lockscreen.
@@ -365,6 +399,7 @@ export function App() {
       {/* Offline Status Top Banner */}
       {isOffline && (
         <div
+          ref={bannerRef}
           role="status"
           style={{
             position: 'fixed',
@@ -427,6 +462,7 @@ export function App() {
         onEnded={handleEnded}
         onError={handleError}
         onPlaying={handlePlaying}
+        onPause={handlePause}
       />
 
       {/* Main Music Library View */}

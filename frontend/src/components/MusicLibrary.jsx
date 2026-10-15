@@ -1207,7 +1207,8 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         className="tmusic-topbar"
         style={{
           position: 'sticky',
-          top: 0,
+          // M-04: sit below the fixed offline banner while it is up.
+          top: 'var(--offline-banner-h, 0px)',
           backgroundColor: 'rgba(20, 18, 16, 0.95)',
           backdropFilter: 'blur(10px)',
           borderBottom: '1px solid var(--line)',
