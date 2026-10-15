@@ -187,6 +187,59 @@ def test_legacy_invalid_history_does_not_poison_analytics(database):
     assert any(math.isinf(row.duration_played_sec) for row in db.scalars(select(playback.ListeningHistory)))
 
 
+def test_playback_history_updates_in_place_without_duplicates(database):
+    db, user, track, client = database
+    # 1. First event when track starts playing
+    create_resp = client.post(
+        '/api/playback/history',
+        json={'file_id': track.id, 'duration_played_sec': 0.0, 'completed': False},
+    )
+    assert create_resp.status_code == 200
+    initial_data = create_resp.json()
+    history_id = initial_data['id']
+    assert initial_data['duration_played_sec'] == 0.0
+    assert initial_data['completed'] is False
+
+    # 2. Subsequent flush on pause/skip/end passing history_id
+    update_resp = client.post(
+        '/api/playback/history',
+        json={
+            'history_id': history_id,
+            'file_id': track.id,
+            'duration_played_sec': 42.5,
+            'track_duration_sec': 180.0,
+            'completed': True,
+        },
+    )
+    assert update_resp.status_code == 200
+    updated_data = update_resp.json()
+    assert updated_data['id'] == history_id
+    assert updated_data['duration_played_sec'] == 42.5
+    assert updated_data['track_duration_sec'] == 180.0
+    assert updated_data['completed'] is True
+
+    # 3. Verify exactly one row in DB for this track listen
+    rows = db.scalars(select(playback.ListeningHistory).where(playback.ListeningHistory.file_id == track.id)).all()
+    assert len(rows) == 1
+    assert rows[0].id == history_id
+    assert rows[0].duration_played_sec == 42.5
+    assert rows[0].completed is True
+
+    # 4. Verify admin analytics returns recent events with track and user info
+    analytics_resp = client.get('/api/admin/analytics?days=7')
+    assert analytics_resp.status_code == 200
+    analytics_data = analytics_resp.json()
+    assert 'recent' in analytics_data
+    assert len(analytics_data['recent']) >= 1
+    recent_event = analytics_data['recent'][0]
+    assert recent_event['id'] == history_id
+    assert recent_event['file_id'] == track.id
+    assert recent_event['track_name'] == 'Synthetic.mp3'
+    assert recent_event['duration_played_sec'] == 42.5
+    assert recent_event['completed'] is True
+    assert recent_event['username'] == 'edge_admin'
+
+
 @pytest.mark.parametrize('directory_only', [False, True])
 def test_empty_zip_reports_exit_without_traceback(tmp_path, capsys, directory_only):
     path = tmp_path / 'empty.zip'

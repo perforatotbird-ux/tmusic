@@ -114,6 +114,7 @@ async def create_history(
         body.duration_played_sec,
         body.track_duration_sec,
         body.completed,
+        history_id=body.history_id,
     )
     try:
         artist, track, album = lastfm_service.parse_track_meta(
@@ -126,7 +127,7 @@ async def create_history(
         )
         if should_scrobble:
             lastfm_service.scrobble(artist, track, album)
-        else:
+        elif not body.history_id:
             lastfm_service.update_now_playing(artist, track, album)
     except Exception:
         logger.exception("Last.fm delivery failed; local history remains saved")

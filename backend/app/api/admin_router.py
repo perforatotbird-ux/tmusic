@@ -5,6 +5,7 @@ Access: JWT session of user with role=admin (or username admin).
 """
 import json
 import logging
+import math
 from datetime import timedelta
 from typing import Any, Dict, Optional
 
@@ -639,6 +640,24 @@ async def admin_analytics(
         .group_by(func.date(ListeningHistory.started_at))
         .order_by(func.date(ListeningHistory.started_at))
     ).mappings().all()
+    recent = db.execute(
+        select(
+            ListeningHistory.id,
+            ListeningHistory.user_id,
+            AppUser.username,
+            ListeningHistory.file_id,
+            func.coalesce(VFile.name, "Без названия").label("track_name"),
+            ListeningHistory.started_at,
+            valid_seconds.label("duration_played_sec"),
+            ListeningHistory.track_duration_sec,
+            ListeningHistory.completed,
+        )
+        .outerjoin(VFile, VFile.id == ListeningHistory.file_id)
+        .outerjoin(AppUser, AppUser.id == ListeningHistory.user_id)
+        .where(ListeningHistory.started_at >= since)
+        .order_by(ListeningHistory.started_at.desc(), ListeningHistory.id.desc())
+        .limit(30)
+    ).mappings().all()
     return {
         "days": days,
         "totals": {
@@ -651,6 +670,32 @@ async def admin_analytics(
         "top_tracks": [dict(row) for row in top_tracks],
         "top_users": [dict(row) for row in top_users],
         "daily": [dict(row) for row in daily],
+        "recent": [
+            {
+                "id": int(row["id"]),
+                "user_id": int(row["user_id"]),
+                "username": str(row["username"] or f"User #{row['user_id']}"),
+                "file_id": int(row["file_id"]),
+                "track_name": str(row["track_name"]),
+                "started_at": row["started_at"].isoformat() if row["started_at"] else None,
+                "duration_played_sec": (
+                    round(float(row["duration_played_sec"]), 1)
+                    if row["duration_played_sec"] is not None
+                    and math.isfinite(float(row["duration_played_sec"]))
+                    and 0 <= float(row["duration_played_sec"]) <= MAX_HISTORY_DURATION_SEC
+                    else 0.0
+                ),
+                "track_duration_sec": (
+                    round(float(row["track_duration_sec"]), 1)
+                    if row["track_duration_sec"] is not None
+                    and math.isfinite(float(row["track_duration_sec"]))
+                    and 0 <= float(row["track_duration_sec"]) <= MAX_HISTORY_DURATION_SEC
+                    else None
+                ),
+                "completed": bool(row["completed"]),
+            }
+            for row in recent
+        ],
     }
 
 

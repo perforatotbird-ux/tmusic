@@ -68,6 +68,15 @@ class PlaybackRepository:
         return list(db.execute(stmt).all()), total
 
     @staticmethod
+    def get_history(db: Session, history_id: int, user_id: int) -> Optional[ListeningHistory]:
+        return db.scalar(
+            select(ListeningHistory).where(
+                ListeningHistory.id == history_id,
+                ListeningHistory.user_id == user_id,
+            )
+        )
+
+    @staticmethod
     def get_favorite(db: Session, user_id: int, file_id: int) -> Optional[UserFavorite]:
         return db.scalar(
             select(UserFavorite).where(

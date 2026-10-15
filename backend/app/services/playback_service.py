@@ -71,12 +71,25 @@ class PlaybackService:
         duration_played_sec: float,
         track_duration_sec: Optional[float],
         completed: bool,
+        history_id: Optional[int] = None,
     ) -> ListeningHistory:
         for duration in (duration_played_sec, track_duration_sec):
             if duration is not None and (
                 not math.isfinite(duration) or not 0 <= duration <= MAX_HISTORY_DURATION_SEC
             ):
                 raise ValueError("History duration must be finite and between 0 and 86400 seconds.")
+        if history_id:
+            row = PlaybackRepository.get_history(db, history_id, user_id)
+            if row:
+                if duration_played_sec > row.duration_played_sec:
+                    row.duration_played_sec = duration_played_sec
+                if track_duration_sec is not None:
+                    row.track_duration_sec = track_duration_sec
+                if completed:
+                    row.completed = True
+                db.commit()
+                db.refresh(row)
+                return row
         row = ListeningHistory(
             user_id=user_id,
             file_id=file_id,

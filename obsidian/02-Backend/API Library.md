@@ -174,10 +174,10 @@ report, progress: {current, total, stage, message}}`.
 
 - `POST /api/playlists`: trim имени до min_length, 1–120 символов; whitespace-only input → 422. Service layer отдельно валидирует имя, Subsonic create/update использует protocol error 10 для некорректного имени.
 - LRCLIB: null/non-dict search entries игнорируются до score/sort, строковые поля проверяются перед strip/lower, nonfinite/negative duration → None. Network errors остаются best-effort.
-- `POST /api/playback/history`: played и track duration — finite 0..86400 секунд; invalid input → 422, запись не создаётся. Optional track duration допускает None.
-- Старые invalid history durations санитайзятся в ответах (played=0, track=None), admin analytics исключает invalid seconds до суммирования. Это read-only совместимость, не массовая очистка БД.
+- `POST /api/playback/history`: played и track duration — finite 0..86400 секунд; invalid input → 422, запись не создаётся. При передаче `history_id` запись обновляется на месте без дублирования.
+- Старые invalid history durations санитайзятся в ответах (played=0, track=None), admin analytics исключает invalid seconds до суммирования и выдаёт ленту последних событий (`recent`). Это read-only совместимость, не массовая очистка БД.
 
-Результаты: [[Ревью граничных значений 2026-10-01]] · [[Тестирование]].
+Результаты: [[Ревью граничных значений 2026-10-01]] · [[Тестирование]] · [[Исправление аналитики и трекинга прослушиваний 2026-10-13]].
 
 [[00-Главная]]
 
