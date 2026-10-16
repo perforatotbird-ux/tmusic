@@ -1210,6 +1210,16 @@ input[type="range"].tm-scrub-input {
   max-width: 520px;
   margin: 0 auto;
 }
+/* M-08: обложка — блочный элемент с `width:100%`, и как только её урезает
+   `max-width` (телефоны/планшеты: `min(270px, 68vw, …)`), блочный бокс
+   прижимается к левому краю обёртки. `align-items: center` у колонки это не
+   лечит: он центрирует обёртку, а не картинку внутри неё. Явные auto-поля
+   возвращают обложку в центр (на десктопе ширина картинки равна ширине
+   обёртки, поэтому auto-поля там равны нулю и ничего не сдвигается). */
+.tmusic-nowplaying-art img {
+  margin-left: auto;
+  margin-right: auto;
+}
 .tmusic-nowplaying-queue {
   flex: 1;
   display: flex;

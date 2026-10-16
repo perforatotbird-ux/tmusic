@@ -66,3 +66,16 @@ test('M-07: now-playing artwork never collapses on short screens', () => {
   assert.match(css, /max\(140px, calc\(100dvh - 380px\)\)/)
   assert.match(css, /max-height:\s*640px\)\s*\{[\s\S]*?\.tmusic-nowplaying-art\s*\{[\s\S]*?overflow-y:\s*auto/)
 })
+
+// M-08 (2026-10-16, найдено на живом Android): обложка уезжала влево.
+// `align-items: center` центрирует обёртку, но картинка внутри неё — блочный
+// бокс с `width: 100%`, урезанный `max-width: min(270px, 68vw, …)`, а такой
+// бокс всегда липнет к левому краю. Спасают только auto-поля на самой картинке.
+test('M-08: now-playing artwork is centred when max-width caps it', () => {
+  const rule = css.match(/\.tmusic-nowplaying-art img\s*\{[^}]*\}/)
+  assert.ok(rule, 'нет правила .tmusic-nowplaying-art img')
+  assert.match(rule[0], /margin-left:\s*auto/)
+  assert.match(rule[0], /margin-right:\s*auto/)
+  // Обрезка ширины на телефонах/планшетах — источник бага, она должна остаться.
+  assert.match(css, /\.tmusic-nowplaying-art img\s*\{[\s\S]*?max-width:\s*min\(270px, 68vw/)
+})
