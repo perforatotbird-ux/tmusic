@@ -260,9 +260,18 @@ async def get_folder_tracks(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user)
 ):
-    """Retrieve all audio tracks belonging to an album or folder with natural sorting and plaintext sizes."""
+    """Retrieve all audio tracks belonging to an album or folder with natural sorting and plaintext sizes.
+
+    2026-10-16: список отдаётся сразу, а треки неподдерживаемых форматов уходят
+    в фоновую очередь транскодинга (см. `prefetch_collection`). Раньше клиент
+    ждал, пока сервер синхронно обойдёт кеш манифестов по каждому треку, и
+    открытие сборника «висело» вместе с идущим транскодингом.
+    """
     vfiles = stream_service.list_folder_tracks(db, folder_id, recursive=recursive, limit=limit, offset=offset)
-    return stream_service.build_track_responses(db, vfiles)
+    responses = stream_service.build_track_responses(db, vfiles)
+    # Строго после сборки ответа: постановка в очередь не должна влиять на полезную нагрузку.
+    transcoding_service.prefetch_collection(vfiles, requester_user_id=user.id)
+    return responses
 
 
 @router.get("/{file_id}")

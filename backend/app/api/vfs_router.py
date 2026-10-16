@@ -13,6 +13,7 @@ from app.core.database import get_db
 from app.models.auth import AppUser
 from app.schemas.stream import TrackResponse
 from app.services.stream_service import stream_service
+from app.services.transcoding_service import transcoding_service
 from app.services.vfs_service import vfs_service
 
 router = APIRouter(prefix="/api/vfs", tags=["vfs"])
@@ -63,6 +64,8 @@ async def folder_children(
     subfolders = vfs_service.list_children(db, folder_id)
     tracks_vf = stream_service.list_folder_tracks(db, folder_id, recursive=False, limit=500)
     tracks = stream_service.build_track_responses(db, tracks_vf)
+    # 2026-10-16: открытие папки не ждёт транскодинг — нужные форматы уходят в фон.
+    transcoding_service.prefetch_collection(tracks_vf, requester_user_id=user.id)
     return {
         "folder": vfs_service.folder_payload(db, folder, folder.parent_id),
         "subfolders": [vfs_service.folder_payload(db, f, folder_id) for f in subfolders],
@@ -82,4 +85,7 @@ async def folder_tracks_recursive(
     if not folder or folder.is_trash:
         raise HTTPException(status_code=404, detail="Folder not found.")
     vfiles = stream_service.list_folder_tracks(db, folder_id, recursive=recursive, limit=2000)
-    return stream_service.build_track_responses(db, vfiles)
+    responses = stream_service.build_track_responses(db, vfiles)
+    # 2026-10-16: клик «играть» не должен ждать первый транскод — он уже в фоне.
+    transcoding_service.prefetch_collection(vfiles, requester_user_id=user.id)
+    return responses

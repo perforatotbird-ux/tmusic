@@ -64,12 +64,17 @@ function initTranscodeSSE() {
 
       const state = usePlayerStore.getState()
       const track = state.queue.find((t) => t.id === data.file_id)
+      // 2026-10-16: фоновый предтранскод открытого сборника ставит в очередь
+      // десятки треков сразу. Тост на каждый из них превратился бы в поток
+      // уведомлений, поэтому такие задачи помечены `background` и молчат —
+      // событие transcode_complete всё равно рассылается (быстрый путь плеера).
+      const isBackground = data.background === true
 
       if (data.event === 'transcode_complete') {
         if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof CustomEvent !== 'undefined') {
           window.dispatchEvent(new CustomEvent('tmusic:transcode-complete', { detail: data }))
         }
-        if (track) {
+        if (track && !isBackground) {
           const msg = `Готово: "${track.title || track.name}" теперь в MP3 320kbps`
           usePlayerStore.getState().pushNotice({ kind: 'info', text: msg })
           pendingTranscodeNotifications.add(data.file_id)
@@ -79,10 +84,10 @@ function initTranscodeSSE() {
           }, 10000)
           transcodeNotificationTimers.add(timer)
         }
-      } else if (data.event === 'transcode_started' && track) {
+      } else if (data.event === 'transcode_started' && track && !isBackground) {
         const msg = `Транскодинг: "${track.title || track.name}"`
         usePlayerStore.getState().pushNotice({ kind: 'info', text: msg })
-      } else if (data.event === 'transcode_failed' && track) {
+      } else if (data.event === 'transcode_failed' && track && !isBackground) {
         const msg = `Ошибка транскодинга: "${track.title || track.name}"`
         usePlayerStore.getState().pushNotice({ kind: 'error', text: msg })
       } else if (data.event === 'transcode_prefetch' && track) {

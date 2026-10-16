@@ -119,7 +119,11 @@ def test_cache_cleanup_preserves_active_output_and_ignores_partial_files(monkeyp
     assert active.exists() and partial.exists() and not old.exists()
 
 
-def test_evicted_ready_job_is_retryable_failure_instead_of_false_ready(monkeypatch):
+def test_evicted_ready_job_is_retryable_failure_instead_of_false_ready(monkeypatch, tmp_path):
+    # Изолированный каталог кеша: с 2026-10-16 статус дополнительно проверяется
+    # по индексу манифестов, поэтому тест не должен зависеть от содержимого
+    # реального cache/music_transcoded.
+    monkeypatch.setattr(settings, 'TRANSCODE_CACHE_DIR', tmp_path)
     service = TranscodingService()
     current = job()
     current.status = TranscodeStatus.READY

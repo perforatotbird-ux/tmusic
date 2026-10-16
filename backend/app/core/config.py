@@ -99,6 +99,12 @@ class Settings(BaseSettings):
     TRANSCODE_FORMATS_NEED: list = ["m4a", "mp4", "ogg", "opus", "flac", "wma", "aac"]
     TRANSCODE_PREFETCH_COUNT: int = 2   # Number of upcoming tracks to pre-transcode
     TRANSCODE_CACHE_MAX_BYTES: int = 10 * 1024 * 1024 * 1024  # 10 GB transcode cache cap
+    # 2026-10-16: открытие сборника больше не ждёт транскодинг. Список треков
+    # отдаётся сразу, а транскодинг нужных форматов уходит в фоновую очередь
+    # (priority=prefetch). MAX ограничивает «залп» на одно открытие, чтобы
+    # просмотр каталога не вычерпал квоты и не занял все воркеры.
+    TRANSCODE_PREFETCH_ON_OPEN: bool = True
+    TRANSCODE_PREFETCH_ON_OPEN_MAX: int = 20
 
     # API rate limits (requests per minute per client IP). Auth endpoints get a
     # stricter budget. Previously hardcoded in main.py.

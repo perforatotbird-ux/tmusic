@@ -47,6 +47,19 @@ MAX_COMPLETED_JOBS = 1000
 COMPLETED_JOB_TTL = 3600
 JOB_SWEEP_INTERVAL = 60
 
+# 2026-10-16: сколько живёт in-memory индекс манифестов кеша. Раньше статус
+# каждого трека искался полным обходом каталога с json-разбором всех манифестов:
+# на папке из 454 треков открытие сборника занимало 15.5 с (и всё это время
+# событийный цикл был занят, поэтому «висел» и уже идущий транскодинг).
+MANIFEST_INDEX_TTL = 30.0
+# Сборка списка манифестов — это одна операция чтения каталога; повторять её
+# на каждый get_status нельзя, но и раз в 30 с её цена (~единицы мс) незаметна.
+PRUNE_MIN_INTERVAL = 1.0
+# Троттлинг prune нужен только когда таблица задач реально большая: до этого
+# размера обход дешевле самой проверки времени (и тесты полагаются на то, что
+# устаревшая терминальная задача исчезает из _jobs сразу).
+PRUNE_SMALL_TABLE = 64
+
 
 class TranscodePriorityQueue(asyncio.PriorityQueue):
     """Single-event-loop heap supporting atomic in-place promotion."""
@@ -81,6 +94,10 @@ class TranscodeJob:
     duration: Optional[float] = None
     error: Optional[str] = None
     requester_user_ids: Set[int] = field(default_factory=set)
+    # True для задач, поставленных предзагрузкой коллекции (открытие сборника).
+    # Клиент по этому флагу не показывает тост на каждый фоновый трек, но
+    # по-прежнему получает transcode_complete для быстрого старта плеера.
+    background: bool = False
 
 
 _SRC_EXT_RE = re.compile(r"[a-z0-9]{1,10}")
@@ -110,10 +127,23 @@ class TranscodingService:
         self._workers: List[asyncio.Task] = []
         self._started: bool = False
         self._lock = asyncio.Lock()
+        # file_id -> манифест готового MP3 на диске. Индекс строится одним
+        # проходом по каталогу и живёт MANIFEST_INDEX_TTL; без него каждый
+        # get_status/get_result обходил каталог целиком (см. MANIFEST_INDEX_TTL).
+        self._disk_index: Dict[int, Dict[str, Any]] = {}
+        self._disk_index_built_at: float = 0.0
+        self._last_prune: float = 0.0
 
     def _prune_jobs(self):
         """Bound only terminal history; never evict pending/processing ownership."""
         now = time.time()
+        # get_status() зовётся на каждый трек списка, а история задач может
+        # доходить до MAX_COMPLETED_JOBS — без троттлинга это лишние сотни
+        # тысяч итераций на одно открытие сборника. Но троттлинг включается
+        # только на большой таблице, чтобы обычный путь не менял поведение.
+        if len(self._jobs) > PRUNE_SMALL_TABLE and now - self._last_prune < PRUNE_MIN_INTERVAL:
+            return
+        self._last_prune = now
         terminal = []
         for file_id, job in list(self._jobs.items()):
             if job.status in (TranscodeStatus.PENDING, TranscodeStatus.PROCESSING):
@@ -170,6 +200,7 @@ class TranscodingService:
         track: VFile,
         priority: int = PRIORITY_PREFETCH,
         requester_user_id: Optional[int] = None,
+        background: bool = False,
     ) -> TranscodeStatus:
         """Enqueue a track for transcoding. Returns current status (may already be cached)."""
         status = self.get_status(track.id)
@@ -195,6 +226,10 @@ class TranscodingService:
         if existing and existing.status in (TranscodeStatus.PENDING, TranscodeStatus.PROCESSING):
             if requester_user_id is not None:
                 existing.requester_user_ids.add(requester_user_id)
+            # Фоновая предзагрузка не должна превращать уже видимую пользователю
+            # задачу в «тихую»: флаг только включается, но не выключается.
+            if background:
+                existing.background = True
             # If playing track is requested as prefetch, upgrade priority
             if priority == PRIORITY_PLAYING and existing.priority == PRIORITY_PREFETCH:
                 self._queue.promote(track.id, PRIORITY_PLAYING)
@@ -227,6 +262,7 @@ class TranscodingService:
             priority=priority,
             cache_key=cache_key,
             requester_user_ids={requester_user_id} if requester_user_id is not None else set(),
+            background=background,
         )
         self._jobs[track.id] = job
 
@@ -247,6 +283,7 @@ class TranscodingService:
             "file_id": track.id,
             "file_name": track.name,
             "priority": "high" if priority == PRIORITY_PLAYING else "prefetch",
+            "background": background,
             "timestamp": ts,
         }, job.requester_user_ids)
 
@@ -274,6 +311,67 @@ class TranscodingService:
             }, {requester_user_id} if requester_user_id is not None else set())
         if enqueued:
             logger.info("Prefetched %d tracks for transcoding", enqueued)
+        return enqueued
+
+    def prefetch_collection(
+        self,
+        tracks: List[Any],
+        requester_user_id: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> int:
+        """Поставить в фоновую очередь транскодинг треков открытого сборника.
+
+        Вызывается из обработчиков, отдающих список треков папки/плейлиста.
+        Список отдаётся пользователю сразу, транскодинг идёт в фоне отдельными
+        воркерами — поэтому открытие сборника больше не ждёт ни скачивания, ни
+        ffmpeg. Никогда не бросает исключение: переполнение очереди, квоты и
+        rate-limit обрывают залп молча, но не ломают ответ с треками.
+
+        Порядок треков сохраняется (natural sort из БД), поэтому в первую
+        очередь в фон уходят первые треки — те, что пользователь нажмёт раньше.
+        """
+        if not self._started or not settings.TRANSCODE_ENABLED or not settings.TRANSCODE_PREFETCH_ON_OPEN:
+            return 0
+        if limit is None:
+            limit = settings.TRANSCODE_PREFETCH_ON_OPEN_MAX
+
+        enqueued = 0
+        try:
+            for track in tracks:
+                if enqueued >= limit:
+                    break
+                if self._queue.full():
+                    logger.info("Transcode queue full — collection prefetch stopped after %d tracks", enqueued)
+                    break
+                # Строка без имени не может быть треком (колонка NOT NULL), но
+                # одна битая запись не должна обрывать залп по всей коллекции.
+                name = getattr(track, "name", None)
+                if not name:
+                    continue
+                if not needs_transcoding(name, getattr(track, "mime_type", None)):
+                    continue
+                try:
+                    # Уже готовое (на диске) и уже поставленное не дублируем.
+                    if self.get_status(track.id) == TranscodeStatus.READY:
+                        continue
+                    if self.has_active_job(track.id):
+                        continue
+                    status = self.request_transcode(
+                        track,
+                        priority=PRIORITY_PREFETCH,
+                        requester_user_id=requester_user_id,
+                        background=True,
+                    )
+                except HTTPException:
+                    # Квота пользователя / лимит запросов / очередь — это не
+                    # ошибка открытия сборника, просто прекращаем залп.
+                    break
+                if status in (TranscodeStatus.PENDING, TranscodeStatus.PROCESSING):
+                    enqueued += 1
+        except Exception:
+            logger.warning("Collection prefetch failed after %d tracks", enqueued, exc_info=True)
+        if enqueued:
+            logger.info("Queued %d tracks for background transcode (collection open)", enqueued)
         return enqueued
 
     def get_status(self, file_id: int) -> TranscodeStatus:
@@ -431,6 +529,7 @@ class TranscodingService:
                         "file_id": file_id,
                         "cache_key": job.cache_key,
                         "mp3_size": job.mp3_size,
+                        "background": job.background,
                     }, job.requester_user_ids)
                     continue
 
@@ -442,6 +541,7 @@ class TranscodingService:
                     "file_id": file_id,
                     "file_name": job.file_name,
                     "priority": "high" if priority == PRIORITY_PLAYING else "prefetch",
+                    "background": job.background,
                     "timestamp": time.time(),
                 }, job.requester_user_ids)
 
@@ -459,7 +559,8 @@ class TranscodingService:
                     job.finished_at = time.time()
                     self._notify({
                         "event": "transcode_failed", "file_id": file_id,
-                        "error": "transcode_failed", "timestamp": time.time(),
+                        "error": "transcode_failed", "background": job.background,
+                        "timestamp": time.time(),
                     }, job.requester_user_ids)
             finally:
                 self._queue.task_done()
@@ -546,7 +647,8 @@ class TranscodingService:
         logger.info("Downloading raw audio for file %d (%s)", job.file_id, job.file_name)
         self._notify({
             "event": "transcode_downloading", "file_id": job.file_id,
-            "file_name": job.file_name, "timestamp": time.time(),
+            "file_name": job.file_name, "background": job.background,
+            "timestamp": time.time(),
         }, job.requester_user_ids)
         try:
             await self._disk_call(src_tmp.write_bytes, b"")
@@ -604,6 +706,9 @@ class TranscodingService:
         if not get_cached_transcode_path(job.cache_key):
             raise RuntimeError("Transcode cache manifest could not be published")
         job.status = TranscodeStatus.READY
+        # Свежий манифест попадает в индекс сразу — иначе до истечения TTL
+        # следующий запрос снова сканировал бы каталог.
+        self._disk_index[job.file_id] = manifest_payload
 
         # Clean up cache in worker thread if it's growing too large
         await asyncio.to_thread(self._cleanup_cache, job.cache_key)
@@ -616,10 +721,68 @@ class TranscodingService:
             "cache_key": job.cache_key,
             "mp3_size": mp3_size,
             "duration": duration,
+            "background": job.background,
             "timestamp": time.time(),
         }, job.requester_user_ids)
 
         logger.info("Transcode complete for file %d: %d bytes MP3 (%.1fs)", job.file_id, mp3_size, duration or 0)
+
+    @staticmethod
+    def _cached_mp3_path(cache_key: str) -> Optional[str]:
+        """Быстрая проверка готового MP3 по ключу из индекса манифестов.
+
+        `get_cached_transcode_path` дополнительно читает и парсит манифест —
+        для записи из индекса это лишняя работа: манифест уже разобран и
+        проверен на `status == ready`. Остаётся тот же guard на мусорные
+        (< 1 KiB) файлы от неудачных прогонов ffmpeg.
+        """
+        path = settings.TRANSCODE_CACHE_DIR / f"{cache_key}.mp3"
+        try:
+            if path.is_file() and path.stat().st_size >= 1024:
+                return str(path)
+        except OSError:
+            pass
+        return None
+
+    def _refresh_disk_index(self, *, force: bool = False) -> Dict[int, Dict[str, Any]]:
+        """Один проход по каталогу кеша вместо обхода на каждый трек.
+
+        Раньше `_check_disk_cache` на каждый вызов читал и парсил ВСЕ
+        `*.meta.json` в `TRANSCODE_CACHE_DIR`. Открытие сборника вызывает его
+        дважды на трек, поэтому папка из 454 требующих транскодинга треков
+        стоила ~70k чтений файлов и 15.5 с (замер 2026-10-16) прямо в
+        обработчике запроса. Теперь каталог сканируется не чаще, чем раз в
+        MANIFEST_INDEX_TTL, а поиск идёт по словарю.
+        """
+        now = time.time()
+        if not force and self._disk_index_built_at and now - self._disk_index_built_at < MANIFEST_INDEX_TTL:
+            return self._disk_index
+
+        index: Dict[int, Dict[str, Any]] = {}
+        try:
+            manifest_files = list(settings.TRANSCODE_CACHE_DIR.glob("*.meta.json"))
+        except OSError:
+            manifest_files = []
+        for manifest_file in manifest_files:
+            try:
+                with open(manifest_file, "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if manifest.get("status") != "ready":
+                continue
+            file_id = manifest.get("file_id")
+            cache_key = manifest.get("cache_key")
+            if not isinstance(file_id, int) or not isinstance(cache_key, str) or not cache_key:
+                continue
+            # Один file_id может иметь несколько ключей (файл перезалили):
+            # берём самый свежий манифест, а не первый по порядку обхода.
+            previous = index.get(file_id)
+            if previous is None or (manifest.get("created_at") or 0) >= (previous.get("created_at") or 0):
+                index[file_id] = manifest
+        self._disk_index = index
+        self._disk_index_built_at = time.time()
+        return index
 
     def _check_disk_cache(self, file_id: int) -> Optional[Dict[str, Any]]:
         """Check if a transcoded file exists in the disk cache for this file_id."""
@@ -634,28 +797,26 @@ class TranscodingService:
                     "mp3_size": Path(cached_path).stat().st_size,
                 }
 
-        # Search manifest files for this file_id
-        for manifest_file in settings.TRANSCODE_CACHE_DIR.glob("*.meta.json"):
-            try:
-                with open(manifest_file, "r", encoding="utf-8") as f:
-                    manifest = json.load(f)
-                if manifest.get("file_id") == file_id and manifest.get("status") == "ready":
-                    cached_path = get_cached_transcode_path(manifest["cache_key"])
-                    if cached_path:
-                        if job:
-                            job.status = TranscodeStatus.READY
-                            job.cache_key = manifest["cache_key"]
-                            job.mp3_size = manifest.get("mp3_size")
-                            job.duration = manifest.get("duration")
-                        return {
-                            "cache_key": manifest["cache_key"],
-                            "cached_path": cached_path,
-                            "mp3_size": manifest.get("mp3_size"),
-                            "duration": manifest.get("duration"),
-                        }
-            except (OSError, json.JSONDecodeError):
-                continue
-        return None
+        manifest = self._refresh_disk_index().get(file_id)
+        if not manifest:
+            return None
+        cached_path = self._cached_mp3_path(manifest["cache_key"])
+        if not cached_path:
+            # Индекс устарел (файл вытеснен/удалён): убираем запись, чтобы
+            # следующий вызов не проверял её повторно.
+            self._disk_index.pop(file_id, None)
+            return None
+        if job:
+            job.status = TranscodeStatus.READY
+            job.cache_key = manifest["cache_key"]
+            job.mp3_size = manifest.get("mp3_size")
+            job.duration = manifest.get("duration")
+        return {
+            "cache_key": manifest["cache_key"],
+            "cached_path": cached_path,
+            "mp3_size": manifest.get("mp3_size"),
+            "duration": manifest.get("duration"),
+        }
 
     def _cleanup_cache(self, protected_key=None):
         """Evict oldest cached files when cache exceeds max size."""
@@ -680,6 +841,10 @@ class TranscodingService:
                     manifest = cache_dir / f"{f.stem}.meta.json"
                     if manifest.exists():
                         manifest.unlink()
+                    # Индекс не должен отдавать вытесненный файл как READY.
+                    for file_id, entry in list(self._disk_index.items()):
+                        if entry.get("cache_key") == f.stem:
+                            self._disk_index.pop(file_id, None)
                     total_size -= size
                     logger.info("Evicted cached transcode: %s", f.name)
                 except OSError:

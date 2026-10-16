@@ -43,3 +43,16 @@ test('lost job after backend restart becomes retryable failure rather than infin
  vm.createContext(ctx);vm.runInContext(fs.readFileSync(path.join(__dirname,'../src/api/stream.js'),'utf8').replace(/^import .*\r?\n/gm,'').replace('export const streamApi =','globalThis.streamApi ='),ctx)
  await assert.rejects(ctx.streamApi.preparePlayback(1),/прервана/)
 })
+// 2026-10-16: открытие сборника ставит в фон десятки транскодов сразу. Тост на
+// каждый из них превратился бы в поток уведомлений, поэтому сервер помечает
+// такие задачи `background`, а плеер молчит — но событие о завершении всё равно
+// рассылается, иначе preparePlayback потеряет быстрый путь и уйдёт в опрос.
+test('background collection prefetch stays silent yet still wakes the player',()=>{
+ const src=fs.readFileSync(path.join(__dirname,'../src/store/playerStore.js'),'utf8')
+ assert.match(src,/const isBackground = data\.background === true/)
+ const complete=src.slice(src.indexOf("data.event === 'transcode_complete'"),src.indexOf("data.event === 'transcode_started'"))
+ assert.match(complete,/dispatchEvent\(new CustomEvent\('tmusic:transcode-complete'/)
+ assert.match(complete,/if \(track && !isBackground\)/)
+ assert.match(src,/data\.event === 'transcode_started' && track && !isBackground/)
+ assert.match(src,/data\.event === 'transcode_failed' && track && !isBackground/)
+})
