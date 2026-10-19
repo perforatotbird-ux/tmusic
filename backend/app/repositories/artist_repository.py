@@ -46,6 +46,7 @@ class ArtistRepository:
         db: Session,
         kind: Optional[str] = None,
         search: Optional[str] = None,
+        root_only: Optional[bool] = None,
         limit: int = 200,
         offset: int = 0
     ) -> List[Tuple[MusicArtist, int, Optional[str], int]]:
@@ -83,12 +84,16 @@ class ArtistRepository:
         )
         if kind and kind not in ("null", "undefined"):
             stmt = stmt.where(MusicArtist.kind == kind)
-        if search and search not in ("null", "undefined") and search.strip():
+        has_search = bool(search and search not in ("null", "undefined") and search.strip())
+        if has_search:
             pattern = like_pattern(search)
             stmt = stmt.where(
                 func.lower(MusicArtist.display_name).like(pattern, escape="\\") |
                 func.lower(MusicArtist.search_name).like(pattern, escape="\\")
             )
+        if root_only is True:
+            stmt = stmt.where(MusicArtist.parent_id.is_(None))
+
         stmt = stmt.order_by(MusicArtist.display_name.asc()).offset(offset).limit(limit)
         return list(db.execute(stmt).all())
 
@@ -100,15 +105,40 @@ class ArtistRepository:
         return db.execute(stmt).scalar() or 0
 
     @staticmethod
-    def list_children(db: Session, parent_id: int) -> List[MusicArtist]:
-        """Direct children of a catalog card, ordered by display name."""
+    def list_children(
+        db: Session, parent_id: int
+    ) -> List[Tuple[MusicArtist, int, Optional[str], int]]:
+        """Direct children of a catalog card, ordered by display name, with counts."""
+        album_count = (
+            select(func.count(MusicAlbum.id))
+            .where(MusicAlbum.artist_id == MusicArtist.id)
+            .correlate(MusicArtist)
+            .scalar_subquery()
+            .label("album_count")
+        )
+        parent = select(MusicArtist).alias("parent_entity")
+        parent_name = (
+            select(parent.c.display_name)
+            .where(parent.c.id == MusicArtist.parent_id)
+            .correlate(MusicArtist)
+            .scalar_subquery()
+            .label("parent_name")
+        )
+        child = select(MusicArtist).alias("child_entity")
+        children_count = (
+            select(func.count(child.c.id))
+            .where(child.c.parent_id == MusicArtist.id)
+            .correlate(MusicArtist)
+            .scalar_subquery()
+            .label("children_count")
+        )
         stmt = (
-            select(MusicArtist)
+            select(MusicArtist, album_count, parent_name, children_count)
             .options(load_only(*_ARTIST_CARD_COLUMNS))
             .where(MusicArtist.parent_id == parent_id)
             .order_by(MusicArtist.display_name.asc())
         )
-        return list(db.execute(stmt).scalars().all())
+        return list(db.execute(stmt).all())
 
     @staticmethod
     def ancestor_ids(db: Session, artist_id: int, max_depth: int = 64) -> List[int]:
@@ -130,6 +160,25 @@ class ArtistRepository:
             chain.append(row)
             current_id = row
         return chain
+
+    @staticmethod
+    def get_ancestors(db: Session, artist_id: int, max_depth: int = 64) -> List[MusicArtist]:
+        """Chain of parent entities above artist_id, ordered from root down to immediate parent."""
+        ancestor_ids = ArtistRepository.ancestor_ids(db, artist_id, max_depth=max_depth)
+        if not ancestor_ids:
+            return []
+        stmt = (
+            select(MusicArtist)
+            .options(load_only(*_ARTIST_CARD_COLUMNS))
+            .where(MusicArtist.id.in_(ancestor_ids))
+        )
+        entities_by_id = {a.id: a for a in db.execute(stmt).scalars().all()}
+        # Reconstruct in root-to-parent order (reverse of nearest-first)
+        result = []
+        for aid in reversed(ancestor_ids):
+            if aid in entities_by_id:
+                result.append(entities_by_id[aid])
+        return result
 
     @staticmethod
     def count_children(db: Session, artist_id: int) -> int:

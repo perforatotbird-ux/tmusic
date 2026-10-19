@@ -48,6 +48,7 @@ import {
   HardDrive,
   Pencil,
   Check,
+  ChevronRight,
 } from 'lucide-react'
 import { useOfflineStore } from '../store/offlineStore'
 import { useSearchStore } from '../store/searchStore'
@@ -167,13 +168,13 @@ const CACHED_KIND = 'cached'
 const SECTIONS = [
   { id: 'artist', label: 'Исполнители', icon: Users, isAlbum: false },
   { id: 'albums', label: 'Альбомы', icon: Disc, isAlbum: true },
-  { id: 'compilation', label: 'Сборники', icon: Layers, isAlbum: true },
+  { id: 'compilation', label: 'Сборники', icon: Layers, isAlbum: false },
   { id: FAVORITES_KIND, label: 'Любимые', icon: Star, isAlbum: true },
   // The cache is browsed as Artist → Album → Track, so this view shows artist
   // cards even though every real card in it is a release.
   { id: CACHED_KIND, label: 'В кэше', icon: HardDrive, isAlbum: false },
   { id: 'standalone_album', label: 'Отдельные релизы', icon: Disc, isAlbum: true },
-  { id: 'genre_collection', label: 'Коллекции', icon: FolderHeart, isAlbum: true },
+  { id: 'genre_collection', label: 'Коллекции', icon: FolderHeart, isAlbum: false },
   { id: 'all', label: 'Все категории', icon: Layers, isAlbum: false },
 ]
 
@@ -707,6 +708,11 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   }
 
   const handlePlayAlbum = async (album, artist = null) => {
+    // Safety guard: if this card is a compilation or has child folders, open it as an artist/container
+    if (album.children_count > 0 || album.kind === 'compilation' || album.kind === 'genre_collection') {
+      await openArtist(album.id)
+      return
+    }
     if (album.is_favorites) {
       const tracks = favoriteTracks.map(favoriteToTrack)
       if (tracks.length > 0) playQueue(tracks, 0, FAVORITES_RELEASE)
@@ -727,7 +733,8 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     if (playBusyId) return
     setPlayBusyId(album.id)
     try {
-      const tracks = await streamApi.getFolderTracks(album.folder_id, !album.is_tracks)
+      const recursive = album.is_tracks === false && !album.children_count && album.kind !== 'compilation'
+      const tracks = await streamApi.getFolderTracks(album.folder_id, recursive)
       if (tracks && tracks.length > 0) {
         const artistName = (artist && artist.display_name) || album.title || 'Альбом'
         const coverUrl = resolveCoverUrl(album)
@@ -759,6 +766,11 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   // Cover tap → open the fullscreen player with the album loaded but NOT
   // playing (Spotify-style: the bar's play or the queue's item starts audio).
   const openAlbum = async (album, artist = null) => {
+    // Safety guard: if this card is a compilation or has child folders, open it as an artist/container
+    if (album.children_count > 0 || album.kind === 'compilation' || album.kind === 'genre_collection') {
+      await openArtist(album.id)
+      return
+    }
     if (album.is_favorites) {
       const tracks = favoriteTracks.map(favoriteToTrack)
       if (tracks.length === 0) return
@@ -773,7 +785,8 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       return
     }
     try {
-      const tracks = await streamApi.getFolderTracks(album.folder_id, !album.is_tracks)
+      const recursive = album.is_tracks === false && !album.children_count && album.kind !== 'compilation'
+      const tracks = await streamApi.getFolderTracks(album.folder_id, recursive)
       if (!tracks || tracks.length === 0) return
       const artistName = (artist && artist.display_name) || album.title || 'Альбом'
       const coverUrl = resolveCoverUrl(album)
@@ -940,6 +953,16 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   // ─── End admin card curation ─────────────────────────────────────────────
 
   const handlePlayAllArtist = async (artist) => {
+    // If the card has children or is a compilation, do not fetch thousands of tracks recursively
+    if (
+      artist?.children_count > 0 ||
+      (artist?.children && artist.children.length > 0) ||
+      artist?.kind === 'compilation' ||
+      artist?.kind === 'genre_collection'
+    ) {
+      usePlayerStore.getState().pushNotice({ kind: 'info', text: 'Для сборников откройте конкретную папку для воспроизведения.' })
+      return
+    }
     // «В кэше» artist: every cached track of the group, no server round-trip.
     if (artist?.is_cached_group) {
       const group = cachedGroupById.get(artist.id)
@@ -1004,19 +1027,118 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         }
       : {}
 
+  const isLeafCard = (artist) =>
+    (artist?.children_count === 0 || !artist?.children_count) &&
+    artist?.kind !== 'compilation' &&
+    artist?.kind !== 'genre_collection' &&
+    Boolean(artist?.parent_id)
+
+  const handleArtistCardClick = async (artist) => {
+    if (
+      artist?.children_count > 0 ||
+      artist?.kind === 'compilation' ||
+      artist?.kind === 'genre_collection'
+    ) {
+      await openArtist(artist.id)
+      return
+    }
+
+    if (artist?.folder_id && isLeafCard(artist)) {
+      await openLeafCard(artist, selectedArtist)
+      return
+    }
+
+    await openArtist(artist.id)
+  }
+
+  const openLeafCard = async (artist, parentArtist = null) => {
+    if (playBusyId) return
+    setPlayBusyId(artist.id)
+    try {
+      const tracks = await streamApi.getFolderTracks(artist.folder_id, false)
+      if (!tracks || tracks.length === 0) {
+        usePlayerStore.getState().pushNotice({ kind: 'info', text: 'В этой папке нет аудиофайлов.' })
+        return
+      }
+      const parentName = (parentArtist && parentArtist.display_name) || artist.parent_name
+      const artistName = parentName || artist.display_name
+      const coverUrl = resolveCoverUrl(artist)
+      const queueTracks = withReleaseMeta(tracks, {
+        artist: artist.display_name || artistName,
+        album: artist.display_name,
+        coverUrl: resolveCoverUrl(artist, null),
+      })
+      prepareQueue(queueTracks, 0, {
+        title: artist.display_name,
+        artistName,
+        coverUrl,
+      })
+      setPlayerExpanded(true)
+    } catch (e) {
+      console.error('Failed to load tracks for leaf card:', e)
+      usePlayerStore.getState().pushNotice({ kind: 'warn', text: 'Не удалось загрузить файлы папки в плейлист.' })
+    } finally {
+      setPlayBusyId(null)
+    }
+  }
+
+  const handlePlayLeafCard = async (artist, parentArtist = null) => {
+    if (playBusyId) return
+    setPlayBusyId(artist.id)
+    try {
+      const tracks = await streamApi.getFolderTracks(artist.folder_id, false)
+      if (!tracks || tracks.length === 0) {
+        usePlayerStore.getState().pushNotice({ kind: 'info', text: 'В этой папке нет аудиофайлов.' })
+        return
+      }
+      const parentName = (parentArtist && parentArtist.display_name) || artist.parent_name
+      const artistName = parentName || artist.display_name
+      const coverUrl = resolveCoverUrl(artist)
+      const queueTracks = withReleaseMeta(tracks, {
+        artist: artist.display_name || artistName,
+        album: artist.display_name,
+        coverUrl: resolveCoverUrl(artist, null),
+      })
+      playQueue(queueTracks, 0, {
+        title: artist.display_name,
+        artistName,
+        coverUrl,
+      })
+    } catch (e) {
+      console.error('Failed to play tracks for leaf card:', e)
+      usePlayerStore.getState().pushNotice({ kind: 'warn', text: 'Не удалось воспроизвести файлы папки.' })
+    } finally {
+      setPlayBusyId(null)
+    }
+  }
+
   const renderArtistCard = (artist) => {
     const cover = resolveCoverUrl(artist, null)
     const isDragging = dragItem?.type === 'artist' && dragItem.id === artist.id
     const isDropTarget = dropKey === `artist:${artist.id}`
-    const subParts = [
-      `${artist.album_count} ${artist.album_count === 1 ? 'релиз' : 'релизов'}`,
-      ...(artist.parent_id ? [`↳ ${artist.parent_name || 'вложено'}`] : []),
-      ...(artist.children_count > 0 ? [`+${artist.children_count} влож.`] : []),
-    ]
+    const isLeaf = isLeafCard(artist)
+    const isNowPlaying =
+      isLeaf &&
+      !!currentTrack &&
+      !!currentRelease &&
+      currentRelease.title === artist.display_name
+
+    const subParts = []
+    if (artist.children_count > 0) {
+      subParts.push(`${artist.children_count} ${artist.children_count === 1 ? 'папка' : artist.children_count < 5 ? 'папки' : 'папок'}`)
+    } else if (artist.album_count > 0) {
+      subParts.push(`${artist.album_count} ${artist.album_count === 1 ? 'релиз' : 'релизов'}`)
+    } else if (isLeaf) {
+      subParts.push('Треки')
+    }
+    if (artist.parent_id && artist.parent_name) {
+      subParts.push(`↳ ${artist.parent_name}`)
+    }
+
     return (
       <ClickableRow
         key={artist.id}
-        onClick={() => openArtist(artist.id)}
+        onClick={() => handleArtistCardClick(artist)}
         className="tmusic-artist-card"
         {...artistCardDnd(artist)}
         style={{
@@ -1024,7 +1146,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
             ? { outline: '2px dashed var(--accent)', outlineOffset: '3px', borderRadius: '14px' }
             : {}),
           opacity: isDragging ? 0.45 : 1,
-          cursor: isAdmin ? 'grab' : undefined,
+          cursor: isLeaf ? 'pointer' : isAdmin ? 'grab' : undefined,
         }}
       >
         <div className="tmusic-artist-card-avatar-wrap" style={{ position: 'relative' }}>
@@ -1035,6 +1157,31 @@ export function MusicLibrary({ onOpenCoverPicker }) {
             size="100%"
             className="tmusic-artist-card-avatar"
           />
+          {isNowPlaying && (
+            <span className={`tmusic-card-eq ${isPlaying ? '' : 'paused'}`} title="Сейчас играет">
+              <i />
+              <i />
+              <i />
+            </span>
+          )}
+          {isLeaf && (
+            <button
+              className="tmusic-card-play-btn"
+              onClick={(e) => {
+                e.stopPropagation()
+                handlePlayLeafCard(artist, selectedArtist)
+              }}
+              disabled={playBusyId === artist.id}
+              aria-busy={playBusyId === artist.id || undefined}
+              aria-label={`Воспроизвести ${artist.display_name}`}
+            >
+              {playBusyId === artist.id ? (
+                <Loader2 size={18} className="animate-spin" />
+              ) : (
+                <Play size={20} fill="var(--bg)" style={{ marginLeft: '2px' }} />
+              )}
+            </button>
+          )}
           {isAdmin && artist.parent_id && (
             <button
               onClick={(e) => {
@@ -1408,23 +1555,93 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         {selectedArtist ? (
           /* ─── Artist Detail View ─────────────────────────────────────────── */
           <div>
-            <button
-              onClick={() => setSelectedArtist(null)}
+            <div
               style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--accent)',
-                fontSize: '13.5px',
-                fontWeight: '700',
-                cursor: 'pointer',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '6px',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: '12px',
                 marginBottom: '20px',
               }}
             >
-              <ArrowLeft size={16} /> Назад к каталогу
-            </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedArtist.parent_id) {
+                    openArtist(selectedArtist.parent_id)
+                  } else {
+                    setSelectedArtist(null)
+                  }
+                }}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--accent)',
+                  fontSize: '13.5px',
+                  fontWeight: '700',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: 0,
+                }}
+              >
+                <ArrowLeft size={16} />
+                {selectedArtist.parent_name ? `Назад к «${selectedArtist.parent_name}»` : 'Назад к каталогу'}
+              </button>
+
+              {/* Breadcrumb trail */}
+              <nav
+                aria-label="Навигация по каталогу"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: '13px',
+                  color: 'var(--dim)',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => setSelectedArtist(null)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    color: 'var(--accent)',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    fontWeight: '600',
+                  }}
+                >
+                  Каталог
+                </button>
+                {(selectedArtist.breadcrumbs || []).map((crumb) => (
+                  <React.Fragment key={crumb.id}>
+                    <ChevronRight size={13} style={{ opacity: 0.6 }} />
+                    <button
+                      type="button"
+                      onClick={() => openArtist(crumb.id)}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        padding: 0,
+                        color: 'var(--accent)',
+                        cursor: 'pointer',
+                        fontSize: '13px',
+                        fontWeight: '600',
+                      }}
+                    >
+                      {crumb.display_name}
+                    </button>
+                  </React.Fragment>
+                ))}
+                <ChevronRight size={13} style={{ opacity: 0.6 }} />
+                <span style={{ color: 'var(--ink)', fontWeight: '700' }}>{selectedArtist.display_name}</span>
+              </nav>
+            </div>
 
             {/* Artist Header Banner */}
             <div className="tmusic-artist-header">
@@ -1585,45 +1802,53 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                     </div>
                   </div>
                 )}
-                <div className="tmusic-artist-actions">
-                  <button
-                    onClick={() => handlePlayAllArtist(selectedArtist)}
-                    style={{
-                      padding: '10px 20px',
-                      backgroundColor: 'var(--accent)',
-                      color: 'var(--on-accent)',
-                      border: 'none',
-                      borderRadius: '999px',
-                      fontWeight: '800',
-                      fontSize: '13px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <Play size={16} fill="currentColor" /> Слушать всё
-                  </button>
-                </div>
+                {(!selectedArtist.children || selectedArtist.children.length === 0) &&
+                  selectedArtist.kind !== 'compilation' &&
+                  selectedArtist.kind !== 'genre_collection' && (
+                  <div className="tmusic-artist-actions">
+                    <button
+                      onClick={() => handlePlayAllArtist(selectedArtist)}
+                      style={{
+                        padding: '10px 20px',
+                        backgroundColor: 'var(--accent)',
+                        color: 'var(--on-accent)',
+                        border: 'none',
+                        borderRadius: '999px',
+                        fontWeight: '800',
+                        fontSize: '13px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <Play size={16} fill="currentColor" /> Слушать всё
+                    </button>
+                  </div>
+                )}
               </div>
-            </div>
-
-            {/* Releases Grid */}
-            <h3 className="title-zine" style={{ fontSize: '18px', marginBottom: '16px' }}>
-              РЕЛИЗЫ И АЛЬБОМЫ ({(selectedArtist.albums || []).length})
-            </h3>
-            <div className="tmusic-grid-albums">
-              {(selectedArtist.albums || []).map((album) => renderAlbumCard(album, selectedArtist))}
             </div>
 
             {/* Nested cards (artists/collections dropped inside this one) */}
             {(selectedArtist.children || []).length > 0 && (
-              <>
-                <h3 className="title-zine" style={{ fontSize: '18px', margin: '26px 0 16px' }}>
-                  ВНУТРИ ({selectedArtist.children.length})
+              <div style={{ marginBottom: (selectedArtist.albums || []).length > 0 ? '28px' : '0' }}>
+                <h3 className="title-zine" style={{ fontSize: '18px', margin: '20px 0 16px' }}>
+                  {selectedArtist.kind === 'compilation' ? 'ИСПОЛНИТЕЛИ И ВЛОЖЕНИЯ' : 'ВНУТРИ'} ({selectedArtist.children.length})
                 </h3>
                 <div className="tmusic-grid-artists">
                   {selectedArtist.children.map((child) => renderArtistCard(child))}
+                </div>
+              </div>
+            )}
+
+            {/* Releases Grid — only shown when artist has releases */}
+            {(selectedArtist.albums || []).length > 0 && (
+              <>
+                <h3 className="title-zine" style={{ fontSize: '18px', marginBottom: '16px', marginTop: '16px' }}>
+                  РЕЛИЗЫ И АЛЬБОМЫ ({(selectedArtist.albums || []).length})
+                </h3>
+                <div className="tmusic-grid-albums">
+                  {(selectedArtist.albums || []).map((album) => renderAlbumCard(album, selectedArtist))}
                 </div>
               </>
             )}

@@ -267,7 +267,9 @@ input[type="range"].tm-scrub-input {
 /* Keyboard: without :focus-within the button (and its focus ring) stayed
    invisible when tabbed to — WCAG 2.4.7 / 1.4.11. */
 .tmusic-card:hover .tmusic-card-play-btn,
-.tmusic-card:focus-within .tmusic-card-play-btn {
+.tmusic-card:focus-within .tmusic-card-play-btn,
+.tmusic-artist-card:hover .tmusic-card-play-btn,
+.tmusic-artist-card:focus-within .tmusic-card-play-btn {
   opacity: 1;
   transform: translateY(0);
 }

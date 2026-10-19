@@ -29,6 +29,7 @@ MAX_UPLOAD_BYTES = MAX_IMAGE_BYTES + 1
 async def get_artists(
     kind: Optional[str] = Query(None, description="artist, compilation, standalone_album, genre_collection"),
     search: Optional[str] = Query(None, description="Search query"),
+    root_only: Optional[bool] = Query(None, description="Filter to root artists only (parent_id IS NULL)"),
     limit: int = Query(200, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -40,7 +41,11 @@ async def get_artists(
         kind = None
     if search in ("null", "undefined") or not (search or "").strip():
         search = None
-    return library_service.list_artists(db, kind=kind, search=search, limit=limit, offset=offset)
+    if root_only is None and not search:
+        root_only = True
+    return library_service.list_artists(
+        db, kind=kind, search=search, root_only=root_only, limit=limit, offset=offset
+    )
 
 
 @router.get("/albums", response_model=List[MusicAlbumCard])

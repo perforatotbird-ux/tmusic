@@ -75,3 +75,5 @@ backend/app/utils/ffmpeg/*.exe
 
 # Agent workspace data (local only — not project source)
 .workbuddy-ai/
+photo_a_analysis/
+*.htm

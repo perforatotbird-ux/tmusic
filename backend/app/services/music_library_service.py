@@ -26,7 +26,7 @@ from app.repositories.catalog_repository import CatalogRepository
 from app.repositories.file_repository import FileRepository
 from app.repositories.folder_repository import FolderRepository
 from app.schemas.library import (
-    MusicArtistCard, MusicAlbumCard, MusicArtistDetail, LibraryStats
+    MusicArtistCard, MusicAlbumCard, MusicArtistDetail, LibraryStats, BreadcrumbItem
 )
 from app.services.cover_cache_service import cover_cache
 from app.utils.time import utcnow
@@ -72,10 +72,13 @@ class MusicLibraryService:
         db: Session,
         kind: Optional[str] = None,
         search: Optional[str] = None,
+        root_only: Optional[bool] = None,
         limit: int = 200,
         offset: int = 0
     ) -> List[MusicArtistCard]:
-        artists = ArtistRepository.list_artists(db, kind=kind, search=search, limit=limit, offset=offset)
+        artists = ArtistRepository.list_artists(
+            db, kind=kind, search=search, root_only=root_only, limit=limit, offset=offset
+        )
         result = []
         for a, album_count, parent_name, children_count in artists:
             img_url, custom_url = cls._cover_pair(a.image_url, a.custom_image_key, a.enriched_at)
@@ -189,19 +192,25 @@ class MusicLibraryService:
                 image_url=cls._cover_pair(child.image_url, child.custom_image_key, child.enriched_at)[0],
                 custom_image_url=cls._build_custom_cover_url(child.custom_image_key),
                 confidence=child.confidence,
-                album_count=0,
+                album_count=child_album_count,
                 parent_id=artist.id,
-                parent_name=artist.display_name,
-                children_count=0,
+                parent_name=child_parent_name or artist.display_name,
+                children_count=child_children_count,
                 enriched_at=child.enriched_at,
             )
-            for child in ArtistRepository.list_children(db, artist.id)
+            for child, child_album_count, child_parent_name, child_children_count in ArtistRepository.list_children(db, artist.id)
         ]
 
         parent_name = None
         if artist.parent_id:
             parent = ArtistRepository.get_by_id(db, artist.parent_id)
             parent_name = parent.display_name if parent else None
+
+        ancestors = ArtistRepository.get_ancestors(db, artist.id)
+        breadcrumbs = [
+            BreadcrumbItem(id=anc.id, display_name=anc.display_name, kind=anc.kind)
+            for anc in ancestors
+        ]
 
         return MusicArtistDetail(
             id=artist.id,
@@ -220,7 +229,8 @@ class MusicLibraryService:
             parent_name=parent_name,
             enriched_at=artist.enriched_at,
             albums=album_cards,
-            children=child_cards
+            children=child_cards,
+            breadcrumbs=breadcrumbs,
         )
 
     @classmethod
@@ -469,5 +479,114 @@ class CatalogAdminService:
             db.refresh(album)
         return album
 
+    @classmethod
+    def sync_catalog_folder_tree(
+        cls,
+        db: Session,
+        root_folder_id: int,
+        catalog_kind: str = "compilation",
+    ) -> dict:
+        """Recursively synchronizes an arbitrary nested folder tree into catalog artists and albums.
+
+        Containers with subfolders become compilations (MusicArtist with kind='compilation').
+        Leaf folders with audio become artists (MusicArtist with kind='artist') and albums.
+        Ghost/empty album records under containers are cleaned up.
+        """
+        from app.models.vfs import Folder, VFile
+        from sqlalchemy import select, func
+
+        stats = {
+            "created_artists": 0,
+            "updated_artists": 0,
+            "created_albums": 0,
+            "deleted_empty_albums": 0,
+        }
+
+        root_folder = FolderRepository.get(db, root_folder_id)
+        if not root_folder or root_folder.is_trash:
+            raise HTTPException(status_code=404, detail="Root folder not found.")
+
+        def _sync_node(folder: Folder, parent_artist_id: Optional[int], depth: int = 0):
+            subfolders = db.execute(
+                select(Folder).where(Folder.parent_id == folder.id, Folder.is_trash == False)
+            ).scalars().all()
+            audio_count = db.execute(
+                select(func.count(VFile.id)).where(VFile.folder_id == folder.id, VFile.is_trash == False)
+            ).scalar() or 0
+
+            # Ignore empty folders with no subfolders and no audio
+            if not subfolders and audio_count == 0:
+                return
+
+            artist = db.execute(
+                select(MusicArtist).where(MusicArtist.folder_id == folder.id)
+            ).scalars().first()
+
+            is_compilation = len(subfolders) > 0
+            if depth == 0:
+                kind = catalog_kind if catalog_kind in cls.VALID_KINDS else "compilation"
+            else:
+                kind = "compilation" if is_compilation else "artist"
+
+            if not artist:
+                artist = MusicArtist(
+                    folder_id=folder.id,
+                    kind=kind,
+                    parent_id=parent_artist_id,
+                    display_name=folder.name,
+                    search_name=folder.name.casefold(),
+                    confidence=100,
+                    locked=True,
+                    created_at=utcnow(),
+                    updated_at=utcnow(),
+                )
+                db.add(artist)
+                db.flush()
+                stats["created_artists"] += 1
+            else:
+                changed = False
+                if artist.kind != kind:
+                    artist.kind = kind
+                    changed = True
+                if artist.parent_id != parent_artist_id:
+                    artist.parent_id = parent_artist_id
+                    changed = True
+                if changed:
+                    artist.updated_at = utcnow()
+                    stats["updated_artists"] += 1
+
+            album = db.execute(
+                select(MusicAlbum).where(MusicAlbum.folder_id == folder.id)
+            ).scalars().first()
+
+            if audio_count > 0:
+                if not album:
+                    album = MusicAlbum(
+                        folder_id=folder.id,
+                        artist_id=artist.id,
+                        title=folder.name,
+                        confidence=100,
+                        created_at=utcnow(),
+                        updated_at=utcnow(),
+                    )
+                    db.add(album)
+                    stats["created_albums"] += 1
+                else:
+                    if album.artist_id != artist.id:
+                        album.artist_id = artist.id
+                        album.updated_at = utcnow()
+            else:
+                if album:
+                    db.delete(album)
+                    stats["deleted_empty_albums"] += 1
+
+            for sf in subfolders:
+                _sync_node(sf, artist.id, depth + 1)
+
+        _sync_node(root_folder, None, 0)
+        db.commit()
+        return stats
+
 
 library_service = MusicLibraryService()
+

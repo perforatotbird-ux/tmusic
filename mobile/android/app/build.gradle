@@ -17,6 +17,7 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 3
         versionName "1.2"
+        manifestPlaceholders = [usesCleartextTraffic: "false"]
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -37,7 +38,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            manifestPlaceholders = [usesCleartextTraffic: "true"]
+        }
         release {
+            manifestPlaceholders = [usesCleartextTraffic: "false"]
             if (keystorePropertiesFile.exists()) {
                 signingConfig signingConfigs.release
             }

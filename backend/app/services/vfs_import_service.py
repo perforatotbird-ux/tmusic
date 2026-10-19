@@ -1832,6 +1832,7 @@ def _sync_catalog_for_imported_tree(
         logger.debug("Catalog table inspection failed; skipping catalog sync", exc_info=True)
         return
 
+    top_level_target_ids = []
     for staged_id, target_id in folder_mapping.items():
         if target_id is None:
             continue
@@ -1847,102 +1848,15 @@ def _sync_catalog_for_imported_tree(
         mapped_parent_id = folder_mapping.get(staged_parent_id) if staged_parent_id else None
 
         is_top_level = (mapped_parent_id is None) or (target_folder.parent_id == target_root_id)
-
         if is_top_level:
-            imported_children_fids = [
-                folder_mapping[sub_id]
-                for sub_id, sf in staged_folders.items()
-                if sf.get("parent_id") == staged_id and folder_mapping.get(sub_id) is not None
-            ]
+            top_level_target_ids.append(target_folder.id)
 
-            if imported_children_fids:
-                artist = ArtistRepository.get_by_folder_id(db, target_folder.id)
-                if not artist:
-                    kind = catalog_kind if catalog_kind in ("compilation", "artist", "genre_collection") else "compilation"
-                    artist = MusicArtist(
-                        folder_id=target_folder.id,
-                        kind=kind,
-                        display_name=target_folder.name,
-                        search_name=target_folder.name.casefold(),
-                        confidence=100,
-                        locked=True,
-                        created_at=utcnow(),
-                        updated_at=utcnow(),
-                    )
-                    db.add(artist)
-                    db.flush()
-
-                # Batch-load children + their albums once instead of two queries
-                # per child folder (was N+1).
-                children_by_id = {
-                    f.id: f for f in FolderRepository.list_by_ids(db, imported_children_fids)
-                } if imported_children_fids else {}
-                albums_by_folder = {
-                    a.folder_id: a for a in AlbumRepository.list_by_folder_ids(db, imported_children_fids)
-                } if imported_children_fids else {}
-                for child_fid in imported_children_fids:
-                    child_folder = children_by_id.get(child_fid)
-                    if not child_folder or child_folder.is_trash:
-                        continue
-                    album = albums_by_folder.get(child_folder.id)
-                    if not album:
-                        album = MusicAlbum(
-                            folder_id=child_folder.id,
-                            artist_id=artist.id,
-                            title=child_folder.name,
-                            confidence=100,
-                            created_at=utcnow(),
-                            updated_at=utcnow(),
-                        )
-                        db.add(album)
-                        albums_by_folder[child_folder.id] = album
-            else:
-                audio_count = FileRepository.count_audio_in_folder(db, target_folder.id)
-
-                if audio_count > 0:
-                    parent_artist = None
-                    if target_root_id:
-                        parent_artist = ArtistRepository.get_by_folder_id(db, target_root_id)
-
-                    if parent_artist:
-                        album = AlbumRepository.get_by_folder_id(db, target_folder.id)
-                        if not album:
-                            album = MusicAlbum(
-                                folder_id=target_folder.id,
-                                artist_id=parent_artist.id,
-                                title=target_folder.name,
-                                confidence=100,
-                                created_at=utcnow(),
-                                updated_at=utcnow(),
-                            )
-                            db.add(album)
-                    else:
-                        artist = ArtistRepository.get_by_folder_id(db, target_folder.id)
-                        if not artist:
-                            artist = MusicArtist(
-                                folder_id=target_folder.id,
-                                kind="standalone_album",
-                                display_name=target_folder.name,
-                                search_name=target_folder.name.casefold(),
-                                confidence=100,
-                                locked=True,
-                                created_at=utcnow(),
-                                updated_at=utcnow(),
-                            )
-                            db.add(artist)
-                            db.flush()
-
-                        album = AlbumRepository.get_by_folder_id(db, target_folder.id)
-                        if not album:
-                            album = MusicAlbum(
-                                folder_id=target_folder.id,
-                                artist_id=artist.id,
-                                title=target_folder.name,
-                                confidence=100,
-                                created_at=utcnow(),
-                                updated_at=utcnow(),
-                            )
-                            db.add(album)
+    from app.services.music_library_service import CatalogAdminService
+    for tf_id in top_level_target_ids:
+        try:
+            CatalogAdminService.sync_catalog_folder_tree(db, tf_id, catalog_kind=catalog_kind)
+        except Exception:
+            logger.warning("Recursive catalog sync failed for folder %s", tf_id, exc_info=True)
 
     db.flush()
 

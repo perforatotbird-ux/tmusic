@@ -15,6 +15,7 @@ Prefix: `/api/library` · Router: `backend/app/api/library_router.py` · Service
 |-------|---------|----------|
 | kind | — | `artist` / `compilation` / `standalone_album` / `genre_collection` |
 | search | — | Поиск по display/search name |
+| root_only | — | `true` — только корневые (`parent_id IS NULL`). По умолчанию `true`, если нет `search`, и `false`, если ведётся поиск |
 | limit | 200 | 1–500 |
 | offset | 0 | Пагинация |
 
@@ -30,7 +31,18 @@ Prefix: `/api/library` · Router: `backend/app/api/library_router.py` · Service
 → `MusicAlbumCard[]`
 
 ### GET `/api/library/artists/{artist_id}`
-→ `MusicArtistDetail` — карточка артиста, альбомы, треки, bio.
+→ `MusicArtistDetail` — карточка артиста, альбомы, дочерние карточки (`children`), цепочка предков (`breadcrumbs: BreadcrumbItem[]`), bio.
+Для каждой дочерней карточки в `children` вычисляются реальные `children_count` (число прямых подпапок) и `album_count` через коррелированные подзапросы `ArtistRepository.list_children`.
+
+#### Иерархическая навигация по вложенным папкам и сборникам (Frontend & Backend):
+1. **Категории «Сборники» и «Коллекции»** отображаются как контейнеры артистов/папок (`isAlbum: false`), а не плоские альбомы.
+2. При клике на карточку с вложенными подпапками (`children_count > 0` или `kind in ('compilation', 'genre_collection')`) открывается уровень вложенных карточек (`openArtist(id)`). Никакие треки в плейлист рекурсивно не загружаются.
+3. При клике на листовую карточку (`children_count == 0`, без подпапок) подгружаются аудиофайлы именно этой конкретной папки (`streamApi.getFolderTracks(folder_id, false)`) в плейлист плеера (`prepareQueue` / `playQueue`).
+4. На промежуточных сборниках с вложениями кнопка «Слушать всё» скрыта, а функции `openAlbum`, `handlePlayAlbum`, `handlePlayAllArtist` снабжены защитными guards, предотвращающими рекурсивный запрос десятков тысяч треков.
+
+### POST `/api/admin/catalog/sync-folder/{folder_id}`
+Админ-эндпоинт рекурсивной синхронизации произвольного вложенного дерева папок VFS в каталог (`CatalogAdminService.sync_catalog_folder_tree`).
+Папки с подпапками становятся `kind="compilation"`, листовые папки с аудиофайлами — `kind="artist"` с привязанным `MusicAlbum`.
 
 ### GET `/api/library/stats`
 → `LibraryStats` — агрегаты каталога.

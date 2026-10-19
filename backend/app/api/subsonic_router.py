@@ -21,6 +21,7 @@ from app.models.auth import AppUser
 from app.models.playlist import Playlist
 from app.repositories.file_repository import FileRepository
 from app.services import lastfm_service, lyrics_service, subsonic_auth
+from app.utils.client_ip import get_client_ip
 from app.services.subsonic_service import (
     album_by_id,
     album_for_track,
@@ -65,19 +66,21 @@ def _wants_xml(f: Optional[str]) -> bool:
 
 
 def _http_auth_user(
-    request: Request,
+    request: Optional[Request],
     db: Session,
     u: Optional[str],
     p: Optional[str],
     t: Optional[str],
     s: Optional[str],
 ) -> Optional[AppUser]:
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
     return subsonic_auth.authenticate_subsonic(
         db,
         username=u,
         password=p,
         token=t,
         salt=s,
+        client_ip=client_ip,
     )
 
 

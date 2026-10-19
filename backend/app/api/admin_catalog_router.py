@@ -75,6 +75,7 @@ class AlbumUpdate(BaseModel):
 async def catalog_artists(
     kind: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    root_only: Optional[bool] = Query(None),
     limit: int = Query(200, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -84,7 +85,20 @@ async def catalog_artists(
         kind = None
     if search in ("null", "undefined") or not (search or "").strip():
         search = None
-    return library_service.list_artists(db, kind=kind, search=search, limit=limit, offset=offset)
+    return library_service.list_artists(
+        db, kind=kind, search=search, root_only=root_only, limit=limit, offset=offset
+    )
+
+
+@router.post("/sync-folder/{folder_id}")
+async def catalog_sync_folder(
+    folder_id: int,
+    catalog_kind: str = Query("compilation"),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_catalog_user),
+):
+    """Recursively synchronize an arbitrary nested folder tree into catalog artists and albums."""
+    return CatalogAdminService.sync_catalog_folder_tree(db, folder_id, catalog_kind=catalog_kind)
 
 
 @router.patch("/artists/{artist_id}", response_model=MusicArtistCard)

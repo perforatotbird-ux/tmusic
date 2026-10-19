@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.rate_limiter import limiter
 from app.core.security import hash_password, verify_password
 from app.core.user_cache import get_attached_user, invalidate_user
 from app.models.auth import AppUser
@@ -83,18 +84,22 @@ def ensure_subsonic_token(db: Session, user: AppUser, *, rotate: bool = False) -
     return token
 
 
-def _record_failure(db: Session, user: AppUser) -> None:
-    user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
-    if user.failed_login_attempts >= settings.MAX_FAILED_LOGIN_ATTEMPTS:
-        user.locked_until = utcnow() + timedelta(minutes=settings.LOCKOUT_MINUTES)
-        logger.warning("Subsonic account locked: user=%r", user.username)
-    db.commit()
+def _record_failure(client_ip: Optional[str] = None, username: Optional[str] = None, *args, **kwargs) -> None:
+    # Retain compatibility if legacy (db, user) positional args are passed
+    target_ip = client_ip if isinstance(client_ip, str) else kwargs.get("client_ip")
+    if target_ip:
+        limiter.record_failure(
+            f"subsonic_{target_ip}",
+            max_attempts=settings.MAX_FAILED_LOGIN_ATTEMPTS,
+            lockout_seconds=settings.LOCKOUT_MINUTES * 60,
+        )
+    logger.warning("Subsonic auth failure: ip=%s user=%r", target_ip, username)
 
 
-def _record_success(db: Session, user: AppUser) -> None:
-    user.failed_login_attempts = 0
-    user.locked_until = None
-    db.commit()
+def _record_success(client_ip: Optional[str] = None, username: Optional[str] = None, *args, **kwargs) -> None:
+    target_ip = client_ip if isinstance(client_ip, str) else kwargs.get("client_ip")
+    if target_ip:
+        limiter.record_success(f"subsonic_{target_ip}")
 
 
 def authenticate_subsonic(
@@ -103,21 +108,33 @@ def authenticate_subsonic(
     password: Optional[str],
     token: Optional[str],
     salt: Optional[str],
+    client_ip: Optional[str] = None,
 ) -> Optional[AppUser]:
     """Authenticate a Subsonic client against the DEDICATED token only.
 
     The panel bcrypt password is deliberately NOT accepted here anymore:
     it used to travel in the query string (`p=<panel password>`), which leaks
     the main account credential into proxy logs and browser history.
+
+    Failed attempts are tracked by client IP via rate_limiter and do NOT
+    lock the web user account (mitigating SEC-002 unauthenticated DoS).
     """
+    if client_ip:
+        locked, _ = limiter.is_locked_out(f"subsonic_{client_ip}")
+        if locked:
+            logger.warning("Subsonic request from locked-out IP: %s", client_ip)
+            return None
+
     if not username:
         return None
     user = db.scalar(select(AppUser).where(AppUser.username == username))
     if not user or not user.is_active:
         verify_password(password or "x", _DUMMY_HASH)
+        _record_failure(client_ip=client_ip, username=username)
         return None
     if user.locked_until and user.locked_until > utcnow():
         verify_password(password or "x", _DUMMY_HASH)
+        _record_failure(client_ip=client_ip, username=username)
         return None
 
     authenticated = False
@@ -132,7 +149,7 @@ def authenticate_subsonic(
         authenticated = hmac.compare_digest(token.lower(), expected.lower())
 
     if authenticated:
-        _record_success(db, user)
+        _record_success(client_ip=client_ip, username=username)
         return user
-    _record_failure(db, user)
+    _record_failure(client_ip=client_ip, username=username)
     return None
