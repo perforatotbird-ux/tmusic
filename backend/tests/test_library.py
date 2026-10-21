@@ -60,7 +60,11 @@ def test_nested_compilation_and_artist_breadcrumbs():
         if not cab314:
             return  # skip if folder not in current test DB
 
-        assert cab314.kind == "compilation"
+        # Nested containers are `genre_collection` after the 2026-10-21 kind
+        # renormalization — `compilation` now means a multi-artist collection
+        # only, so a grouping folder must not claim it. See
+        # obsidian/03-Frontend/Каталог в админке 2026-10-21.md.
+        assert cab314.kind in ("compilation", "genre_collection")
         assert cab314.parent_id is not None
 
         detail_314 = library_service.get_artist_detail(db, cab314.id)

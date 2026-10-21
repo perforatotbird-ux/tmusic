@@ -7,6 +7,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.api.dependencies import get_current_user
 from app.core.database import get_db
@@ -63,9 +64,9 @@ async def folder_children(
         raise HTTPException(status_code=404, detail="Folder not found.")
     subfolders = vfs_service.list_children(db, folder_id)
     tracks_vf = stream_service.list_folder_tracks(db, folder_id, recursive=False, limit=500)
-    tracks = stream_service.build_track_responses(db, tracks_vf)
+    tracks = await run_in_threadpool(stream_service.build_track_responses, db, tracks_vf)
     # 2026-10-16: открытие папки не ждёт транскодинг — нужные форматы уходят в фон.
-    transcoding_service.prefetch_collection(tracks_vf, requester_user_id=user.id)
+    await run_in_threadpool(transcoding_service.prefetch_collection, tracks_vf, requester_user_id=user.id)
     return {
         "folder": vfs_service.folder_payload(db, folder, folder.parent_id),
         "subfolders": [vfs_service.folder_payload(db, f, folder_id) for f in subfolders],
@@ -85,7 +86,7 @@ async def folder_tracks_recursive(
     if not folder or folder.is_trash:
         raise HTTPException(status_code=404, detail="Folder not found.")
     vfiles = stream_service.list_folder_tracks(db, folder_id, recursive=recursive, limit=2000)
-    responses = stream_service.build_track_responses(db, vfiles)
+    responses = await run_in_threadpool(stream_service.build_track_responses, db, vfiles)
     # 2026-10-16: клик «играть» не должен ждать первый транскод — он уже в фоне.
-    transcoding_service.prefetch_collection(vfiles, requester_user_id=user.id)
+    await run_in_threadpool(transcoding_service.prefetch_collection, vfiles, requester_user_id=user.id)
     return responses

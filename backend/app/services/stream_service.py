@@ -162,7 +162,9 @@ class StreamService:
     async def resolve_representation(self, track, *, require_transcoded=False) -> StreamRepresentation:
         from app.services.transcoding_service import transcoding_service
         if needs_transcoding(track.name, track.mime_type):
-            result = transcoding_service.get_result(track.id)
+            # get_result may rebuild the manifest index (directory scan + JSON);
+            # keep that off the event loop so audio chunks keep flowing.
+            result = await run_in_threadpool(transcoding_service.get_result, track.id)
             if result and result.get("cached_path"):
                 path = Path(result["cached_path"])
                 try:
@@ -181,7 +183,7 @@ class StreamService:
         if representation.size <= 0:
             raise HTTPException(status_code=400, detail="Audio file has invalid size.")
         if representation.cached_path is None and on_original is not None:
-            on_original()
+            await run_in_threadpool(on_original)
         range_header = request.headers.get("Range")
         valid_range = bool(range_header and re.fullmatch(r"bytes=(?:[0-9]+-[0-9]*|-[0-9]+)", range_header.strip()))
         if valid_range and range_header.strip() == "bytes=-0":

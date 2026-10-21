@@ -15,6 +15,8 @@ backward-compatible explicit fetch, but cards must not emit it.
 """
 from typing import Optional, List
 from datetime import datetime
+import logging
+
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
@@ -30,6 +32,8 @@ from app.schemas.library import (
 )
 from app.services.cover_cache_service import cover_cache
 from app.utils.time import utcnow
+
+logger = logging.getLogger("tmusic.library")
 
 
 class MusicLibraryService:
@@ -73,11 +77,18 @@ class MusicLibraryService:
         kind: Optional[str] = None,
         search: Optional[str] = None,
         root_only: Optional[bool] = None,
+        parent_id: Optional[int] = None,
         limit: int = 200,
         offset: int = 0
     ) -> List[MusicArtistCard]:
         artists = ArtistRepository.list_artists(
-            db, kind=kind, search=search, root_only=root_only, limit=limit, offset=offset
+            db,
+            kind=kind,
+            search=search,
+            root_only=root_only,
+            parent_id=parent_id,
+            limit=limit,
+            offset=offset,
         )
         result = []
         for a, album_count, parent_name, children_count in artists:
@@ -395,36 +406,65 @@ class CatalogAdminService:
         return artist
 
     @staticmethod
-    def delete_artist(db: Session, artist_id: int) -> dict:
-        """Delete an artist/collection entry. Refuses when albums or files remain."""
+    def _deletion_blocker(db: Session, artist) -> Optional[dict]:
+        """Why this card cannot be deleted *safely*, or None when it can.
+
+        Only the non-cascading path uses this: the admin deletes a card
+        entirely (albums included), so there is nothing to block it.
+        """
+        album_count = AlbumRepository.count_by_artist(db, artist.id)
+        if album_count:
+            return {
+                "code": "has_albums",
+                "detail": f"Cannot delete: {album_count} album(s) still belong here. Move them first.",
+            }
+        file_count = FileRepository.count_in_folder(db, artist.folder_id)
+        if file_count:
+            return {
+                "code": "has_files",
+                "detail": f"Cannot delete: {file_count} file(s) still reference this folder.",
+            }
+        return None
+
+    @staticmethod
+    def delete_artist(db: Session, artist_id: int, with_albums: bool = False) -> dict:
+        """Delete an artist/collection card.
+
+        `with_albums=False` keeps the old safe behaviour for programmatic
+        callers: refuse while albums or files remain. The admin deletes with
+        `with_albums=True` — the card goes entirely, its album rows go with it,
+        and the audio files stay in the VFS (their Telegram copies are never
+        touched, so a re-scan can bring the card back).
+        """
         artist = ArtistRepository.get_by_id(db, artist_id)
         if not artist:
             raise HTTPException(status_code=404, detail="Artist not found.")
 
         album_count = AlbumRepository.count_by_artist(db, artist.id)
-        if album_count:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot delete: {album_count} album(s) still belong here. Move them first.",
-            )
         file_count = FileRepository.count_in_folder(db, artist.folder_id)
-        if file_count:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot delete: {file_count} file(s) still reference this folder.",
-            )
+        if not with_albums:
+            blocker = CatalogAdminService._deletion_blocker(db, artist)
+            if blocker:
+                raise HTTPException(status_code=400, detail=blocker["detail"])
 
         folder_id = artist.folder_id
-        # Detach nested cards first: they are independent catalog entries and
-        # must survive the parent's deletion (never cascade into real artists).
+        # Albums are catalog metadata of the card, not separate objects: the
+        # `MusicArtist.albums` relationship cascades (delete-orphan) and the FK
+        # is ON DELETE CASCADE, so they go with the card. `album_count` is read
+        # before the delete purely for the report.
+        deleted_albums = album_count
+        # Detach nested cards: they are independent catalog entries and must
+        # survive the parent's deletion (never cascade into real artists).
         detached = ArtistRepository.detach_children(db, artist.id)
         db.delete(artist)
         db.flush()
-        # Remove the backing folder only if nothing else references it.
+        # Remove the backing folder only if nothing else references it — files
+        # keep their folder alive, and the file rows themselves are never deleted.
         still_used = (
             ArtistRepository.count_by_folder(db, folder_id)
             + AlbumRepository.count_by_folder(db, folder_id)
             + FolderRepository.count_children(db, folder_id)
+            + FileRepository.count_in_folder(db, folder_id)
         )
         if not still_used:
             FolderRepository.delete_closures_for(db, folder_id)
@@ -432,7 +472,52 @@ class CatalogAdminService:
             if folder:
                 FolderRepository.delete(db, folder)
         db.commit()
-        return {"ok": True, "id": artist_id, "detached_children": detached or 0}
+        return {
+            "ok": True,
+            "id": artist_id,
+            "detached_children": detached or 0,
+            "deleted_albums": deleted_albums,
+            "files_kept": file_count,
+        }
+
+    @classmethod
+    def delete_artists(cls, db: Session, artist_ids: List[int]) -> dict:
+        """Delete several cards entirely, reporting per-card outcome.
+
+        Every selected card goes, albums included — the admin asked for «удалить
+        целиком». Only a card that vanished or blew up is reported in `skipped`,
+        and it never aborts the rest. Each card commits on its own.
+        """
+        deleted: List[int] = []
+        skipped: List[dict] = []
+        deleted_albums = 0
+
+        for artist_id in artist_ids:
+            artist = ArtistRepository.get_by_id(db, artist_id)
+            if not artist:
+                skipped.append({"id": artist_id, "code": "not_found"})
+                continue
+            try:
+                result = cls.delete_artist(db, artist_id, with_albums=True)
+            except HTTPException as exc:
+                db.rollback()
+                skipped.append({"id": artist_id, "code": "refused", "detail": exc.detail})
+            except Exception:  # noqa: BLE001 — one bad card must not stop the batch
+                db.rollback()
+                logger.exception("Bulk catalog delete failed for card %s", artist_id)
+                skipped.append({"id": artist_id, "code": "error"})
+            else:
+                deleted.append(artist_id)
+                deleted_albums += result.get("deleted_albums", 0)
+
+        return {
+            "ok": True,
+            "deleted": deleted,
+            "skipped": skipped,
+            "deleted_count": len(deleted),
+            "skipped_count": len(skipped),
+            "deleted_albums": deleted_albums,
+        }
 
     @staticmethod
     def update_album(
@@ -480,17 +565,48 @@ class CatalogAdminService:
         return album
 
     @classmethod
+    def classify_node_kind(
+        cls,
+        depth: int,
+        has_direct_audio: bool,
+        has_child_audio: bool,
+        catalog_kind: str = "compilation",
+    ) -> str:
+        """Catalog kind for one folder node of a synchronized tree.
+
+        Folder *shape* must not decide the kind: in a discography tree
+        (Artist → «01.Albums» → album → «Covers») the album folder is a release,
+        yet «has subfolders» used to make it a `compilation` and «leaf with
+        audio» made it an `artist`. That is exactly how albums ended up in the
+        admin list labelled «Артист».
+
+        - depth 0 — the root of the tree, kind comes from the caller;
+        - a node holding audio itself, with no audio below it, IS a release
+          → `standalone_album`;
+        - anything else is a grouping folder (album group, box set, artist
+          folder) → `genre_collection`, never «Сборник»: `compilation` means a
+          multi-artist collection, which folder shape cannot prove.
+        """
+        if depth == 0:
+            return catalog_kind if catalog_kind in cls.VALID_KINDS else "compilation"
+        if has_direct_audio and not has_child_audio:
+            return "standalone_album"
+        return "genre_collection"
+
+    @classmethod
     def sync_catalog_folder_tree(
         cls,
         db: Session,
         root_folder_id: int,
         catalog_kind: str = "compilation",
+        commit: bool = True,
     ) -> dict:
         """Recursively synchronizes an arbitrary nested folder tree into catalog artists and albums.
 
-        Containers with subfolders become compilations (MusicArtist with kind='compilation').
-        Leaf folders with audio become artists (MusicArtist with kind='artist') and albums.
-        Ghost/empty album records under containers are cleaned up.
+        Containers with subfolders become grouping cards (`genre_collection`),
+        folders that hold audio themselves become releases (`standalone_album`).
+        The root node keeps `catalog_kind`. Ghost/empty album records under
+        containers are cleaned up. See `classify_node_kind` for the rule.
         """
         from app.models.vfs import Folder, VFile
         from sqlalchemy import select, func
@@ -510,8 +626,26 @@ class CatalogAdminService:
             subfolders = db.execute(
                 select(Folder).where(Folder.parent_id == folder.id, Folder.is_trash == False)
             ).scalars().all()
+            # Audio only: a folder of scans/covers must not count as a release.
             audio_count = db.execute(
-                select(func.count(VFile.id)).where(VFile.folder_id == folder.id, VFile.is_trash == False)
+                select(func.count(VFile.id)).where(
+                    VFile.folder_id == folder.id,
+                    VFile.is_trash == False,
+                    VFile.mime_type.like("audio/%"),
+                )
+            ).scalar() or 0
+            # Audio one level down tells a release folder apart from a grouping
+            # folder: «1987 - Дерьмонтин» holds the tracks, its «Covers» child
+            # does not; a box set holds nothing and keeps the discs below.
+            child_audio_count = db.execute(
+                select(func.count(VFile.id))
+                .join(Folder, Folder.id == VFile.folder_id)
+                .where(
+                    Folder.parent_id == folder.id,
+                    Folder.is_trash == False,
+                    VFile.is_trash == False,
+                    VFile.mime_type.like("audio/%"),
+                )
             ).scalar() or 0
 
             # Ignore empty folders with no subfolders and no audio
@@ -522,11 +656,12 @@ class CatalogAdminService:
                 select(MusicArtist).where(MusicArtist.folder_id == folder.id)
             ).scalars().first()
 
-            is_compilation = len(subfolders) > 0
-            if depth == 0:
-                kind = catalog_kind if catalog_kind in cls.VALID_KINDS else "compilation"
-            else:
-                kind = "compilation" if is_compilation else "artist"
+            kind = cls.classify_node_kind(
+                depth,
+                has_direct_audio=audio_count > 0,
+                has_child_audio=child_audio_count > 0,
+                catalog_kind=catalog_kind,
+            )
 
             if not artist:
                 artist = MusicArtist(
@@ -584,7 +719,10 @@ class CatalogAdminService:
                 _sync_node(sf, artist.id, depth + 1)
 
         _sync_node(root_folder, None, 0)
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         return stats
 
 

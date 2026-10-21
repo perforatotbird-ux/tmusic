@@ -47,6 +47,7 @@ class ArtistRepository:
         kind: Optional[str] = None,
         search: Optional[str] = None,
         root_only: Optional[bool] = None,
+        parent_id: Optional[int] = None,
         limit: int = 200,
         offset: int = 0
     ) -> List[Tuple[MusicArtist, int, Optional[str], int]]:
@@ -54,6 +55,10 @@ class ArtistRepository:
 
         All three aggregates ride as correlated subqueries in one round trip —
         no join fan-out and no lazy loads while building the card list.
+
+        `root_only` and `parent_id` are the two ways to walk the nested catalog
+        one level at a time: the admin list used to receive every level at once
+        and rendered album folders as top-level «Артист» rows.
         """
         album_count = (
             select(func.count(MusicAlbum.id))
@@ -93,6 +98,8 @@ class ArtistRepository:
             )
         if root_only is True:
             stmt = stmt.where(MusicArtist.parent_id.is_(None))
+        if parent_id is not None:
+            stmt = stmt.where(MusicArtist.parent_id == parent_id)
 
         stmt = stmt.order_by(MusicArtist.display_name.asc()).offset(offset).limit(limit)
         return list(db.execute(stmt).all())

@@ -15,6 +15,7 @@ from app.core.rate_limiter import limiter
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.core.database import get_db
 from app.core.security import create_access_token
@@ -165,8 +166,8 @@ async def get_transcode_status(
     if not needs_transcoding(track.name, track.mime_type):
         return {"status": "not_needed", "file_id": file_id, "mime_type": track.mime_type}
 
-    status = transcoding_service.get_status(file_id)
-    result = transcoding_service.get_result(file_id)
+    status = await run_in_threadpool(transcoding_service.get_status, file_id)
+    result = await run_in_threadpool(transcoding_service.get_result, file_id)
 
     response = {
         "file_id": file_id,
@@ -232,7 +233,7 @@ async def prefetch_tracks(
         if not needs_transcoding(track.name, track.mime_type):
             not_needed += 1
             continue
-        status = transcoding_service.get_status(file_id)
+        status = await run_in_threadpool(transcoding_service.get_status, file_id)
         if status == TranscodeStatus.READY:
             already_ready += 1
             continue
@@ -268,9 +269,9 @@ async def get_folder_tracks(
     открытие сборника «висело» вместе с идущим транскодингом.
     """
     vfiles = stream_service.list_folder_tracks(db, folder_id, recursive=recursive, limit=limit, offset=offset)
-    responses = stream_service.build_track_responses(db, vfiles)
+    responses = await run_in_threadpool(stream_service.build_track_responses, db, vfiles)
     # Строго после сборки ответа: постановка в очередь не должна влиять на полезную нагрузку.
-    transcoding_service.prefetch_collection(vfiles, requester_user_id=user.id)
+    await run_in_threadpool(transcoding_service.prefetch_collection, vfiles, requester_user_id=user.id)
     return responses
 
 

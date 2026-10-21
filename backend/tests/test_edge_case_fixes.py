@@ -3,6 +3,7 @@ import asyncio
 import importlib.util
 import json
 import math
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -168,6 +169,25 @@ def test_history_http_rejects_inf_without_commit_and_accepts_boundary(database):
     assert db.scalar(select(func.count(playback.ListeningHistory.id))) == 0
     valid = client.post('/api/playback/history', json={'file_id':track.id,'duration_played_sec':86400,'track_duration_sec':86400})
     assert valid.status_code == 200 and valid.json()['duration_played_sec'] == 86400
+
+
+def test_history_delivery_runs_off_the_event_loop(database, monkeypatch):
+    db, user, track, client = database
+    threads = {}
+    original = playback_router.playback_service.add_history
+
+    def record_add_history(*args, **kwargs):
+        threads['endpoint'] = threading.get_ident()
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(playback_router.playback_service, 'add_history', record_add_history)
+    monkeypatch.setattr(
+        'app.services.lastfm_service.update_now_playing',
+        lambda *args, **kwargs: threads.__setitem__('lastfm', threading.get_ident()),
+    )
+    response = client.post('/api/playback/history', json={'file_id': track.id, 'duration_played_sec': 1})
+    assert response.status_code == 200
+    assert 'lastfm' in threads and threads['lastfm'] != threads['endpoint']
 
 
 def test_legacy_invalid_history_does_not_poison_analytics(database):

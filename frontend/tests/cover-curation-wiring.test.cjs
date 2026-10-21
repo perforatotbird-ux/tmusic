@@ -62,8 +62,9 @@ test('AdminCatalog reacts to a cover change instead of keeping the stale row', (
     /addEventListener\('tmusic:catalog-changed'/,
     'the admin catalog must refresh — it silently kept the old artwork',
   )
-  // The reload must not collapse an expanded artist mid-edit.
-  assert.match(src, /const onChanged = \(\) => \{/)
+  // The reload must not collapse an expanded artist mid-edit. The handler takes
+  // the event since bulk delete reuses it (and skips its own reload).
+  assert.match(src, /const onChanged = \(event\) => \{/)
   assert.match(src, /loadAlbums\(Number\(artistId\)\)/)
 })
 

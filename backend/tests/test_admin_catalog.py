@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.core.database import SessionLocal
 from app.models import vfs
-from app.models.music import MusicAlbum
+from app.models.music import MusicAlbum, MusicArtist
 from app.repositories.album_repository import AlbumRepository
 from app.repositories.artist_repository import ArtistRepository
 from app.services import lastfm_service
@@ -84,6 +84,7 @@ def test_catalog_endpoints_require_admin():
         ("post", "/api/admin/catalog/artists/1/scan"),
         ("post", "/api/admin/catalog/albums/1/scan"),
         ("post", "/api/admin/catalog/artists"),
+        ("post", "/api/admin/catalog/artists/batch-delete"),
         ("delete", "/api/admin/catalog/artists/1"),
         ("patch", "/api/admin/catalog/albums/1"),
     ):
@@ -420,7 +421,7 @@ def test_card_nesting_move_cycle_detach():
         CatalogAdminService.update_artist(db, grandchild.id, parent_id=child.id, set_parent=True)
 
         # Cards list exposes parent_name / children_count
-        cards = {c.id: c for c in library_service.list_artists(db, limit=500)}
+        cards = {c.id: c for c in library_service.list_artists(db, search=f"_{suffix}", limit=100)}
         assert cards[child.id].parent_id == parent.id
         assert cards[child.id].parent_name == parent.display_name
         assert cards[parent.id].children_count >= 1
@@ -489,4 +490,166 @@ def test_artist_detail_includes_children():
                     CatalogAdminService.delete_artist(db, card.id)
             except Exception:
                 pass
+        db.close()
+
+
+def test_catalog_list_walks_one_level_at_a_time():
+    """The admin list must not return every level at once.
+
+    Regression: the nested sync stores album folders as catalog cards. The list
+    asked for the whole catalog, so album cards came back as top-level rows and
+    the admin read them as «Артист».
+    """
+    db = SessionLocal()
+    suffix = uuid.uuid4().hex[:6]
+    parent = child = None
+    try:
+        parent = CatalogAdminService.create_collection(db, f"T_LVL_P_{suffix}", "artist")
+        child = CatalogAdminService.create_collection(db, f"T_LVL_C_{suffix}", "standalone_album", parent_id=parent.id)
+
+        roots = library_service.list_artists(db, search=f"T_LVL_P_{suffix}", root_only=True, limit=50)
+        assert [c.id for c in roots] == [parent.id]
+
+        # A child never shows up in the root level…
+        assert all(c.id != child.id for c in library_service.list_artists(db, root_only=True, limit=500))
+
+        # …only inside its parent, which is what the drill-down asks for.
+        children = library_service.list_artists(db, parent_id=parent.id, limit=50)
+        assert [c.id for c in children] == [child.id]
+        assert children[0].parent_name == parent.display_name
+    finally:
+        for card in (child, parent):
+            try:
+                if card is not None:
+                    CatalogAdminService.delete_artist(db, card.id)
+            except Exception:
+                pass
+        db.close()
+
+
+def test_sync_classifies_release_folders_as_releases():
+    """A folder holding audio is a release, not «Артист»/«Сборник».
+
+    Discography tree: root → «01 Albums» (grouping) → album (audio + Covers) and
+    a leaf single (audio only).
+    """
+    db = SessionLocal()
+    suffix = uuid.uuid4().hex[:6]
+    folders = []
+
+    def _folder(name, parent=None):
+        folder = vfs.Folder(name=f"{name}_{suffix}", parent_id=parent.id if parent else None)
+        db.add(folder)
+        db.flush()
+        folders.append(folder)
+        return folder
+
+    def _file(folder, name, mime="audio/mpeg"):
+        row = vfs.VFile(name=f"{name}.{mime.split('/')[-1]}", size=123, mime_type=mime, folder_id=folder.id, is_trash=False)
+        db.add(row)
+        db.flush()
+        return row
+
+    try:
+        root = _folder("T_SYNC_ROOT")
+        group = _folder("01 Albums", root)
+        album = _folder("2001 - Album", group)
+        _file(album, "track1")
+        _file(album, "track2")
+        covers = _folder("Covers", album)
+        _file(covers, "front", "image/jpeg")
+        single = _folder("2002 - Single", group)
+        _file(single, "single")
+        db.commit()
+
+        CatalogAdminService.sync_catalog_folder_tree(db, root.id, catalog_kind="artist")
+
+        cards = {
+            c.folder_id: c
+            for c in library_service.list_artists(db, search=f"_{suffix}", limit=200)
+        }
+        assert cards[root.id].kind == "artist"          # root keeps the chosen kind
+        assert cards[group.id].kind == "genre_collection"  # grouping folder, not «Сборник»
+        assert cards[album.id].kind == "standalone_album"  # has audio → release, Covers doesn't count
+        assert cards[single.id].kind == "standalone_album"
+        assert cards[album.id].parent_id == cards[group.id].id
+        # A release card owns an album row for its folder; the grouping card does not.
+        assert cards[album.id].album_count == 1
+        assert cards[group.id].album_count == 0
+    finally:
+        try:
+            db.rollback()
+            from sqlalchemy import delete
+            folder_ids = [f.id for f in folders]
+            if folder_ids:
+                # Raw deletes, deepest row set first: `delete_artist` refuses a
+                # card that still has albums, which would leave test rows behind
+                # in the live catalog.
+                db.execute(delete(MusicAlbum).where(MusicAlbum.folder_id.in_(folder_ids)))
+                db.execute(delete(MusicArtist).where(MusicArtist.folder_id.in_(folder_ids)))
+                db.execute(delete(vfs.VFile).where(vfs.VFile.folder_id.in_(folder_ids)))
+                # Children first, then parents — folders reference each other.
+                for folder in reversed(folders):
+                    db.execute(delete(vfs.Folder).where(vfs.Folder.id == folder.id))
+                db.commit()
+        except Exception:
+            db.rollback()
+        db.close()
+
+
+def test_batch_delete_removes_cards_with_albums_and_detaches_children():
+    """Bulk delete takes the card entirely: its albums go with it.
+
+    The admin asked for «удалить целиком» — nothing blocks a card any more, and
+    only an unknown id is reported in `skipped`. Nested cards are detached.
+    """
+    db = SessionLocal()
+    suffix = uuid.uuid4().hex[:6]
+    first = second = blocked = kid = None
+    album = None
+    try:
+        first = CatalogAdminService.create_collection(db, f"T_BD_A_{suffix}", "genre_collection")
+        second = CatalogAdminService.create_collection(db, f"T_BD_B_{suffix}", "genre_collection")
+        blocked = CatalogAdminService.create_collection(db, f"T_BD_C_{suffix}", "artist")
+        kid = CatalogAdminService.create_collection(db, f"T_BD_KID_{suffix}", "standalone_album", parent_id=first.id)
+        # Album on the blocked card's own folder — `_make_album` would leave an
+        # extra orphan folder behind in the live database.
+        album = MusicAlbum(folder_id=blocked.folder_id, artist_id=blocked.id, title="Blocked")
+        db.add(album)
+        db.commit()
+        db.refresh(album)
+
+        result = CatalogAdminService.delete_artists(
+            db, [first.id, second.id, blocked.id, 999999999]
+        )
+
+        assert result["deleted_count"] == 3
+        assert set(result["deleted"]) == {first.id, second.id, blocked.id}
+        # The card's album went with the card.
+        assert result["deleted_albums"] == 1
+        assert [item["code"] for item in result["skipped"]] == ["not_found"]
+
+        assert ArtistRepository.get_by_id(db, blocked.id) is None
+        assert AlbumRepository.get_by_id(db, album.id) is None
+        # The nested card was detached, not deleted with its parent.
+        detached = ArtistRepository.get_by_id(db, kid.id)
+        assert detached is not None and detached.parent_id is None
+        assert ArtistRepository.get_by_id(db, first.id) is None
+        assert ArtistRepository.get_by_id(db, second.id) is None
+    finally:
+        try:
+            db.rollback()
+            from sqlalchemy import delete as _delete
+            # Drop the album first — otherwise the card refuses to be deleted.
+            if album is not None:
+                db.execute(_delete(MusicAlbum).where(MusicAlbum.id == album.id))
+                db.commit()
+            for card in (kid, blocked):
+                try:
+                    if card is not None:
+                        CatalogAdminService.delete_artist(db, card.id)
+                except Exception:
+                    db.rollback()
+        except Exception:
+            db.rollback()
         db.close()

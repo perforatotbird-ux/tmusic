@@ -21,7 +21,7 @@ function toQuery(params = {}) {
  * kept showing the previous artwork, which is indistinguishable from the
  * feature being broken.
  */
-function emitCatalogChanged(detail) {
+export function emitCatalogChanged(detail) {
   window.dispatchEvent(
     new CustomEvent('tmusic:catalog-changed', { detail: detail || null })
   )

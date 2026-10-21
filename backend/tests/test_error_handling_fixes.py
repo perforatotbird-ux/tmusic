@@ -216,14 +216,22 @@ def test_nowplaying_explicit_outcome(monkeypatch,result,expected):
     assert lastfm.update_now_playing('Synthetic','Synthetic')['ok'] is expected
 
 
-@pytest.mark.asyncio
-async def test_playback_history_survives_failed_external_delivery(database, monkeypatch):
+def test_playback_history_survives_failed_external_delivery(database, monkeypatch):
+    from fastapi import BackgroundTasks
     from app.schemas.playback import HistoryCreate
     db,user,vf,_=database
-    monkeypatch.setattr(lastfm,'scrobble',Mock(side_effect=RuntimeError('synthetic provider failure')))
-    row=await playback_router.create_history(HistoryCreate(file_id=vf.id,duration_played_sec=250,track_duration_sec=300,completed=True),db,user)
+    scrobble=Mock(side_effect=RuntimeError('synthetic provider failure'))
+    monkeypatch.setattr(lastfm,'scrobble',scrobble)
+    tasks=BackgroundTasks()
+    row=asyncio.run(playback_router.create_history(
+        HistoryCreate(file_id=vf.id,duration_played_sec=250,track_duration_sec=300,completed=True),
+        tasks,db,user))
     assert row.file_id==vf.id
     assert db.scalar(select(func.count(playback.ListeningHistory.id)))==1
+    assert len(tasks.tasks)==1
+    task=tasks.tasks[0]
+    task.func(*task.args,**task.kwargs)  # failure must be swallowed
+    scrobble.assert_called_once()
 
 @pytest.mark.parametrize('check_only', [False, True])
 def test_sealing_cli_wrong_key_commits_no_accounts(database, monkeypatch, capsys, check_only):

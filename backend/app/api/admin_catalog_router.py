@@ -59,6 +59,10 @@ class ArtistBatchUpdate(BaseModel):
     parent_id: Optional[int] = None
 
 
+class ArtistBatchDelete(BaseModel):
+    artist_ids: List[int] = Field(min_length=1, max_length=500)
+
+
 class AlbumBatchUpdate(BaseModel):
     album_ids: List[int] = Field(min_length=1, max_length=1000)
     artist_id: Optional[int] = None
@@ -76,6 +80,7 @@ async def catalog_artists(
     kind: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     root_only: Optional[bool] = Query(None),
+    parent_id: Optional[int] = Query(None, description="Only direct children of this card"),
     limit: int = Query(200, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -86,7 +91,13 @@ async def catalog_artists(
     if search in ("null", "undefined") or not (search or "").strip():
         search = None
     return library_service.list_artists(
-        db, kind=kind, search=search, root_only=root_only, limit=limit, offset=offset
+        db,
+        kind=kind,
+        search=search,
+        root_only=root_only,
+        parent_id=parent_id,
+        limit=limit,
+        offset=offset,
     )
 
 
@@ -227,10 +238,18 @@ async def catalog_create_collection(
 @router.delete("/artists/{artist_id}")
 async def catalog_delete_artist(
     artist_id: int,
+    with_albums: bool = Query(
+        True,
+        description="Delete the card together with its album rows (admin default)",
+    ),
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_catalog_user),
 ):
-    return CatalogAdminService.delete_artist(db, artist_id)
+    """Delete a card. `with_albums=true` (default) removes the albums too.
+
+    Audio files are never deleted — they stay in the VFS and can be re-scanned.
+    """
+    return CatalogAdminService.delete_artist(db, artist_id, with_albums=with_albums)
 
 
 @router.get("/albums", response_model=List[MusicAlbumCard])
@@ -361,6 +380,23 @@ async def catalog_batch_update_artists(
         )
         updated += 1
     return {"ok": True, "updated": updated}
+
+
+@router.post("/artists/batch-delete")
+async def catalog_batch_delete_artists(
+    body: ArtistBatchDelete,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_catalog_user),
+):
+    """Delete several cards at once, albums included.
+
+    Nothing blocks a card any more: albums are catalog metadata of the card and
+    are deleted with it, audio files stay in the VFS. Only a card that is gone
+    or fails hard lands in `skipped` (`not_found` / `refused` / `error`) — and
+    it never stops the rest of the selection. Nested cards are detached, never
+    deleted with their parent.
+    """
+    return CatalogAdminService.delete_artists(db, body.artist_ids)
 
 
 @router.post("/albums/batch")

@@ -7,6 +7,7 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, Response as RawResponse
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.core.database import get_db
 from app.api.dependencies import get_admin_user, get_current_user
@@ -110,9 +111,15 @@ async def get_covers_manifest(
             raise HTTPException(status_code=400, detail="Invalid key format.")
 
     is_custom = custom == 1
+    # Up to 500 keys x several stat() calls each: keep the filesystem walk off
+    # the event loop, otherwise it stalls in-flight audio streams for seconds.
+    return await run_in_threadpool(_probe_cached_covers, raw, is_custom)
+
+
+def _probe_cached_covers(keys: List[str], is_custom: bool) -> dict:
     found = {}
     missing = []
-    for k in raw:
+    for k in keys:
         path = cover_cache.get_cached_path(k, is_custom=is_custom)
         if path:
             found[k] = cover_etag(k)
@@ -143,13 +150,13 @@ async def get_cover(
     """
     if key:
         is_custom = custom == 1
-        cached = cover_cache.get_cached_item(key, is_custom=is_custom)
+        cached = await run_in_threadpool(cover_cache.get_cached_item, key, is_custom=is_custom)
         if cached:
             data, mime = cached
             headers = cover_cache_headers(key)
             return RawResponse(content=data, media_type=mime, headers=headers)
 
-        path = cover_cache.get_cached_path(key, is_custom=is_custom)
+        path = await run_in_threadpool(cover_cache.get_cached_path, key, is_custom=is_custom)
         if path:
             headers = cover_cache_headers(key)
             return FileResponse(path, headers=headers)
@@ -157,7 +164,7 @@ async def get_cover(
 
     if url:
         cache_key = cover_cache.url_to_key(url)
-        cached = cover_cache.get_cached_item(cache_key, is_custom=False)
+        cached = await run_in_threadpool(cover_cache.get_cached_item, cache_key, is_custom=False)
         if cached:
             data, mime = cached
             headers = cover_cache_headers(cache_key)
