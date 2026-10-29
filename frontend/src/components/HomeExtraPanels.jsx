@@ -338,10 +338,10 @@ export function LibraryPanel({ section, onRefreshKey }) {
                           : 'недавно'}
                       </div>
                     </div>
-                    <span className="tm-queue-actions" onClick={(e) => e.stopPropagation()}>
+                    <span className="tm-row-actions" onClick={(e) => e.stopPropagation()}>
                       <button
                         type="button"
-                        className="tm-queue-mini"
+                        className="tm-row-mini"
                         onClick={() => queueRow(row, 'next')}
                         aria-label="Играть следующим"
                         title="Играть следующим"
@@ -350,7 +350,7 @@ export function LibraryPanel({ section, onRefreshKey }) {
                       </button>
                       <button
                         type="button"
-                        className="tm-queue-mini"
+                        className="tm-row-mini"
                         onClick={() => queueRow(row, 'queue')}
                         aria-label="Добавить в очередь"
                         title="Добавить в очередь"

@@ -29,6 +29,7 @@ import { AdminCatalog } from './AdminCatalog'
 import { AdminVfsImport } from './AdminVfsImport'
 import { useConfirm } from './ui/useConfirm'
 import { usePrompt } from './ui/usePrompt'
+import { readViewState, writeViewState } from '../utils/viewPersistence'
 
 const TABS = [
   { id: 'overview', label: 'Обзор', icon: Activity },
@@ -157,7 +158,11 @@ function Panel({ title, children, right }) {
 }
 
 export function AdminPanel({ onBack, onOpenCoverPicker }) {
-  const [tab, setTab] = useState('overview')
+  // Открытая вкладка переживает перезагрузку: админ, обновлявший страницу на
+  // «Аналитике», возвращается туда же, а не на «Обзор».
+  const [tab, setTab] = useState(
+    () => readViewState({ adminTabs: TABS.map((t) => t.id) }).adminTab || 'overview'
+  )
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -190,6 +195,12 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
       toastTimer.current = null
     }
   }, [])
+
+  // Пишется отдельным ключом снимка: навигацию каталога ведёт MusicLibrary,
+  // и запись не должна её затирать.
+  useEffect(() => {
+    writeViewState({ adminTab: tab })
+  }, [tab])
   const flash = useCallback((msg, kind = 'ok') => {
     if (!toastMounted.current) return
     clearTimeout(toastTimer.current)

@@ -19,11 +19,8 @@ import {
   Maximize2,
   ListMusic,
   ChevronDown,
-  Trash2,
   Star,
   FileText,
-  ArrowUp,
-  ArrowDown,
   Loader2,
   ListEnd,
   Check,
@@ -191,7 +188,6 @@ export function MusicLibraryPlayer() {
     cycleRepeat,
     setPlayerExpanded,
     playQueue,
-    removeFromQueue,
     moveQueueItem,
     clearUpcoming,
   } = usePlayerStore()
@@ -1115,10 +1111,13 @@ export function MusicLibraryPlayer() {
                     )}
                   </div>
                   <div style={{ flex: 1, overflowY: 'auto', padding: '10px' }}>
-                    {rows.map(({ t: track, i: idx }, viewIdx) => {
+                    {rows.map(({ t: track, i: idx }) => {
                       const isCurrent = idx === queueIndex
                       const isPast = !shuffle && idx < queueIndex
-                      const dur = durations[track.id] || track.duration
+                      // Длительность известна не для всех треков: колонка всё
+                      // равно держит место, как в плейлисте Winamp.
+                      const dur = Number(durations[track.id] || track.duration)
+                      const durLabel = Number.isFinite(dur) && dur > 0 ? formatTime(dur) : '--:--'
                       return (
                         <ClickableRow
                           key={track.id || idx}
@@ -1130,30 +1129,28 @@ export function MusicLibraryPlayer() {
                           onDragEnd={onRowDragEnd}
                           onDrop={(e) => e.preventDefault()}
                           style={{
-                            padding: '10px 12px',
-                            borderRadius: '8px',
+                            padding: '7px 10px',
+                            borderRadius: '6px',
                             display: 'flex',
                             alignItems: 'center',
-                            gap: '8px',
+                            gap: '10px',
                             backgroundColor: isCurrent ? 'var(--accent-muted)' : 'transparent',
                             cursor: 'pointer',
-                            marginBottom: '2px',
+                            marginBottom: '1px',
                             opacity: isPast ? 0.55 : 1,
                           }}
                         >
+                          {/* Классический плейлист Winamp: позиция → имя → время.
+                              Кнопок ↑ ↓ 🗑 в строке нет; порядок меняется
+                              перетаскиванием (десктоп). */}
                           <span
-                            style={{
-                              fontSize: '11px',
-                              color: isCurrent ? 'var(--accent)' : 'var(--dim)',
-                              width: '20px',
-                              flexShrink: 0,
-                              display: 'inline-flex',
-                              justifyContent: 'center',
-                            }}
+                            className="tm-queue-pos"
+                            style={{ color: isCurrent ? 'var(--accent)' : 'var(--dim)' }}
                           >
-                            {isCurrent && isPlaying ? <EqBars /> : idx + 1}
+                            {isCurrent && isPlaying ? <EqBars /> : `${idx + 1}.`}
                           </span>
                           <span
+                            className="tm-queue-row-title"
                             style={{
                               flex: 1,
                               minWidth: 0,
@@ -1186,48 +1183,7 @@ export function MusicLibraryPlayer() {
                               </span>
                             )}
                           </span>
-                          {dur && !isCurrent && (
-                            <span style={{ fontSize: '11px', color: 'var(--dim)', flexShrink: 0 }}>
-                              {formatTime(dur)}
-                            </span>
-                          )}
-                          {!isCurrent && (
-                            <span className="tm-queue-actions" onClick={(e) => e.stopPropagation()}>
-                              {idx > queueIndex && viewIdx > 0 && (
-                                <button
-                                  className="tm-queue-mini"
-                                  onClick={() => moveQueueItem(idx, idx - 1)}
-                                  aria-label="Выше в очереди"
-                                  title="Выше"
-                                >
-                                  <ArrowUp size={12} />
-                                </button>
-                              )}
-                              {idx > queueIndex && idx < queue.length - 1 && (
-                                <button
-                                  className="tm-queue-mini"
-                                  onClick={() => moveQueueItem(idx, idx + 1)}
-                                  aria-label="Ниже в очереди"
-                                  title="Ниже"
-                                >
-                                  <ArrowDown size={12} />
-                                </button>
-                              )}
-                              <button
-                                className="tm-queue-mini tm-queue-mini-danger"
-                                onClick={() => removeFromQueue(idx)}
-                                aria-label="Убрать из очереди"
-                                title="Убрать"
-                              >
-                                <Trash2 size={12} />
-                              </button>
-                            </span>
-                          )}
-                          {isCurrent && isPlaying && !shuffle && (
-                            <span style={{ fontSize: '10px', color: 'var(--accent)', fontWeight: 700, flexShrink: 0, letterSpacing: '0.06em' }}>
-                              ИГРАЕТ
-                            </span>
-                          )}
+                          <span className="tm-queue-dur">{durLabel}</span>
                         </ClickableRow>
                       )
                     })}

@@ -204,6 +204,9 @@ input[type="range"].tm-scrub-input {
 }
 
 /* ─── Modern Borderless Cards (Spotify/Apple Music style) ──────────────── */
+/* «Коробка CD»: каждая карточка — квадрат с почти прямыми углами и
+   пластиковым бортиком (1px светлая рамка + глубокая тень). Геометрия общая
+   для альбомов и артистов, чтобы сетка каталога была однородной. */
 .tmusic-card {
   display: flex;
   flex-direction: column;
@@ -223,10 +226,11 @@ input[type="range"].tm-scrub-input {
   position: relative;
   width: 100%;
   aspect-ratio: 1 / 1;
-  border-radius: 10px;
+  border-radius: 6px;
   overflow: hidden;
   margin-bottom: 8px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
   background-color: var(--bg-card);
 }
 .tmusic-card-img {
@@ -327,15 +331,18 @@ input[type="range"].tm-scrub-input {
   text-overflow: ellipsis;
 }
 
-/* ─── Artist Clean Cards ────────────────────────────────────────────────── */
+/* ─── Artist Cards ──────────────────────────────────────────────────────── */
+/* Артист — такая же «коробка CD», как альбом: квадратная обложка во всю
+   ширину карточки, подпись слева. Круглые аватары убраны, иначе сетка
+   каталога выглядела разнородной. */
 .tmusic-artist-card {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  text-align: center;
+  align-items: stretch;
+  text-align: left;
   background: transparent;
   border: none;
-  padding: 4px;
+  padding: 0;
   cursor: pointer;
   touch-action: manipulation;
   min-width: 0;
@@ -344,21 +351,21 @@ input[type="range"].tm-scrub-input {
   opacity: 0.85;
 }
 .tmusic-artist-card-avatar-wrap {
+  position: relative;
   width: 100%;
-  max-width: 140px;
   aspect-ratio: 1 / 1;
-  border-radius: 50%;
+  border-radius: 6px;
   overflow: hidden;
   margin-bottom: 8px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
-  border: 2px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.09);
   background-color: var(--bg-card);
 }
 .tmusic-artist-card-avatar {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  border-radius: 50%;
+  border-radius: 0;
   display: block;
 }
 @media (hover: hover) {
@@ -1160,8 +1167,9 @@ input[type="range"].tm-scrub-input {
 .tmusic-artist-avatar {
   width: 180px;
   height: 180px;
-  border-radius: 50%;
-  border: 3px solid var(--line-bright);
+  /* Та же «коробка CD», что и в сетке: квадрат с пластиковым бортиком. */
+  border-radius: 10px;
+  border: 1px solid var(--line-bright);
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
 }
 .tmusic-artist-info {
@@ -1526,8 +1534,10 @@ input[type="range"].tm-scrub-input {
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 14px;
   }
+  /* Один и тот же минимум, что у альбомов: квадраты в соседних разделах
+     должны быть одного размера. */
   .tmusic-grid-artists {
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap: 14px;
   }
   .tmusic-topbar {
@@ -1611,15 +1621,11 @@ input[type="range"].tm-scrub-input {
     padding: 10px 12px 0 12px;
   }
 
-  /* 2-column cards grid */
-  .tmusic-grid-albums {
-    grid-template-columns: repeat(2, 1fr);
-    gap: 12px;
-  }
-  /* auto-fit keeps the lone trailing card centered (auto-fill would leave an
-     empty second column and push it off to the left). */
+  /* 2-column cards grid — общая для альбомов и артистов: все карточки
+     одинаковые квадраты «коробка CD». */
+  .tmusic-grid-albums,
   .tmusic-grid-artists {
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    grid-template-columns: repeat(2, 1fr);
     gap: 12px;
   }
 
@@ -2152,24 +2158,53 @@ audio {
   letter-spacing: 0.02em;
 }
 
+/* ─── Очередь: классический плейлист Winamp ─────────────────────────────── */
+/* Строка = позиция → имя трека → длительность. Кнопок ↑ ↓ 🗑 в строке нет:
+   порядок меняется перетаскиванием (десктоп), а хвост очереди убирает
+   «Очистить» в шапке. */
 .tm-queue-row {
   transition: background-color 0.12s ease;
 }
 .tm-queue-row:hover {
   background-color: rgba(255, 255, 255, 0.04);
 }
-.tm-queue-actions {
+.tm-queue-pos {
+  width: 28px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 18px;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.tm-queue-dur {
+  width: 46px;
+  flex-shrink: 0;
+  text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: var(--dim);
+}
+
+/* ─── Действия в строке списка (дерево папок, «Недавнее») ───────────────── */
+/* Классы были названы tm-queue-*, хотя кнопки живут и в других списках:
+   после переделки очереди в стиле Winamp они получили честное имя. */
+.tm-row-actions {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   opacity: 0;
   transition: opacity 0.12s ease;
 }
-.tm-queue-row:hover .tm-queue-actions,
-.tm-queue-actions:focus-within {
+.tmusic-panel-row:hover .tm-row-actions,
+.tmusic-panel-row:focus-within .tm-row-actions,
+.tmusic-tree-row:hover .tm-row-actions,
+.tmusic-tree-row:focus-within .tm-row-actions {
   opacity: 1;
 }
-.tm-queue-mini {
+.tm-row-mini {
   width: 26px;
   height: 26px;
   border-radius: 7px;
@@ -2182,13 +2217,15 @@ audio {
   cursor: pointer;
   padding: 0;
 }
-.tm-queue-mini:hover {
+.tm-row-mini:hover {
   color: var(--ink);
   border-color: var(--line-bright);
 }
-.tm-queue-mini-danger:hover {
-  color: var(--danger);
-  border-color: var(--danger);
+/* Touch: hover не существует — кнопки должны быть видны сразу. */
+@media (hover: none) {
+  .tm-row-actions {
+    opacity: 1;
+  }
 }
 
 .tmusic-toast {
@@ -2352,7 +2389,6 @@ audio {
   }
   .tm-scrub-input::-webkit-slider-thumb,
   .tm-scrub-fill,
-  .tm-queue-actions,
   .tm-queue-row,
   .tmusic-toast {
     transition: none;
@@ -2368,13 +2404,6 @@ audio {
 input[type="range"]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 4px;
-}
-
-/* Mobile: queue action buttons must be tappable without hover */
-@media (hover: none) {
-  .tm-queue-actions {
-    opacity: 1;
-  }
 }
 
 /* Mobile: toasts sit above the floating mini-player + bottom nav */
@@ -2443,7 +2472,7 @@ input[type="range"]:focus-visible {
 
 /* ═══════════════════════════════════════════════════════════════════════════
    UI-19 · Touch targets
-   ~18 controls were 18-36px: 26×26 queue buttons, 18×18 checkboxes, 30×30
+   ~18 controls were 18-36px: 26×26 row buttons, 18×18 checkboxes, 30×30
    playlist icons. A single global floor fixes them without touching layout;
    `::before` grows the hit area of controls whose visual size must stay small.
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -2452,7 +2481,7 @@ input[type="range"]:focus-visible {
   [role="button"],
   [role="tab"],
   [role="menuitem"],
-  .tm-queue-mini,
+  .tm-row-mini,
   .tmusic-panel-icon-btn,
   .tmusic-np-btn,
   .tmusic-toast-close {
@@ -2460,12 +2489,12 @@ input[type="range"]:focus-visible {
     min-width: 44px;
   }
   /* Icon buttons that must stay visually small still get a 44px target. */
-  .tm-queue-mini,
+  .tm-row-mini,
   .tmusic-panel-icon-btn,
   .tmusic-toast-close {
     position: relative;
   }
-  .tm-queue-mini::before,
+  .tm-row-mini::before,
   .tmusic-panel-icon-btn::before,
   .tmusic-toast-close::before {
     content: "";

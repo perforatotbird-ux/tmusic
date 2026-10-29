@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react'
+import React, { lazy, Suspense, useState, useEffect, useMemo, useRef } from 'react'
 import { libraryApi, bustCatalogCache } from '../api/library'
 import { streamApi } from '../api/stream'
 import { adminApi } from '../api/admin'
@@ -17,12 +17,15 @@ import {
 import { AlbumDetail } from './AlbumDetail'
 import { LibraryPanel } from './HomeExtraPanels'
 import { FolderBrowser } from './FolderBrowser'
-import { AdminPanel } from './AdminPanel'
 import { ProfileMenu, roleLabel } from './ProfileMenu'
-import { PlaylistsModal } from './PlaylistsModal'
 import { usePlayerStore } from '../store/playerStore'
 import { useAuthStore } from '../store/authStore'
 import { useFavoritesStore } from '../store/favoritesStore'
+
+// Rarely used, large screens are split into their own chunks: they must not be
+// part of the initial bundle on a slow phone (PERF-006).
+const AdminPanel = lazy(() => import('./AdminPanel').then((m) => ({ default: m.AdminPanel })))
+const PlaylistsModal = lazy(() => import('./PlaylistsModal').then((m) => ({ default: m.PlaylistsModal })))
 import {
   Search,
   Disc,
@@ -54,6 +57,16 @@ import { useOfflineStore } from '../store/offlineStore'
 import { useSearchStore } from '../store/searchStore'
 import { UnifiedSearchModal } from './search/UnifiedSearchModal'
 import { ClickableRow } from './ui/ClickableRow'
+import {
+  readViewState,
+  writeViewState,
+  clearViewState,
+  readScrollY,
+  saveScrollY,
+  flushScrollY,
+  restoreScrollY,
+  configureScrollRestoration,
+} from '../utils/viewPersistence'
 
 // Small square control for the admin-only inline editors in the artist header.
 const artistHeaderBtn = {
@@ -80,11 +93,12 @@ function hashHue(str) {
   return h
 }
 
-// Fallback letter badge with deterministic gradient
-function Fallback({ name, kind = 'artist', size = '100%', className = '' }) {
+// Fallback letter badge with deterministic gradient.
+// Все обложки — «коробка CD», поэтому и заглушка квадратная: раньше артисты
+// получали круг и выбивались из сетки.
+function Fallback({ name, size = '100%', className = '' }) {
   const hue = hashHue(name || '?')
   const letter = (name || '?').trim()[0] || '?'
-  const isCircle = kind === 'artist'
 
   return (
     <div
@@ -93,7 +107,7 @@ function Fallback({ name, kind = 'artist', size = '100%', className = '' }) {
         width: typeof size === 'number' ? `${size}px` : size,
         height: typeof size === 'number' ? `${size}px` : size,
         aspectRatio: '1 / 1',
-        borderRadius: isCircle ? '50%' : '10px',
+        borderRadius: '6px',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -105,7 +119,7 @@ function Fallback({ name, kind = 'artist', size = '100%', className = '' }) {
     >
       <span
         style={{
-          fontSize: isCircle ? 'clamp(26px, 7vw, 40px)' : 'clamp(22px, 6vw, 36px)',
+          fontSize: 'clamp(22px, 6vw, 36px)',
           fontWeight: '900',
           color: 'var(--accent, #D4FF3F)',
           textTransform: 'uppercase',
@@ -120,7 +134,7 @@ function Fallback({ name, kind = 'artist', size = '100%', className = '' }) {
 }
 
 // Image with automatic fallback on error (server caches covers with ETag)
-function ImgWithFallback({ name, kind = 'artist', src, alt = '', style = {}, size = '100%', className = '' }) {
+function ImgWithFallback({ name, src, alt = '', style = {}, size = '100%', className = '' }) {
   const [hasError, setHasError] = useState(false)
   const timerRef = useRef(null)
 
@@ -137,7 +151,7 @@ function ImgWithFallback({ name, kind = 'artist', src, alt = '', style = {}, siz
     !!coverKey && missingCoverKeys.has(`${coverKey.custom ? 1 : 0}:${coverKey.key}`)
 
   if (!src || hasError || manifestMissing) {
-    return <Fallback name={name} kind={kind} size={size} className={className} />
+    return <Fallback name={name} size={size} className={className} />
   }
 
   const handleError = () => {
@@ -232,6 +246,13 @@ const MOBILE_TAB_KIND = { artists: 'artist', albums: 'albums' }
 const LIB_PAGE_SIZE = 200
 
 export function MusicLibrary({ onOpenCoverPicker }) {
+  // «Где я был»: снимок экрана до перезагрузки (см. utils/viewPersistence).
+  // Читается один раз и синхронно — до того, как эффекты успеют перезаписать
+  // его значениями по умолчанию.
+  const [bootView] = useState(() => readViewState({ kinds: SECTIONS.map((s) => s.id) }))
+  // Позиция скролла тоже читается один раз, до первых скролл-событий: иначе
+  // ранний «скролл в 0» от браузера затёр бы сохранённое значение.
+  const [bootScrollY] = useState(() => readScrollY())
   const [items, setItems] = useState([])
   // UI-05: a network/server failure must NOT be disguised as "nothing found".
   // This state holds the failure message; the grid renders it as an alert with a
@@ -245,10 +266,12 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   const [detailError, setDetailError] = useState(null) // { id, message } | null
   const [similarArtists, setSimilarArtists] = useState([])
   const [similarLoading, setSimilarLoading] = useState(false)
+  // Шторка треклиста: восстанавливается из снимка экрана после проверки сессии
+  // (её треклист запрашивается с авторизацией).
   const [selectedAlbum, setSelectedAlbum] = useState(null) // { album, artist } — AlbumDetail sheet
-  const [activeKind, setActiveKind] = useState('artist')
-  const [mobileTab, setMobileTab] = useState('library') // 'library' | 'artists' | 'albums' | 'search' | 'profile'
-  const [search, setSearch] = useState('')
+  const [activeKind, setActiveKind] = useState(bootView.activeKind)
+  const [mobileTab, setMobileTab] = useState(bootView.mobileTab) // 'library' | 'artists' | 'albums' | 'search' | 'profile'
+  const [search, setSearch] = useState(bootView.search)
   const [isLoading, setIsLoading] = useState(true)
   const [hasMore, setHasMore] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -262,11 +285,11 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     }
   })
   // Top bar section: catalog is default; 'recent' opens an inline panel
-  const [libSection, setLibSection] = useState(null) // null | 'recent'
+  const [libSection, setLibSection] = useState(bootView.libSection) // null | 'recent'
   // «Плейлисты» из меню профиля открываются отдельным окном-редактором,
   // а не встроенной панелью: нужно править и название, и содержимое.
   const [playlistsOpen, setPlaylistsOpen] = useState(false)
-  const [showAdmin, setShowAdmin] = useState(false)
+  const [showAdmin, setShowAdmin] = useState(bootView.showAdmin)
   // Треки раздела «Любимые»: виртуальный сборник строится на клиенте,
   // поэтому сырые строки избранного живут отдельно от каталожных items.
   const [favoriteRows, setFavoriteRows] = useState([])
@@ -277,7 +300,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   // (fast typing fires parallel loadData calls that resolve out of order).
   const loadSeq = useRef(0)
 
-  const { playQueue, prepareQueue, setPlayerExpanded, currentTrack, currentRelease, isPlaying } = usePlayerStore()
+  const { playQueue, prepareQueue, setPlayerExpanded, currentTrack, currentRelease, isPlaying, isPlayerExpanded } = usePlayerStore()
   const { user, isAuthenticated, logout, setAuthModalOpen, checkAuth } = useAuthStore()
   // Избранное переключают из плеера и альбома; подписка на ids держит счётчик
   // на карточке-сборнике живым без повторного открытия раздела.
@@ -706,6 +729,130 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       console.error('Similar artist lookup failed:', e)
     }
   }
+
+  // ─── Возврат на экран, где пользователь был до перезагрузки ──────────────
+  // Навигация — состояние этого компонента, поэтому F5 выбрасывал на главную.
+  // Снимок применяется один раз, когда сессия уже известна: карточка артиста
+  // требует авторизованного запроса, а админка не должна открываться у того,
+  // кто перестал быть админом.
+  const viewRestoredRef = useRef(false)
+
+  // Восстановление карточки артиста — «best effort»: если строку удалили между
+  // перезагрузкой и сейчас, молча остаёмся в каталоге, без красного алерта.
+  const restoreArtist = async (artistId) => {
+    try {
+      const detail = await libraryApi.getArtistDetail(artistId)
+      setSelectedArtist(detail)
+    } catch (e) {
+      console.warn('Restored artist is gone, falling back to the catalog:', e?.message || e)
+      writeViewState({ artistId: null })
+    }
+  }
+
+  useEffect(() => {
+    if (viewRestoredRef.current || !isAuthenticated) return
+    viewRestoredRef.current = true
+    if (bootView.showAdmin && !isAdmin) setShowAdmin(false)
+    if (bootView.artistId != null) restoreArtist(bootView.artistId)
+    if (bootView.album) setSelectedAlbum({ album: bootView.album, artist: bootView.albumArtist })
+    if (bootView.searchOpen) useSearchStore.getState().openSearch(bootView.searchQuery || '')
+    // Полноэкранный плеер восстанавливается только если сессия плеера жива —
+    // очередь гидрируется в authStore.checkAuth().
+    if (bootView.playerExpanded && usePlayerStore.getState().currentTrack) setPlayerExpanded(true)
+  }, [isAuthenticated, isAdmin, bootView, setPlayerExpanded])
+
+  // Снимок текущего экрана. До восстановления не пишем — иначе первый рендер
+  // затёр бы сохранённое состояние значениями по умолчанию.
+  useEffect(() => {
+    if (!viewRestoredRef.current) return
+    writeViewState({
+      mobileTab,
+      activeKind,
+      libSection,
+      search,
+      showAdmin,
+      artistId: typeof selectedArtist?.id === 'number' ? selectedArtist.id : null,
+      album: selectedAlbum?.album || null,
+      albumArtist: selectedAlbum?.artist || null,
+      playerExpanded: isPlayerExpanded,
+    })
+  }, [
+    mobileTab,
+    activeKind,
+    libSection,
+    search,
+    showAdmin,
+    selectedArtist,
+    selectedAlbum,
+    isPlayerExpanded,
+  ])
+
+  // Окно поиска живёт в глобальном сторе: зеркалим его open/query в снимок
+  // подпиской, чтобы не перерисовывать этот большой компонент на каждую букву.
+  useEffect(
+    () =>
+      useSearchStore.subscribe((state, prev) => {
+        if (!viewRestoredRef.current) return
+        if (state.isOpen === prev.isOpen && state.query === prev.query) return
+        writeViewState({ searchOpen: state.isOpen, searchQuery: state.query })
+      }),
+    []
+  )
+
+  // Выход из аккаунта не должен возвращать следующий вход на чужой экран.
+  const wasAuthenticatedRef = useRef(false)
+  useEffect(() => {
+    if (isAuthenticated) {
+      wasAuthenticatedRef.current = true
+      return
+    }
+    if (!wasAuthenticatedRef.current) return
+    wasAuthenticatedRef.current = false
+    clearViewState()
+    setShowAdmin(false)
+    setSelectedArtist(null)
+    setSelectedAlbum(null)
+    setLibSection(null)
+    setMobileTab('library')
+    setActiveKind('artist')
+    setSearch('')
+  }, [isAuthenticated])
+
+  // ─── Позиция скролла ─────────────────────────────────────────────────────
+  // Браузер восстанавливает её сам, но слишком рано: каталог грузится
+  // асинхронно, документ ещё короткий — и позиция сбрасывается в 0. Управление
+  // забираем на себя (history.scrollRestoration = 'manual').
+  useEffect(() => {
+    configureScrollRestoration()
+    const onScroll = () => saveScrollY(window.scrollY)
+    const onHide = () => {
+      // Пока открыта шторка треклиста, body зафиксирован (position: fixed) и
+      // window.scrollY врёт нулём — такую запись делать нельзя.
+      if (document.body.style.position === 'fixed') return
+      flushScrollY(window.scrollY)
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('pagehide', onHide)
+    return () => {
+      window.removeEventListener('scroll', onScroll)
+      window.removeEventListener('pagehide', onHide)
+    }
+  }, [])
+
+  const scrollRestoredRef = useRef(false)
+  // Снимок содержал открытую шторку треклиста: она зафиксирует body в следующем
+  // рендере, поэтому позицию применяем только после её закрытия.
+  const pendingSheetRef = useRef(Boolean(bootView.album))
+  useEffect(() => {
+    if (scrollRestoredRef.current || !viewRestoredRef.current) return
+    if (selectedAlbum) {
+      pendingSheetRef.current = false
+      return
+    }
+    if (pendingSheetRef.current) return
+    scrollRestoredRef.current = true
+    if (bootScrollY > 0) restoreScrollY(bootScrollY)
+  }, [selectedAlbum, isAuthenticated, bootScrollY, bootView.album])
 
   const handlePlayAlbum = async (album, artist = null) => {
     // Safety guard: if this card is a compilation or has child folders, open it as an artist/container
@@ -1152,7 +1299,6 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         <div className="tmusic-artist-card-avatar-wrap" style={{ position: 'relative' }}>
           <ImgWithFallback
             name={artist.display_name}
-            kind="artist"
             src={cover}
             size="100%"
             className="tmusic-artist-card-avatar"
@@ -1284,7 +1430,6 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         <div className="tmusic-card-cover-wrap">
           <ImgWithFallback
             name={title}
-            kind="album"
             src={cover}
             size="100%"
             className="tmusic-card-img"
@@ -1518,9 +1663,19 @@ export function MusicLibrary({ onOpenCoverPicker }) {
 
       {/* ─── Main Content Body ────────────────────────────────────────────────── */}
       <main className="tmusic-main">
-        {/* Admin is a full-page view from anywhere: search, artist, folder mode. */}
-        {showAdmin ? (
-          <AdminPanel onBack={() => setShowAdmin(false)} onOpenCoverPicker={onOpenCoverPicker} />
+        {/* Admin is a full-page view from anywhere: search, artist, folder mode.
+            `isAdmin` is part of the condition: the restored snapshot may still
+            say «админка», while the session belongs to a regular user. */}
+        {showAdmin && isAdmin ? (
+          <Suspense
+            fallback={
+              <div role="status" style={{ padding: 24, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Loader2 size={16} className="tmusic-spin" /> Загрузка панели…
+              </div>
+            }
+          >
+            <AdminPanel onBack={() => setShowAdmin(false)} onOpenCoverPicker={onOpenCoverPicker} />
+          </Suspense>
         ) : (
         <>
         {/* Centered catalog view switch (works in every tab, incl. search) */}
@@ -1648,13 +1803,13 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               <div className="tmusic-artist-avatar-wrap">
                 <ImgWithFallback
                   name={selectedArtist.display_name}
-                  kind="artist"
                   src={resolveCoverUrl(selectedArtist, null)}
                   size={180}
                   className="tmusic-artist-avatar"
                   style={{
-                    borderRadius: '50%',
-                    border: '3px solid var(--line-bright)',
+                    // Та же «коробка CD», что и у карточек в сетке.
+                    borderRadius: '10px',
+                    border: '1px solid var(--line-bright)',
                     boxShadow: '0 10px 25px rgba(0,0,0,0.5)',
                   }}
                 />
@@ -2372,7 +2527,11 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       />
 
       {/* Playlists editor window (opened from the avatar menu → «Плейлисты») */}
-      <PlaylistsModal open={playlistsOpen} onClose={() => setPlaylistsOpen(false)} />
+      {playlistsOpen && (
+        <Suspense fallback={null}>
+          <PlaylistsModal open={playlistsOpen} onClose={() => setPlaylistsOpen(false)} />
+        </Suspense>
+      )}
 
       {/* Admin curation error toast (drag-and-drop / create failures) */}
       {actionError && (
