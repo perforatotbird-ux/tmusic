@@ -2,7 +2,6 @@
 T-Music Configuration Management
 Centralized typed settings loaded from music.env with strict validation.
 """
-import os
 import base64
 import secrets
 import logging
@@ -33,6 +32,10 @@ class Settings(BaseSettings):
 
     # Database (must be configured explicitly — no implicit credentials in code)
     DATABASE_URL: str = ""
+    # Test-only: run the suite inside a disposable PostgreSQL schema instead of
+    # the live `public` schema. Set by backend/tests/conftest.py from
+    # TMUSIC_TEST_SCHEMA; never use this in production.
+    TEST_DATABASE_SCHEMA: Optional[str] = None
 
     # Security & JWT. SECRET_KEY signs every JWT (and salts legacy password
     # hashes); a placeholder or short value is rejected at boot (see the
@@ -202,6 +205,15 @@ class Settings(BaseSettings):
     # responses. Prefer adding a client's origin to ALLOWED_ORIGINS; enable
     # this only when a private-range client cannot be pinned to one origin.
     CORS_ALLOW_LAN: bool = False
+    # Canonical externally visible origin used in generated links (shares).
+    # When set, request.base_url is never trusted for link generation, so a
+    # forged Host header cannot poison share URLs. Example: https://music.example.com
+    PUBLIC_BASE_URL: Optional[str] = None
+    # This release stores rate-limit/lockout counters, revocation cache, import
+    # sessions and scan/transcode state in-process. Running multiple workers
+    # silently weakens those guards, so a second worker is refused unless this
+    # is explicitly acknowledged (and the shared state moved to Redis/DB).
+    ALLOW_MULTI_WORKER: bool = False
 
     def get_master_keys(self) -> List[bytes]:
         """

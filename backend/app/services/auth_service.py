@@ -10,7 +10,7 @@ Hardening (2026-09 security audit):
 """
 import logging
 from typing import Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 

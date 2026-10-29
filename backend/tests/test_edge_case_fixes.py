@@ -23,8 +23,8 @@ from app.api import admin_router, playback_router, playlist_router, subsonic_rou
 from app.api.dependencies import get_current_user, get_admin_user
 from app.core.database import get_db
 from app.models.base import Base
-from app.models import auth, music, playback, playlist, share, vfs
-from app.schemas.playback import HistoryCreate, HistoryItem
+from app.models import auth, playback, playlist, vfs
+from app.schemas.playback import HistoryCreate
 from app.schemas.playlist import PlaylistCreate
 from app.services import lyrics_service
 from app.services.playback_service import playback_service

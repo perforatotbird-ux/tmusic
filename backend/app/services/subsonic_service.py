@@ -15,8 +15,12 @@ from sqlalchemy.orm import Session, load_only
 from app.models.music import MusicAlbum, MusicArtist
 from app.models.playlist import Playlist, PlaylistItem
 from app.models.share import ShareLink
-from app.models.vfs import VFile
-from app.repositories.file_repository import FileRepository
+from app.models.vfs import FolderClosure, VFile
+from app.repositories.file_repository import (
+    FileRepository,
+    _TRACK_LIST_COLUMNS,
+    _natural_sort_columns,
+)
 from app.services import lastfm_service
 from app.services.subsonic_response import album_entry, artist_entry, playlist_entry, song_entry, ts
 from app.utils.like import escape_like
@@ -83,15 +87,73 @@ def album_songs(db: Session, album: MusicAlbum) -> list:
 
 
 def artist_songs(db: Session, artist: MusicArtist, limit: int = 500) -> list:
-    albums = db.scalars(
-        select(MusicAlbum).where(MusicAlbum.artist_id == artist.id).order_by(MusicAlbum.year, MusicAlbum.title)
-    ).all()
+    """Tracks of an artist across albums, in one bounded SQL query.
+
+    Previous implementation called `album_songs` per album (artist lookup +
+    recursive track query each), materialising the whole discography before
+    truncating it. This joins albums to their folder subtrees through the
+    closure table and applies LIMIT in the database (PERF-005).
+    """
+    album_rows = (
+        select(
+            MusicAlbum.id.label("album_id"),
+            MusicAlbum.title.label("album_title"),
+            MusicAlbum.artist_id.label("album_artist_id"),
+            MusicAlbum.folder_id.label("album_folder_id"),
+            MusicAlbum.year.label("album_year"),
+        )
+        .where(MusicAlbum.artist_id == artist.id)
+        .subquery()
+    )
+    prefix, num_part = _natural_sort_columns()
+    stmt = (
+        select(
+            VFile,
+            album_rows.c.album_id,
+            album_rows.c.album_title,
+            album_rows.c.album_artist_id,
+            album_rows.c.album_year,
+        )
+        .options(load_only(*_TRACK_LIST_COLUMNS))
+        .join(FolderClosure, VFile.folder_id == FolderClosure.descendant_id)
+        .join(album_rows, album_rows.c.album_folder_id == FolderClosure.ancestor_id)
+        .where(
+            FolderClosure.ancestor_id.in_(
+                select(MusicAlbum.folder_id).where(MusicAlbum.artist_id == artist.id)
+            ),
+            VFile.is_trash.is_(False),
+            VFile.mime_type.like("audio/%"),
+        )
+        .order_by(
+            album_rows.c.album_year,
+            album_rows.c.album_title,
+            FolderClosure.depth.asc(),
+            prefix.asc(),
+            num_part.asc().nulls_last(),
+            VFile.name.asc(),
+        )
+        .limit(limit)
+    )
+
     out = []
-    for alb in albums:
-        out.extend(album_songs(db, alb))
-        if len(out) >= limit:
-            break
-    return out[:limit]
+    current_album = None
+    track_no = 0
+    for vf, album_id, album_title, album_artist_id, _year in db.execute(stmt).all():
+        if album_id != current_album:
+            current_album = album_id
+            track_no = 0
+        track_no += 1
+        out.append(
+            song_entry(
+                vf,
+                artist=artist.display_name,
+                album=album_title,
+                artist_id=album_artist_id,
+                album_id=album_id,
+                track_no=track_no,
+            )
+        )
+    return out
 
 
 def random_song_rows(db: Session, size: int) -> list:

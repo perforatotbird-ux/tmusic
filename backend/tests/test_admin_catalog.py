@@ -3,13 +3,13 @@ import asyncio
 import sys
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.main import app
 from app.core.database import SessionLocal
@@ -20,7 +20,7 @@ from app.repositories.artist_repository import ArtistRepository
 from app.services import lastfm_service
 from app.services.music_library_service import CatalogAdminService, library_service
 from app.services import scan_service
-from app.services.scan_service import ScanBusy, ScanMissing, ScanUnavailable
+from app.services.scan_service import ScanMissing, ScanUnavailable
 
 client = TestClient(app)
 
@@ -650,6 +650,184 @@ def test_batch_delete_removes_cards_with_albums_and_detaches_children():
                         CatalogAdminService.delete_artist(db, card.id)
                 except Exception:
                     db.rollback()
+        except Exception:
+            db.rollback()
+        db.close()
+
+
+def test_delete_artist_with_files_removes_track_rows_and_folder():
+    """`with_files=True`: the card's tracks leave the DB with the card.
+
+    Regression guard for the admin complaint «пусть удаляются не только из
+    списка, но и из базы»: the file rows must go too, the backing folder must
+    become empty and be removed, and the report must count them.
+    """
+    db = SessionLocal()
+    suffix = uuid.uuid4().hex[:6]
+    card = None
+    try:
+        card = CatalogAdminService.create_collection(db, f"T_WF_A_{suffix}", "standalone_album")
+        track1 = vfs.VFile(name=f"a1_{suffix}.mp3", size=1, mime_type="audio/mpeg", folder_id=card.folder_id, is_trash=False)
+        track2 = vfs.VFile(name=f"a2_{suffix}.mp3", size=2, mime_type="audio/mpeg", folder_id=card.folder_id, is_trash=False)
+        trashed = vfs.VFile(name=f"t_{suffix}.mp3", size=3, mime_type="audio/mpeg", folder_id=card.folder_id, is_trash=True)
+        db.add_all([track1, track2, trashed])
+        db.commit()
+        t1_id, t2_id, trashed_id, folder_id = track1.id, track2.id, trashed.id, card.folder_id
+
+        result = CatalogAdminService.delete_artist(db, card.id, with_albums=True, with_files=True)
+        card = None
+
+        assert result["deleted_files"] == 2
+        assert result["files_kept"] == 0
+        assert db.scalar(select(vfs.VFile.id).where(vfs.VFile.id == t1_id)) is None
+        assert db.scalar(select(vfs.VFile.id).where(vfs.VFile.id == t2_id)) is None
+        # Trash rows are never touched.
+        assert db.scalar(select(vfs.VFile.id).where(vfs.VFile.id == trashed_id)) is not None
+        # The backing folder lost its last non-trash rows and went away.
+        from app.repositories.folder_repository import FolderRepository
+        assert FolderRepository.get(db, folder_id) is None
+    finally:
+        try:
+            db.rollback()
+            from sqlalchemy import delete as _delete
+            if card is not None:
+                db.execute(_delete(vfs.VFile).where(vfs.VFile.folder_id == card.folder_id))
+                db.execute(_delete(MusicAlbum).where(MusicAlbum.folder_id == card.folder_id))
+                db.execute(_delete(MusicArtist).where(MusicArtist.folder_id == card.folder_id))
+                db.execute(_delete(vfs.Folder).where(vfs.Folder.id == card.folder_id))
+            else:
+                db.execute(_delete(vfs.VFile).where(vfs.VFile.id == trashed_id))
+            db.commit()
+        except Exception:
+            db.rollback()
+        db.close()
+
+
+def test_delete_artist_without_files_keeps_rows():
+    """Without `with_files` the old contract holds: rows kept, folder pinned."""
+    db = SessionLocal()
+    suffix = uuid.uuid4().hex[:6]
+    card = None
+    try:
+        card = CatalogAdminService.create_collection(db, f"T_NF_A_{suffix}", "standalone_album")
+        track = vfs.VFile(name=f"b1_{suffix}.mp3", size=1, mime_type="audio/mpeg", folder_id=card.folder_id, is_trash=False)
+        db.add(track)
+        db.commit()
+        track_id, folder_id, card_id = track.id, card.folder_id, card.id
+
+        result = CatalogAdminService.delete_artist(db, card.id, with_albums=True, with_files=False)
+        card = None
+
+        assert result["deleted_files"] == 0
+        assert result["files_kept"] == 1
+        assert db.scalar(select(vfs.VFile.id).where(vfs.VFile.id == track_id)) is not None
+        from app.repositories.folder_repository import FolderRepository
+        assert FolderRepository.get(db, folder_id) is not None
+    finally:
+        try:
+            db.rollback()
+            from sqlalchemy import delete as _delete
+            if card is not None:
+                db.execute(_delete(vfs.VFile).where(vfs.VFile.folder_id == card.folder_id))
+                db.execute(_delete(vfs.Folder).where(vfs.Folder.id == card.folder_id))
+            else:
+                db.execute(_delete(vfs.VFile).where(vfs.VFile.folder_id == folder_id))
+                db.execute(_delete(vfs.Folder).where(vfs.Folder.id == folder_id))
+            db.commit()
+        except Exception:
+            db.rollback()
+        db.close()
+
+
+def test_batch_delete_with_files_spares_detached_child_files(monkeypatch):
+    """Bulk `with_files` kills the parent's tracks, the detached child's survive.
+
+    The nested card is detached on the parent's deletion and keeps its own
+    folder — its file rows must not be touched by the parent's cleanup.
+    """
+    db = SessionLocal()
+    suffix = uuid.uuid4().hex[:6]
+    parent = kid = None
+    try:
+        parent = CatalogAdminService.create_collection(db, f"T_BWF_P_{suffix}", "artist")
+        kid = CatalogAdminService.create_collection(db, f"T_BWF_K_{suffix}", "standalone_album", parent_id=parent.id)
+        parent_track = vfs.VFile(name=f"pt_{suffix}.mp3", size=1, mime_type="audio/mpeg",
+                                 folder_id=parent.folder_id, is_trash=False)
+        kid_track = vfs.VFile(name=f"kt_{suffix}.mp3", size=1, mime_type="audio/mpeg",
+                              folder_id=kid.folder_id, is_trash=False)
+        db.add_all([parent_track, kid_track])
+        db.flush()
+        kid_id = kid_track.id
+        # A cover key on the deleted track must not be purged while the child's
+        # file still references it — content hashes are shared.
+        db.execute(_set_key(parent_track.id, "SHARED_COVER_KEY"))
+        db.execute(_set_key(kid_id, "SHARED_COVER_KEY"))
+        db.commit()
+
+        purged = []
+        from app.services import music_library_service as mls
+        monkeypatch.setattr(
+            mls.cover_cache, "purge_key", lambda key: purged.append(key)
+        )
+
+        result = CatalogAdminService.delete_artists(db, [parent.id])
+        parent = None
+
+        assert result["deleted_count"] == 1
+        assert result["deleted_files"] == 1
+        assert db.scalar(select(vfs.VFile.id).where(vfs.VFile.id == kid_id)) is not None
+        # Shared with the surviving child's row → not purged.
+        assert purged == []
+    finally:
+        try:
+            db.rollback()
+            from sqlalchemy import delete as _delete
+            for card in (kid, parent):
+                if card is not None:
+                    db.execute(_delete(vfs.VFile).where(vfs.VFile.folder_id == card.folder_id))
+                    db.execute(_delete(MusicAlbum).where(MusicAlbum.folder_id == card.folder_id))
+                    db.execute(_delete(MusicArtist).where(MusicArtist.folder_id == card.folder_id))
+                    db.execute(_delete(vfs.Folder).where(vfs.Folder.id == card.folder_id))
+            db.commit()
+        except Exception:
+            db.rollback()
+        db.close()
+
+
+def _set_key(file_id, key):
+    from sqlalchemy import update
+    return update(vfs.VFile).where(vfs.VFile.id == file_id).values(custom_image_key=key)
+
+
+def test_delete_artist_purges_unreferenced_custom_covers(monkeypatch):
+    """A cover key only the deleted tracks referenced is removed from disk."""
+    db = SessionLocal()
+    suffix = uuid.uuid4().hex[:6]
+    card = None
+    try:
+        card = CatalogAdminService.create_collection(db, f"T_CP_A_{suffix}", "standalone_album")
+        track = vfs.VFile(name=f"c1_{suffix}.mp3", size=1, mime_type="audio/mpeg",
+                          folder_id=card.folder_id, is_trash=False, custom_image_key=f"UNIQ_COVER_{suffix}.jpg")
+        db.add(track)
+        db.commit()
+
+        removed = []
+        from app.services import music_library_service as mls
+        monkeypatch.setattr(mls.cover_cache, "purge_key", lambda key: removed.append(key))
+
+        result = CatalogAdminService.delete_artist(db, card.id, with_albums=True, with_files=True)
+        card = None
+
+        assert result["deleted_files"] == 1
+        assert removed == [f"UNIQ_COVER_{suffix}.jpg"]
+    finally:
+        try:
+            db.rollback()
+            from sqlalchemy import delete as _delete
+            if card is not None:
+                db.execute(_delete(vfs.VFile).where(vfs.VFile.folder_id == card.folder_id))
+                db.execute(_delete(vfs.Folder).where(vfs.Folder.id == card.folder_id))
+            db.commit()
         except Exception:
             db.rollback()
         db.close()

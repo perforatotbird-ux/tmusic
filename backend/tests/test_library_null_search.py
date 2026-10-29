@@ -2,11 +2,19 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.repositories.artist_repository import ArtistRepository
 from app.repositories.album_repository import AlbumRepository
+
+pytestmark = pytest.mark.skipif(
+    bool(settings.TEST_DATABASE_SCHEMA),
+    reason="requires migrated catalog data; skipped in an isolated test schema",
+)
 
 
 def test_artist_repo_ignores_null_search():

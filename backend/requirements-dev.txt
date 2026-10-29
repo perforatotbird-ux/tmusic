@@ -1,6 +1,8 @@
 # Test/dev-only dependencies (NOT needed to run the server).
 # Install on top of requirements.txt:
 #   venv\Scripts\python.exe -m pip install -r backend\requirements-dev.txt
-# Backend tests run against the REAL database - see AGENTS.md before running them.
+# Backend tests run in a disposable PostgreSQL schema. See AGENTS.md:
+#   TMUSIC_TEST_SCHEMA=tmusic_test pytest
 pytest==9.1.1
+pytest-asyncio==1.3.0
 httpx==0.28.1  # fastapi.testclient transport

@@ -4,7 +4,6 @@ Persists revoked token IDs (jti) so logout actually invalidates access tokens.
 """
 import logging
 import time
-from datetime import datetime
 from typing import Dict
 
 from sqlalchemy import delete, select

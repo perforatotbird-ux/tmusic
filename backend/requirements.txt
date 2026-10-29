@@ -18,7 +18,7 @@ bcrypt==4.2.1  # read compatibility for existing password hashes
 argon2-cffi==25.1.0
 argon2-cffi-bindings==26.1.0
 cryptography==50.0.1
-aiohttp==3.14.3
+aiohttp==3.14.4
 python-multipart==0.0.32
 python-dotenv==1.2.3
 # Log rotation archives: AES-256 encrypted ZIP (password from LOG_ARCHIVE_PASSWORD).

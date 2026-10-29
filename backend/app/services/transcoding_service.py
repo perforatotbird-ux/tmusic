@@ -43,6 +43,9 @@ PRIORITY_PLAYING = 0
 PRIORITY_PREFETCH = 1
 MAX_QUEUED_TRANSCODES = 100
 MAX_USER_ACTIVE_TRANSCODES = 50
+# Prefetch must never be able to consume the whole queue: playback has to get a
+# slot even when a user has just opened several large collections (PERF-003).
+PLAYBACK_RESERVE_SLOTS = 10
 MAX_COMPLETED_JOBS = 1000
 COMPLETED_JOB_TTL = 3600
 JOB_SWEEP_INTERVAL = 60
@@ -237,6 +240,8 @@ class TranscodingService:
                 logger.info("Upgraded priority for file %d (now playing)", track.id)
             return existing.status
 
+        if self._queue.qsize() >= MAX_QUEUED_TRANSCODES - PLAYBACK_RESERVE_SLOTS and priority != PRIORITY_PLAYING:
+            raise HTTPException(status_code=429, detail="Transcoding prefetch budget is full.")
         if self._queue.full():
             raise HTTPException(status_code=429, detail="Transcoding queue is full.")
         if requester_user_id is not None and limiter.is_rate_limited(
@@ -300,7 +305,7 @@ class TranscodingService:
             ):
                 continue
             # Only prefetch if file needs transcoding (will be checked in worker)
-            if self._queue.full():
+            if self._queue.qsize() >= MAX_QUEUED_TRANSCODES - PLAYBACK_RESERVE_SLOTS:
                 break
             self._queue.put_nowait((PRIORITY_PREFETCH, time.time(), file_id))
             enqueued += 1
@@ -340,8 +345,11 @@ class TranscodingService:
             for track in tracks:
                 if enqueued >= limit:
                     break
-                if self._queue.full():
-                    logger.info("Transcode queue full — collection prefetch stopped after %d tracks", enqueued)
+                if self._queue.qsize() >= MAX_QUEUED_TRANSCODES - PLAYBACK_RESERVE_SLOTS:
+                    logger.info(
+                        "Transcode prefetch budget full — collection prefetch stopped after %d tracks",
+                        enqueued,
+                    )
                     break
                 # Строка без имени не может быть треком (колонка NOT NULL), но
                 # одна битая запись не должна обрывать залп по всей коллекции.

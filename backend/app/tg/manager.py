@@ -11,7 +11,7 @@ import logging
 import asyncio
 from typing import Dict, List, Optional, Tuple
 
-from pyrogram import Client, errors
+from pyrogram import Client
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -19,7 +19,6 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import engine
 from app.models.vfs import TGAccount
-from app.utils.msg_ids import parse_msg_ids
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +121,7 @@ class TelegramManager:
         self._flood_cooldowns: Dict[int, float] = {}  # account_id -> cooldown_until_timestamp
         self._lock = asyncio.Lock()
         self._is_started = False
+        self._keepalive_task: Optional[asyncio.Task] = None
 
     @property
     def is_started(self) -> bool:
@@ -130,8 +130,9 @@ class TelegramManager:
     async def start(self):
         """Initializes and connects all active Telegram accounts in memory."""
         async with self._lock:
-            if self.is_started:
-                return
+            # A periodic keepalive also calls start(): it must only fill the gaps
+            # instead of returning immediately when at least one client is alive.
+            only_missing = self.is_started
 
             logger.info("Initializing T-Music Telegram Multi-Account Cluster...")
             tasks = []
@@ -144,6 +145,8 @@ class TelegramManager:
                     accounts = db.scalars(select(TGAccount).where(TGAccount.is_active == True)).all()
                     healed = False
                     for acc in accounts:
+                        if only_missing and acc.id in self.clients:
+                            continue
                         # Per-account isolation: one corrupt row must not abort
                         # the rest of the cluster (api_id is a String column and
                         # Fernet decryption raises on tampered values).
@@ -188,7 +191,7 @@ class TelegramManager:
                     fallback_aid = int(settings.TG_API_ID)
                 except (TypeError, ValueError):
                     logger.error("Invalid TG_API_ID in music.env: %r — must be numeric.", settings.TG_API_ID)
-            if not tasks and fallback_aid and settings.TG_API_HASH:
+            if not tasks and not only_missing and fallback_aid and settings.TG_API_HASH:
                 fallback_session = settings.TG_SESSION_STRING
                 if fallback_session:
                     logger.info("Starting fallback standalone Telegram client from config...")
@@ -202,7 +205,8 @@ class TelegramManager:
                     ))
 
             if not tasks:
-                logger.warning("No Telegram accounts available to initialize. Streaming will be unavailable.")
+                if not only_missing:
+                    logger.warning("No Telegram accounts available to initialize. Streaming will be unavailable.")
                 return
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -213,7 +217,7 @@ class TelegramManager:
                 elif res:
                     connected_count += 1
 
-            self._is_started = connected_count > 0
+            self._is_started = self._is_started or connected_count > 0
             logger.info("Telegram cluster initialized: %d/%d clients online (Primary: %s).",
                         connected_count, len(tasks), self.primary_id)
 
@@ -293,6 +297,32 @@ class TelegramManager:
         await self.stop()
         await self.start()
         return self.cluster_status()
+
+    def start_keepalive(self, interval_sec: int = 60) -> None:
+        """Periodically try to restore accounts that were offline at boot."""
+        if self._keepalive_task and not self._keepalive_task.done():
+            return
+        self._keepalive_task = asyncio.create_task(self._keepalive_loop(interval_sec))
+
+    async def _keepalive_loop(self, interval_sec: int) -> None:
+        while True:
+            try:
+                await asyncio.sleep(interval_sec)
+                await self.start()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Telegram keepalive iteration failed")
+
+    async def stop_keepalive(self) -> None:
+        task = self._keepalive_task
+        self._keepalive_task = None
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     def is_healthy(self, account_id: int) -> bool:
         """Returns True if the account client exists, is connected, and not in FloodWait."""
@@ -400,3 +430,4 @@ class TelegramManager:
 
 
 tg_manager = TelegramManager()
+

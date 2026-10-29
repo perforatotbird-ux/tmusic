@@ -214,7 +214,7 @@ async def set_cover(
             await file.close()
         if len(content) >= MAX_UPLOAD_BYTES:
             raise HTTPException(status_code=413, detail="Uploaded file is too large.")
-        custom_key = cover_cache.save_custom_cover(content)
+        custom_key = await run_in_threadpool(cover_cache.save_custom_cover, content)
         if not custom_key:
             raise HTTPException(status_code=400, detail="Invalid image file or unsupported format.")
     elif url:
@@ -226,7 +226,7 @@ async def set_cover(
         data, _ = await cover_cache.fetch_fresh(url)
         if not data:
             raise HTTPException(status_code=502, detail="Failed to download image from provided URL.")
-        custom_key = cover_cache.save_custom_cover(data)
+        custom_key = await run_in_threadpool(cover_cache.save_custom_cover, data)
     else:
         raise HTTPException(status_code=400, detail="Provide either an image file or a valid URL.")
 

@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from cryptography.fernet import InvalidToken
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
@@ -18,9 +17,8 @@ from app.services import lastfm_service as lastfm, vfs_import_service as imports
 from app.services.playlist_service import playlist_service
 from app.services.stream_service import StreamService
 from app.api import admin_vfs_router, playlist_router, playback_router
-from app.core.config import settings
 from app.models.base import Base
-from app.models import auth, music, playback, playlist, share, vfs
+from app.models import auth, playback, playlist, vfs
 from app.schemas.playlist import PlaylistCreate
 
 

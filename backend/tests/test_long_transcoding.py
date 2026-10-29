@@ -166,7 +166,6 @@ def test_explicit_mp3_route_preserves_auth_dependency_range_and_mime(monkeypatch
 async def test_download_encrypted_track_resolves_exact_plain_size_and_does_not_truncate(monkeypatch, tmp_path):
     from app.core import database
     from app.repositories.file_repository import FileRepository
-    from app.services.stream_service import stream_service
     from app.services.decryption_service import DecryptionService
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     import struct

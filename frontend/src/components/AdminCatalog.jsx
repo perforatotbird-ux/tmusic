@@ -417,8 +417,8 @@ export function AdminCatalog({ onOpenCoverPicker }) {
     const ok = await confirm({
       title: 'Удалить карточку',
       message:
-        `Удалить «${artist.display_name}» целиком? Вместе с карточкой удалятся её альбомы. ` +
-        'Аудиофайлы остаются в файловом дереве — карточку можно вернуть сканированием.',
+        `Удалить «${artist.display_name}» целиком? Вместе с карточкой удалятся её альбомы и треки (из базы). ` +
+        'Аудиофайлы в удалённом хранилище не трогаются. Вложенные карточки не удаляются: они открепляются и остаются в каталоге.',
       danger: true,
       confirmLabel: 'Удалить',
     })
@@ -453,6 +453,7 @@ export function AdminCatalog({ onOpenCoverPicker }) {
         text:
           `«${artist.display_name}» удалена` +
           (result?.deleted_albums ? ` вместе с альбомами (${result.deleted_albums})` : '') +
+          (result?.deleted_files ? ` и треками (${result.deleted_files})` : '') +
           '.',
       })
     } catch (e) {
@@ -635,15 +636,15 @@ export function AdminCatalog({ onOpenCoverPicker }) {
   }
 
   // Delete every checked card in one go. The card goes entirely — its albums
-  // are deleted with it; audio files stay in the VFS.
+  // and their track rows are deleted with it; the remote audio copies stay.
   const deleteSelectedArtists = async () => {
     const ids = [...selectedArtists]
     if (!ids.length || busyId === 'bulk-delete') return
     const ok = await confirm({
       title: 'Удалить выбранные карточки',
       message:
-        `Удалить ${ids.length} ${cardsWord(ids.length)} целиком? Вместе с карточками удалятся их альбомы. ` +
-        'Аудиофайлы остаются в файловом дереве. Вложенные карточки не удаляются: они открепляются и остаются в каталоге.',
+        `Удалить ${ids.length} ${cardsWord(ids.length)} целиком? Вместе с карточками удалятся их альбомы и треки (из базы). ` +
+        'Аудиофайлы в удалённом хранилище не трогаются. Вложенные карточки не удаляются: они открепляются и остаются в каталоге.',
       danger: true,
       confirmLabel: 'Удалить',
     })
@@ -684,11 +685,13 @@ export function AdminCatalog({ onOpenCoverPicker }) {
 
       const reasons = [...new Set(skipped.map((item) => SKIP_REASON[item.code] || SKIP_REASON.error))]
       const albums = result?.deleted_albums || 0
+      const files = result?.deleted_files || 0
       setNotice({
         kind: skipped.length ? 'muted' : 'ok',
         text:
           `Удалено карточек: ${deletedIds.size}` +
           (albums ? ` (альбомов: ${albums})` : '') +
+          (files ? ` (треков: ${files})` : '') +
           '.' +
           (skipped.length ? ` Пропущено: ${skipped.length} (${reasons.join(', ')}).` : ''),
       })

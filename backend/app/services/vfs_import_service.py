@@ -20,9 +20,6 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.vfs import Folder, FolderClosure, VFile
-from app.models.music import MusicArtist, MusicAlbum
-from app.repositories.album_repository import AlbumRepository
-from app.repositories.artist_repository import ArtistRepository
 from app.repositories.file_repository import FileRepository
 from app.repositories.folder_repository import FolderRepository
 from app.repositories.tg_account_repository import TGAccountRepository
@@ -1213,8 +1210,11 @@ def _init_staging_sqlite(db_path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = OFF")
     conn.execute("PRAGMA synchronous = 0")
-    conn.execute("PRAGMA cache_size = 200000")
-    conn.execute("PRAGMA temp_store = MEMORY")
+    # Staging is bounded by MAX_IMPORT_DECOMPRESSED_BYTES, but a large dump can
+    # still spill gigabytes into temp files. Keep temp data on disk and use a
+    # modest page cache instead of pinning ~200k pages in RAM (SEC-013).
+    conn.execute("PRAGMA cache_size = 32768")
+    conn.execute("PRAGMA temp_store = FILE")
     conn.execute("PRAGMA locking_mode = EXCLUSIVE")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS folders (
@@ -1308,7 +1308,13 @@ def _populate_staging_db(sql_path: Path, conn: sqlite3.Connection) -> Tuple[int,
         in_copy_table: Optional[str] = None
         col_map: Dict[str, int] = {}
 
+        row_count = 0
         for raw_line in handle:
+            if len(raw_line.encode("utf-8")) > MAX_LINE_BYTES:
+                raise VfsImportError("Строка SQL-файла превышает допустимый размер")
+            row_count += 1
+            if row_count > MAX_ROWS:
+                raise VfsImportError("SQL-файл содержит слишком много строк")
             line = raw_line.rstrip("\r\n")
             if not line:
                 continue
@@ -1854,7 +1860,12 @@ def _sync_catalog_for_imported_tree(
     from app.services.music_library_service import CatalogAdminService
     for tf_id in top_level_target_ids:
         try:
-            CatalogAdminService.sync_catalog_folder_tree(db, tf_id, catalog_kind=catalog_kind)
+            # commit=False: the import owns the transaction. A commit here made
+            # the tree import non-atomic — a later audit failure could no longer
+            # roll back the imported files/catalog rows.
+            CatalogAdminService.sync_catalog_folder_tree(
+                db, tf_id, catalog_kind=catalog_kind, commit=False
+            )
         except Exception:
             logger.warning("Recursive catalog sync failed for folder %s", tf_id, exc_info=True)
 

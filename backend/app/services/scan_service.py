@@ -202,7 +202,12 @@ async def scan_artist_in_db(db, artist_id: int, report: Callable[..., None]):
         raise ScanMissing("Artist not found.")
 
     report("artist", f"Запрос данных «{artist.display_name}» из Last.fm…", 0, 0)
-    info = lastfm_service.get_artist_info(artist.display_name, force=True)
+    # Last.fm is a blocking urllib call (8s timeout). This coroutine runs on the
+    # shared event loop, so calling it inline froze every stream and API request
+    # for the duration of the scan (PERF-001).
+    info = await asyncio.to_thread(
+        lastfm_service.get_artist_info, artist.display_name, force=True
+    )
     if not info:
         raise ScanMissing("Artist was not found on Last.fm.")
 
@@ -317,7 +322,9 @@ async def _fetch_album_cover(artist_name: str, album_title: str) -> Optional[str
     is unavailable. Returns None when Last.fm has no real artwork (the shared
     placeholder is filtered out by lastfm_service.pick_image).
     """
-    info = lastfm_service.get_album_info(artist_name, album_title, force=True)
+    info = await asyncio.to_thread(
+        lastfm_service.get_album_info, artist_name, album_title, force=True
+    )
     url = (info or {}).get("image_url")
     if not url:
         return None

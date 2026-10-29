@@ -507,7 +507,7 @@ async def list_admin_folders(
 
 
 @router.patch("/folders/{folder_id}")
-async def update_admin_folder(
+def update_admin_folder(
     folder_id: int,
     body: FolderUpdate,
     request: Request,
@@ -633,7 +633,7 @@ async def move_admin_files(
 
 
 @router.post("/folders/rebuild-closures")
-async def rebuild_vfs_closures(
+def rebuild_vfs_closures(
     request: Request,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
@@ -642,3 +642,4 @@ async def rebuild_vfs_closures(
     _audit(db, request, user, "vfs.closures_rebuilt", "vfs", "all")
     db.commit()
     return {"ok": True}
+

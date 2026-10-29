@@ -9,13 +9,16 @@ from collections import OrderedDict
 from typing import AsyncGenerator, Optional, List, Tuple, Union, Dict, Any
 
 from pyrogram import errors
-from app.core.config import settings
 from app.tg.manager import tg_manager
 from app.utils.msg_ids import parse_msg_ids
 
 logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 1048576  # 1 MiB chunk size for Pyrogram stream_media seek
+
+# A mirror can hand over the first chunk and then fail repeatedly. Without a
+# budget that turned into an endless retry loop holding the request forever.
+MAX_SEGMENT_ATTEMPTS = 5
 
 # Cap for the (account_id, msg_id) -> size cache: metadata is stable, but the
 # key space grows with the library, so evict LRU beyond this.
@@ -226,6 +229,7 @@ class FastStreamer:
             seg = segment_map[i]
             target_seg_offset = current_offset if i == start_idx else 0
             segment_remaining = seg["size"] - target_seg_offset
+            attempts = 0
 
             while segment_remaining > 0:
                 if limit is not None and yielded_total >= limit:
@@ -331,17 +335,25 @@ class FastStreamer:
                             target_seg_offset += chunk_len
 
                 except errors.FloodWait as fw:
+                    attempts += 1
                     tg_manager.mark_flood(active_aid, fw.value)
-                    logger.warning("Mid-stream FloodWait on Acc %d (%ds). Retrying offset %d on mirror...",
-                                   active_aid, fw.value, target_seg_offset)
+                    logger.warning("Mid-stream FloodWait on Acc %d (%ds). Retrying offset %d on mirror (%d/%d)...",
+                                   active_aid, fw.value, target_seg_offset, attempts, MAX_SEGMENT_ATTEMPTS)
                 except Exception as e:
-                    logger.warning("Acc %d disconnected during audio stream: %s. Retrying on mirror...", active_aid, e)
+                    attempts += 1
+                    logger.warning("Acc %d disconnected during audio stream: %s. Retrying on mirror (%d/%d)...",
+                                   active_aid, e, attempts, MAX_SEGMENT_ATTEMPTS)
                 finally:
                     if stream_gen and hasattr(stream_gen, "aclose"):
                         try:
                             await stream_gen.aclose()
                         except Exception:
                             logger.debug("Failed to close stream generator", exc_info=True)
+
+                if attempts >= MAX_SEGMENT_ATTEMPTS:
+                    logger.error("Audio part %d exhausted %d failover attempts at offset %d.",
+                                 i, attempts, target_seg_offset)
+                    raise RuntimeError(f"Audio stream failed after {attempts} failover attempts")
 
 
 fast_streamer = FastStreamer()

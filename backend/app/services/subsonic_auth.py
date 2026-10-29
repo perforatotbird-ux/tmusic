@@ -16,7 +16,6 @@ import hashlib
 import hmac
 import logging
 import secrets
-from datetime import timedelta
 from typing import Optional
 
 from cryptography.fernet import Fernet

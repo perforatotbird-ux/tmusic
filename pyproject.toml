@@ -1,0 +1,26 @@
+[tool.ruff]
+# Backend targets the runtime shipped with the container (Python 3.13), while
+# keeping syntax compatible with the oldest supported dev interpreter.
+target-version = "py310"
+line-length = 120
+extend-exclude = [
+    "backend/cache",
+    "backend/data",
+    "backend/storage",
+    "frontend",
+    "mobile",
+    "venv",
+]
+
+[tool.ruff.lint]
+select = ["E", "F"]
+# SQLAlchemy comparisons must use `.is_(False/True)`; E712's suggested
+# `not Column` rewrite is wrong for SQL expressions.
+ignore = ["E501", "E712"]
+
+[tool.ruff.lint.per-file-ignores]
+# Logging is configured before the remaining imports on purpose in these files.
+"backend/app/main.py" = ["E402"]
+"backend/app/core/logging_config.py" = ["E402"]
+# Compact one-line assertions are the established test style.
+"backend/tests/*" = ["E401", "E701", "E702", "F841"]

@@ -165,9 +165,10 @@ export const adminApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }),
-  // `with_albums=true`: удалить карточку целиком, вместе с её альбомами.
+  // `with_albums=true` + `with_files=true`: удалить карточку целиком, вместе с
+  // её альбомами и треками (строками файлов). Аудиофайлы в хранилище не трогаются.
   deleteArtist: (id) =>
-    request(`/api/admin/catalog/artists/${id}?with_albums=true`, { method: 'DELETE' }),
+    request(`/api/admin/catalog/artists/${id}?with_albums=true&with_files=true`, { method: 'DELETE' }),
   // Bulk delete: the response separates `deleted` from `skipped` (a card that
   // vanished or failed), so one bad card never hides the rest.
   batchDeleteArtists: (body) =>

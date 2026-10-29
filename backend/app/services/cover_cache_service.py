@@ -152,6 +152,30 @@ class _PinnedResolver(AbstractResolver):
         pass
 
 
+async def _read_limited_body(resp) -> Optional[bytes]:
+    """Read an image body without ever buffering more than the configured cap.
+
+    aiohttp's ``resp.read()`` downloads the whole body first; checking the size
+    afterwards lets an authenticated caller exhaust process memory with one
+    oversized URL (SEC-009). Content-Length is only a fast-path hint — the
+    chunk loop is the real limit because a server may omit or lie about it.
+    """
+    declared = resp.headers.get("Content-Length")
+    if declared:
+        try:
+            if int(declared) > MAX_IMAGE_BYTES:
+                return None
+        except (TypeError, ValueError):
+            pass
+
+    body = bytearray()
+    async for chunk in resp.content.iter_chunked(64 * 1024):
+        if len(body) + len(chunk) > MAX_IMAGE_BYTES:
+            return None
+        body.extend(chunk)
+    return bytes(body) if body else None
+
+
 async def _fetch_safe(session: aiohttp.ClientSession, url: str) -> Optional[bytes]:
     """
     GET with manual redirect handling. Every hop is resolved once, validated,
@@ -187,10 +211,7 @@ async def _fetch_safe(session: aiohttp.ClientSession, url: str) -> Optional[byte
                         continue
                     if resp.status != 200:
                         return None
-                    data = await resp.read()
-                    if len(data) > MAX_IMAGE_BYTES:
-                        return None
-                    return data
+                    return await _read_limited_body(resp)
         except Exception as e:
             logger.warning("Failed to fetch image from %s: %s", current, e)
             return None
@@ -323,9 +344,9 @@ class CoverCacheService:
         generation = self._generation
         key = self.url_to_key(url)
 
-        # Check local cache first
+        # Check local cache first (file I/O stays off the event loop)
         if not force:
-            cached = self.get_cached_item(key, is_custom=False)
+            cached = await asyncio.to_thread(self.get_cached_item, key, False)
             if cached:
                 return cached
 
@@ -370,8 +391,8 @@ class CoverCacheService:
             if mime:
                 bin_dest = settings.IMG_CACHE_DIR / f"{key}.bin"
                 meta_dest = settings.IMG_CACHE_DIR / f"{key}.meta"
-                bin_dest.write_bytes(data)
-                meta_dest.write_text(mime, encoding="utf-8")
+                await asyncio.to_thread(bin_dest.write_bytes, data)
+                await asyncio.to_thread(meta_dest.write_text, mime, encoding="utf-8")
                 result = (data, mime)
         except Exception as e:
             logger.warning("Failed to fetch image from %s: %s", url, e)
@@ -395,6 +416,29 @@ class CoverCacheService:
         dest = settings.COVER_CACHE_DIR / key
         dest.write_bytes(data)
         return key
+
+    def purge_key(self, key: str) -> None:
+        """Best-effort removal of every local file stored for a cover key.
+
+        Custom covers are keyed by content hash and live as ``{key}`` in
+        COVER_CACHE_DIR; URL-keyed entries live as ``{key}.bin`` + ``{key}.meta``
+        in IMG_CACHE_DIR. Callers must ensure no entity still references the
+        key before purging.
+        """
+        safe = os.path.basename(key or "")
+        if not safe or safe in (".", ".."):
+            return
+        for d in self._cache_dirs(is_custom=False):
+            for name in (safe, f"{safe}.bin", f"{safe}.meta"):
+                try:
+                    candidate = self._safe_resolve_in(d, name)
+                except OSError:
+                    candidate = None
+                if candidate is not None:
+                    try:
+                        candidate.unlink()
+                    except OSError:
+                        logger.debug("Cover purge failed for %s", candidate, exc_info=True)
 
 
 cover_cache = CoverCacheService()

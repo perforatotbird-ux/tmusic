@@ -149,7 +149,7 @@ def _library_counts(db: Session) -> Dict[str, int]:
 
 
 @router.get("/overview")
-async def admin_overview(
+def admin_overview(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
@@ -192,7 +192,7 @@ async def admin_overview(
 
 
 @router.get("/db/stats")
-async def admin_db_stats(
+def admin_db_stats(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
@@ -203,7 +203,7 @@ async def admin_db_stats(
 
 
 @router.post("/db/vacuum")
-async def admin_db_vacuum(
+def admin_db_vacuum(
     analyze: bool = True,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
@@ -215,7 +215,7 @@ async def admin_db_vacuum(
 
 
 @router.post("/db/analyze")
-async def admin_db_analyze(
+def admin_db_analyze(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
@@ -226,7 +226,7 @@ async def admin_db_analyze(
 
 
 @router.post("/db/reindex")
-async def admin_db_reindex(
+def admin_db_reindex(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
@@ -237,7 +237,7 @@ async def admin_db_reindex(
 
 
 @router.post("/db/ensure-schema")
-async def admin_db_ensure_schema(
+def admin_db_ensure_schema(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
@@ -246,7 +246,7 @@ async def admin_db_ensure_schema(
 
 
 @router.post("/db/purge-tokens")
-async def admin_db_purge_tokens(
+def admin_db_purge_tokens(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
@@ -579,7 +579,7 @@ async def admin_delete_user(
 
 
 @router.get("/analytics")
-async def admin_analytics(
+def admin_analytics(
     days: int = Query(30, ge=1, le=365),
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
@@ -700,7 +700,7 @@ async def admin_analytics(
 
 
 @router.get("/cache/stats")
-async def admin_cache_stats(
+def admin_cache_stats(
     user: AppUser = Depends(get_admin_user),
 ):
     """Size snapshot of the caches the admin panel can act on."""
@@ -711,7 +711,7 @@ async def admin_cache_stats(
 
 
 @router.post("/cache/flush")
-async def admin_cache_flush(
+def admin_cache_flush(
     request: Request,
     kind: str = Query("external", description="external | ram | all"),
     namespace: Optional[str] = Query(None, description="External cache namespace: lyrics | lastfm"),
@@ -742,7 +742,7 @@ async def admin_cache_flush(
 
 
 @router.get("/system/health")
-async def admin_system_health(
+def admin_system_health(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
@@ -779,3 +779,4 @@ async def admin_tg_cluster(
     user: AppUser = Depends(get_admin_user),
 ):
     return tg_manager.cluster_status()
+

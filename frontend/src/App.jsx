@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { useAuthStore } from './store/authStore'
 import { usePlayerStore } from './store/playerStore'
 import { useFavoritesStore } from './store/favoritesStore'
@@ -16,7 +16,9 @@ import { PasswordChangeModal } from './components/PasswordChangeModal'
 import { MusicLibrary } from './components/MusicLibrary'
 import { MusicLibraryPlayer } from './components/MusicLibraryPlayer'
 import { CoverPicker } from './components/CoverPicker'
-import { StorageSettingsModal } from './components/StorageSettingsModal'
+const StorageSettingsModal = lazy(() =>
+  import('./components/StorageSettingsModal').then((m) => ({ default: m.StorageSettingsModal }))
+)
 import { ScanProgressHost } from './components/ScanProgressHost'
 import { ToastHost } from './components/ui/ToastHost'
 import { useOfflineStore } from './store/offlineStore'
@@ -508,7 +510,9 @@ export function App() {
 
       {/* Telegram-style Storage & Cache Settings Modal */}
       {storageModalOpen && (
-        <StorageSettingsModal onClose={() => setStorageModalOpen(false)} />
+        <Suspense fallback={null}>
+          <StorageSettingsModal onClose={() => setStorageModalOpen(false)} />
+        </Suspense>
       )}
 
       {/* Catalog scans run as background jobs: their progress lives here so it

@@ -427,14 +427,57 @@ class CatalogAdminService:
         return None
 
     @staticmethod
-    def delete_artist(db: Session, artist_id: int, with_albums: bool = False) -> dict:
+    def _purge_unused_cover_keys(db: Session, keys: List[str]) -> None:
+        """Best-effort disk cleanup for cover keys nothing references any more.
+
+        Custom covers are keyed by content hash, so the same key can be shared
+        by several entities; a key is purged only when neither artist, album,
+        nor any other file still points at it. Runs after commit — a failure
+        here must never fail the deletion.
+        """
+        from sqlalchemy import func, select
+
+        for key in dict.fromkeys(k for k in keys if k):
+            try:
+                still_referenced = (
+                    db.scalar(select(func.count())
+                              .where(MusicArtist.custom_image_key == key))
+                    or 0
+                ) + (
+                    db.scalar(select(func.count())
+                              .where(MusicAlbum.custom_image_key == key))
+                    or 0
+                ) + (
+                    db.scalar(select(func.count())
+                              .where(VFile.custom_image_key == key))
+                    or 0
+                )
+                if not still_referenced:
+                    cover_cache.purge_key(key)
+            except Exception:  # noqa: BLE001 — cleanup is cosmetic
+                logger.debug("Cover key purge failed for %s", key, exc_info=True)
+
+    @staticmethod
+    def delete_artist(
+        db: Session,
+        artist_id: int,
+        with_albums: bool = False,
+        with_files: bool = False,
+    ) -> dict:
         """Delete an artist/collection card.
 
         `with_albums=False` keeps the old safe behaviour for programmatic
         callers: refuse while albums or files remain. The admin deletes with
-        `with_albums=True` — the card goes entirely, its album rows go with it,
-        and the audio files stay in the VFS (their Telegram copies are never
-        touched, so a re-scan can bring the card back).
+        `with_albums=True` — the card goes entirely, its album rows go with it.
+
+        `with_files=True` (admin-only) additionally removes the file rows
+        inside the card's folder — the track rows of the card's albums leave
+        the database together with the card. Only rows in the card's own folder
+        are touched: nested cards are detached first and keep their own
+        folders and files. Playback/playlists/share/history rows follow via
+        ON DELETE CASCADE. The audio copies in the remote storage are never
+        touched, and rows already in the trash stay. Unreferenced custom cover
+        images are purged from the disk cache.
         """
         artist = ArtistRepository.get_by_id(db, artist_id)
         if not artist:
@@ -448,6 +491,9 @@ class CatalogAdminService:
                 raise HTTPException(status_code=400, detail=blocker["detail"])
 
         folder_id = artist.folder_id
+        cover_keys = []
+        if with_files:
+            cover_keys = FileRepository.custom_cover_keys_in_folder(db, folder_id)
         # Albums are catalog metadata of the card, not separate objects: the
         # `MusicArtist.albums` relationship cascades (delete-orphan) and the FK
         # is ON DELETE CASCADE, so they go with the card. `album_count` is read
@@ -457,6 +503,12 @@ class CatalogAdminService:
         # survive the parent's deletion (never cascade into real artists).
         detached = ArtistRepository.detach_children(db, artist.id)
         db.delete(artist)
+        deleted_files = 0
+        if with_files:
+            # The card's tracks go with it: every non-trash file row in the
+            # card's own folder. Nested cards live in their own folders, so
+            # they cannot be hit here.
+            deleted_files = FileRepository.delete_in_folder(db, folder_id)
         db.flush()
         # Remove the backing folder only if nothing else references it — files
         # keep their folder alive, and the file rows themselves are never deleted.
@@ -472,25 +524,31 @@ class CatalogAdminService:
             if folder:
                 FolderRepository.delete(db, folder)
         db.commit()
+        if cover_keys:
+            CatalogAdminService._purge_unused_cover_keys(db, cover_keys)
         return {
             "ok": True,
             "id": artist_id,
             "detached_children": detached or 0,
             "deleted_albums": deleted_albums,
-            "files_kept": file_count,
+            "deleted_files": deleted_files,
+            "files_kept": file_count if not with_files else 0,
         }
 
     @classmethod
-    def delete_artists(cls, db: Session, artist_ids: List[int]) -> dict:
+    def delete_artists(cls, db: Session, artist_ids: List[int], with_files: bool = True) -> dict:
         """Delete several cards entirely, reporting per-card outcome.
 
         Every selected card goes, albums included — the admin asked for «удалить
-        целиком». Only a card that vanished or blew up is reported in `skipped`,
-        and it never aborts the rest. Each card commits on its own.
+        целиком». With `with_files=True` (the default) the tracks of the card's
+        albums leave the database too. Only a card that vanished or blew up is
+        reported in `skipped`, and it never aborts the rest. Each card commits
+        on its own.
         """
         deleted: List[int] = []
         skipped: List[dict] = []
         deleted_albums = 0
+        deleted_files = 0
 
         for artist_id in artist_ids:
             artist = ArtistRepository.get_by_id(db, artist_id)
@@ -498,7 +556,7 @@ class CatalogAdminService:
                 skipped.append({"id": artist_id, "code": "not_found"})
                 continue
             try:
-                result = cls.delete_artist(db, artist_id, with_albums=True)
+                result = cls.delete_artist(db, artist_id, with_albums=True, with_files=with_files)
             except HTTPException as exc:
                 db.rollback()
                 skipped.append({"id": artist_id, "code": "refused", "detail": exc.detail})
@@ -509,6 +567,7 @@ class CatalogAdminService:
             else:
                 deleted.append(artist_id)
                 deleted_albums += result.get("deleted_albums", 0)
+                deleted_files += result.get("deleted_files", 0)
 
         return {
             "ok": True,
@@ -517,6 +576,7 @@ class CatalogAdminService:
             "deleted_count": len(deleted),
             "skipped_count": len(skipped),
             "deleted_albums": deleted_albums,
+            "deleted_files": deleted_files,
         }
 
     @staticmethod

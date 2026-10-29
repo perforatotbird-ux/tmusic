@@ -102,7 +102,7 @@ async def catalog_artists(
 
 
 @router.post("/sync-folder/{folder_id}")
-async def catalog_sync_folder(
+def catalog_sync_folder(
     folder_id: int,
     catalog_kind: str = Query("compilation"),
     db: Session = Depends(get_db),
@@ -236,20 +236,29 @@ async def catalog_create_collection(
 
 
 @router.delete("/artists/{artist_id}")
-async def catalog_delete_artist(
+def catalog_delete_artist(
     artist_id: int,
     with_albums: bool = Query(
         True,
         description="Delete the card together with its album rows (admin default)",
+    ),
+    with_files: bool = Query(
+        True,
+        description="Also delete the track rows inside the card's folder",
     ),
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_catalog_user),
 ):
     """Delete a card. `with_albums=true` (default) removes the albums too.
 
-    Audio files are never deleted — they stay in the VFS and can be re-scanned.
+    `with_files=true` (default) removes the track rows of the card's albums
+    from the database. The remote audio copies are never touched, rows already
+    in the trash stay, nested cards keep their own files, and playback or
+    playlist rows follow via ON DELETE CASCADE.
     """
-    return CatalogAdminService.delete_artist(db, artist_id, with_albums=with_albums)
+    return CatalogAdminService.delete_artist(
+        db, artist_id, with_albums=with_albums, with_files=with_files
+    )
 
 
 @router.get("/albums", response_model=List[MusicAlbumCard])
@@ -383,15 +392,17 @@ async def catalog_batch_update_artists(
 
 
 @router.post("/artists/batch-delete")
-async def catalog_batch_delete_artists(
+def catalog_batch_delete_artists(
     body: ArtistBatchDelete,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_catalog_user),
 ):
-    """Delete several cards at once, albums included.
+    """Delete several cards at once, albums and their track rows included.
 
     Nothing blocks a card any more: albums are catalog metadata of the card and
-    are deleted with it, audio files stay in the VFS. Only a card that is gone
+    are deleted with it, and the file rows inside the card's folder go too.
+    The remote audio copies are never touched, trash rows stay, and nested
+    cards are detached with their own files intact. Only a card that is gone
     or fails hard lands in `skipped` (`not_found` / `refused` / `error`) — and
     it never stops the rest of the selection. Nested cards are detached, never
     deleted with their parent.
@@ -415,3 +426,4 @@ async def catalog_batch_update_albums(
         )
         updated += 1
     return {"ok": True, "updated": updated}
+
