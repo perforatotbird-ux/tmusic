@@ -17,12 +17,12 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
 
-from app.api import admin_router, admin_vfs_router, metadata_router, playlist_router
+from app.api import admin_catalog_router, admin_router, admin_vfs_router, metadata_router, playlist_router
 from app.api.dependencies import get_current_user
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.base import Base
-from app.models import auth, music, playback, playlist, share, vfs
+from app.models import auth, playlist, vfs
 from app.services import backup_scheduler, cover_cache_service, transcoding_service, vfs_import_service as imports
 from app.services.playlist_service import playlist_service
 from app.utils.ffmpeg_transcoder import communicate_with_cleanup, TranscodeStatus
@@ -45,7 +45,16 @@ def database():
 
 @pytest.mark.parametrize('fn', [metadata_router.lyrics_lookup, metadata_router.artist_lookup,
     metadata_router.track_lookup, metadata_router.enrich_artist,
-    admin_router.admin_run_backup, admin_router.admin_restore_backup])
+    admin_router.admin_run_backup, admin_router.admin_restore_backup,
+    admin_router.admin_overview, admin_router.admin_db_stats,
+    admin_router.admin_db_vacuum, admin_router.admin_db_analyze,
+    admin_router.admin_db_reindex, admin_router.admin_analytics,
+    admin_router.admin_cache_stats, admin_router.admin_cache_flush,
+    admin_router.admin_system_health,
+    admin_vfs_router.update_admin_folder, admin_vfs_router.rebuild_vfs_closures,
+    admin_catalog_router.catalog_sync_folder,
+    admin_catalog_router.catalog_delete_artist,
+    admin_catalog_router.catalog_batch_delete_artists])
 def test_blocking_routes_use_fastapi_threadpool(fn):
     assert not inspect.iscoroutinefunction(fn)
 
@@ -316,7 +325,10 @@ async def test_transcode_entry_reaps_before_removing_source(monkeypatch, tmp_pat
     if entry == 'service':
         monkeypatch.setattr(settings, 'TRANSCODE_CACHE_DIR', tmp_path)
         service = transcoding_service.TranscodingService()
-        monkeypatch.setattr(service, '_download_track_bytes', AsyncMock(return_value=b'synthetic audio'))
+        async def download(job, path):
+            await service._disk_call(path.write_bytes, b'synthetic audio')
+            return 15
+        monkeypatch.setattr(service, '_download_track_to_file', download)
         job = transcoding_service.TranscodeJob(1, 'Synthetic.flac', 123, False, 'audio/flac', 0, 'a'*32)
         operation = service._transcode_track(job)
     else:
@@ -335,7 +347,10 @@ async def test_transcode_track_offloads_io_and_duration_probe(monkeypatch, tmp_p
     monkeypatch.setattr(settings, 'TRANSCODE_CACHE_DIR', tmp_path)
     service = transcoding_service.TranscodingService()
     monkeypatch.setattr(transcoding_service, 'ensure_ffmpeg_binaries', lambda: True)
-    monkeypatch.setattr(service, '_download_track_bytes', AsyncMock(return_value=b'synthetic audio'))
+    async def download(job, path):
+        await service._disk_call(path.write_bytes, b'synthetic audio')
+        return 15
+    monkeypatch.setattr(service, '_download_track_to_file', download)
     
     # Mock subprocess communication returning valid fake MP3 bytes (>1024 bytes)
     fake_mp3 = b'ID3' + b'\x00' * 2048
@@ -346,6 +361,8 @@ async def test_transcode_track_offloads_io_and_duration_probe(monkeypatch, tmp_p
     class FakeProc:
         returncode = 0
     async def fake_spawn(*args, **kwargs):
+        Path(args[-1]).write_bytes(fake_mp3)
+        assert kwargs['stdout'] == asyncio.subprocess.DEVNULL
         return FakeProc()
     monkeypatch.setattr(asyncio, 'create_subprocess_exec', fake_spawn)
 
@@ -368,7 +385,8 @@ async def test_transcode_track_offloads_io_and_duration_probe(monkeypatch, tmp_p
     assert job.duration == 123.45
     # Verify that duration probe, write_file, manifest and cache cleanup were offloaded via asyncio.to_thread
     assert 'fake_duration' in thread_targets
-    assert '_write_file' in thread_targets
+    assert 'write_bytes' in thread_targets
+    assert 'replace' in thread_targets
     assert 'write_cache_manifest' in thread_targets
     assert '_cleanup_cache' in thread_targets
 

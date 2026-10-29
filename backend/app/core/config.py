@@ -2,7 +2,6 @@
 T-Music Configuration Management
 Centralized typed settings loaded from music.env with strict validation.
 """
-import os
 import base64
 import secrets
 import logging
@@ -33,8 +32,15 @@ class Settings(BaseSettings):
 
     # Database (must be configured explicitly — no implicit credentials in code)
     DATABASE_URL: str = ""
+    # Test-only: run the suite inside a disposable PostgreSQL schema instead of
+    # the live `public` schema. Set by backend/tests/conftest.py from
+    # TMUSIC_TEST_SCHEMA; never use this in production.
+    TEST_DATABASE_SCHEMA: Optional[str] = None
 
-    # Security & JWT
+    # Security & JWT. SECRET_KEY signs every JWT (and salts legacy password
+    # hashes); a placeholder or short value is rejected at boot (see the
+    # fail-fast checks below). When unset, a strong random key is generated —
+    # but then sessions do not survive a restart, so set it explicitly.
     SECRET_KEY: str = secrets.token_urlsafe(32)
     SESSION_SECRET: Optional[str] = None
     ALGORITHM: str = "HS256"
@@ -90,10 +96,18 @@ class Settings(BaseSettings):
     TRANSCODE_CACHE_DIR: Path = BASE_DIR / "cache" / "music_transcoded"
     TRANSCODE_ENABLED: bool = True
     TRANSCODE_BITRATE_KBPS: int = 320  # CBR 320kbps for maximum quality
+    TRANSCODE_DOWNLOAD_TIMEOUT_SEC: int = Field(1800, ge=30, le=86400)
+    TRANSCODE_TIMEOUT_SEC: int = Field(1800, ge=30, le=86400)
     TRANSCODE_WORKERS: int = 2         # Concurrent background transcode workers
     TRANSCODE_FORMATS_NEED: list = ["m4a", "mp4", "ogg", "opus", "flac", "wma", "aac"]
     TRANSCODE_PREFETCH_COUNT: int = 2   # Number of upcoming tracks to pre-transcode
     TRANSCODE_CACHE_MAX_BYTES: int = 10 * 1024 * 1024 * 1024  # 10 GB transcode cache cap
+    # 2026-10-16: открытие сборника больше не ждёт транскодинг. Список треков
+    # отдаётся сразу, а транскодинг нужных форматов уходит в фоновую очередь
+    # (priority=prefetch). MAX ограничивает «залп» на одно открытие, чтобы
+    # просмотр каталога не вычерпал квоты и не занял все воркеры.
+    TRANSCODE_PREFETCH_ON_OPEN: bool = True
+    TRANSCODE_PREFETCH_ON_OPEN_MAX: int = 20
 
     # API rate limits (requests per minute per client IP). Auth endpoints get a
     # stricter budget. Previously hardcoded in main.py.
@@ -186,9 +200,20 @@ class Settings(BaseSettings):
     # ["tmusic.lan", "192.168.1.50:8005"]. "*" disables the check.
     TRUSTED_HOSTS: List[str] = ["*"]
     # CORS_ALLOW_LAN gates the private-range allow_origin_regex below.
-    # Set false once every client uses an explicit ALLOWED_ORIGINS entry —
-    # otherwise any host on the LAN can read API responses with credentials.
-    CORS_ALLOW_LAN: bool = True
+    # Default False: otherwise any host on the LAN — or another port on the
+    # same host, since cookies ignore ports — can read credentialed API
+    # responses. Prefer adding a client's origin to ALLOWED_ORIGINS; enable
+    # this only when a private-range client cannot be pinned to one origin.
+    CORS_ALLOW_LAN: bool = False
+    # Canonical externally visible origin used in generated links (shares).
+    # When set, request.base_url is never trusted for link generation, so a
+    # forged Host header cannot poison share URLs. Example: https://music.example.com
+    PUBLIC_BASE_URL: Optional[str] = None
+    # This release stores rate-limit/lockout counters, revocation cache, import
+    # sessions and scan/transcode state in-process. Running multiple workers
+    # silently weakens those guards, so a second worker is refused unless this
+    # is explicitly acknowledged (and the shared state moved to Redis/DB).
+    ALLOW_MULTI_WORKER: bool = False
 
     def get_master_keys(self) -> List[bytes]:
         """
@@ -222,6 +247,37 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# ─── Signing / encryption secret hardening ───────────────────────────────────
+# A placeholder or short SECRET_KEY (JWT signature + legacy password salt) or a
+# missing SESSION_SECRET (Fernet key protecting Telegram credentials at rest) is
+# a boot-time misconfiguration with Critical impact: forgeable tokens and
+# plaintext credential storage. Refuse to start rather than run insecurely.
+_PLACEHOLDER_SECRETS = frozenset({
+    "", "change_me", "changeme", "change-me", "changethis", "change-this",
+    "secret", "secret_key", "secretkey", "your-secret-key", "your_secret_key",
+    "test", "example", "placeholder", "none", "null", "password", "123456",
+})
+_MIN_SECRET_BYTES = 32
+
+
+def _require_strong_secret(value: Optional[str], name: str) -> str:
+    raw = (value or "").strip()
+    if raw.lower() in _PLACEHOLDER_SECRETS:
+        raise RuntimeError(
+            f"{name} is unset or still the example placeholder. Generate one with "
+            "python -c \"import secrets; print(secrets.token_urlsafe(48))\" and set it in music.env."
+        )
+    if len(raw.encode("utf-8")) < _MIN_SECRET_BYTES:
+        raise RuntimeError(
+            f"{name} must be at least {_MIN_SECRET_BYTES} bytes of entropy. Generate one with "
+            "python -c \"import secrets; print(secrets.token_urlsafe(48))\"."
+        )
+    return raw
+
+
+settings.SECRET_KEY = _require_strong_secret(settings.SECRET_KEY, "SECRET_KEY")
+settings.SESSION_SECRET = _require_strong_secret(settings.SESSION_SECRET, "SESSION_SECRET")
 
 # Fail fast on missing database configuration instead of silently using implicit credentials
 if not settings.DATABASE_URL:

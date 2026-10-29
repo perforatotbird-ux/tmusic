@@ -1,29 +1,36 @@
-"""
-T-Music Admin Catalog API
+"""T-Music Admin Catalog API
+
 Admin-only curation: rename artists/albums/collections, change kinds,
-create/delete collections, move albums between collections.
+create/delete collections, move albums between collections, refresh artwork.
+
+Artist scans are background jobs with pollable progress — see
+`app/services/scan_service.py` for why the old blocking request read as
+«ничего не выполняет».
 """
+import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_catalog_user
 from app.core.database import get_db
 from app.models.auth import AppUser
-from app.models.music import MusicAlbum, MusicArtist
-from app.models.vfs import VFile
 from app.services import lastfm_service
-from app.utils.time import utcnow
-from app.repositories.album_repository import AlbumRepository
-from app.repositories.artist_repository import ArtistRepository
-from app.schemas.library import MusicAlbumCard, MusicArtistCard
 from app.services.music_library_service import (
     CatalogAdminService,
     library_service,
 )
+from app.services.scan_service import (
+    ScanBusy,
+    get_job,
+    start_artist_scan,
+)
+from app.utils.time import utcnow
+from app.schemas.library import MusicAlbumCard, MusicArtistCard
+
+logger = logging.getLogger("tmusic.admin.catalog")
 
 router = APIRouter(prefix="/api/admin/catalog", tags=["admin-catalog"])
 
@@ -52,6 +59,10 @@ class ArtistBatchUpdate(BaseModel):
     parent_id: Optional[int] = None
 
 
+class ArtistBatchDelete(BaseModel):
+    artist_ids: List[int] = Field(min_length=1, max_length=500)
+
+
 class AlbumBatchUpdate(BaseModel):
     album_ids: List[int] = Field(min_length=1, max_length=1000)
     artist_id: Optional[int] = None
@@ -68,6 +79,8 @@ class AlbumUpdate(BaseModel):
 async def catalog_artists(
     kind: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    root_only: Optional[bool] = Query(None),
+    parent_id: Optional[int] = Query(None, description="Only direct children of this card"),
     limit: int = Query(200, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -77,7 +90,26 @@ async def catalog_artists(
         kind = None
     if search in ("null", "undefined") or not (search or "").strip():
         search = None
-    return library_service.list_artists(db, kind=kind, search=search, limit=limit, offset=offset)
+    return library_service.list_artists(
+        db,
+        kind=kind,
+        search=search,
+        root_only=root_only,
+        parent_id=parent_id,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.post("/sync-folder/{folder_id}")
+def catalog_sync_folder(
+    folder_id: int,
+    catalog_kind: str = Query("compilation"),
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_catalog_user),
+):
+    """Recursively synchronize an arbitrary nested folder tree into catalog artists and albums."""
+    return CatalogAdminService.sync_catalog_folder_tree(db, folder_id, catalog_kind=catalog_kind)
 
 
 @router.patch("/artists/{artist_id}", response_model=MusicArtistCard)
@@ -101,11 +133,9 @@ async def catalog_update_artist(
     )
     parent_name = None
     if artist.parent_id:
-        parent = ArtistRepository.get_by_id(db, artist.parent_id)
+        parent = library_service.get_artist(db, artist.parent_id)
         parent_name = parent.display_name if parent else None
-    children_count = (
-        db.execute(select(func.count(MusicArtist.id)).where(MusicArtist.parent_id == artist.id)).scalar() or 0
-    )
+    children_count = library_service.count_artist_children(db, artist.id)
     cards = library_service.list_artists(db, search=artist.display_name, limit=500)
     for card in cards:
         if card.id == artist.id:
@@ -130,38 +160,50 @@ async def catalog_update_artist(
     )
 
 
+# ── Scans: background jobs with progress ────────────────────────────────────
+# A scan can take tens of seconds (up to MAX_ALBUMS_PER_SCAN Last.fm album
+# lookups). Doing that inline used to leave the admin staring at a button with
+# no counter and no stage, which is exactly why the action read as dead. The
+# work now lives in scan_service and is polled through /scan/{job_id}.
+
+
 @router.post("/artists/{artist_id}/scan")
 async def catalog_scan_artist(
     artist_id: int,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_catalog_user),
 ):
-    if not lastfm_service.metadata_ready():
-        raise HTTPException(status_code=503, detail="Last.fm metadata is not configured.")
-    artist = db.get(MusicArtist, artist_id)
+    """Start refreshing one artist from Last.fm. Returns the job snapshot.
+
+    202 + `{job_id, status, progress}` — poll `GET /scan/{job_id}` for progress.
+
+    * **404** — no such artist
+    * **409** — this artist is already being scanned, or too many scans run
+    * **503** — Last.fm is not configured
+    """
+    artist = library_service.get_artist(db, artist_id)
     if not artist:
         raise HTTPException(status_code=404, detail="Artist not found.")
-    info = lastfm_service.get_artist_info(artist.display_name)
-    if not info:
-        raise HTTPException(status_code=404, detail="Artist was not found on Last.fm.")
-    artist.bio = info.get("summary") or artist.bio
-    artist.mbid = info.get("mbid") or artist.mbid
-    if info.get("image_url"):
-        artist.image_url = info["image_url"]
-    artist.enriched_at = utcnow()
-    artist.locked = True
-    artist.updated_at = utcnow()
-    db.commit()
-    # Warm the local disk cache once, so cards served via ?key= hit local
-    # files and never trigger a per-request remote fetch on display.
-    if info.get("image_url"):
-        try:
-            from app.services.cover_cache_service import cover_cache
+    if not lastfm_service.metadata_ready():
+        raise HTTPException(status_code=503, detail="Last.fm metadata is not configured.")
+    try:
+        job = start_artist_scan(artist.id, artist.display_name, user.id)
+    except ScanBusy as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail)
+    return {**job, "accepted": True}
 
-            await cover_cache.fetch_and_cache(info["image_url"])
-        except Exception:
-            pass
-    return {"ok": True, "id": artist.id, "updated": True, "mbid": artist.mbid}
+
+@router.get("/scan/{job_id}")
+async def catalog_scan_status(
+    job_id: str,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_catalog_user),
+):
+    """Progress of one scan job. `status` ∈ running | completed | failed."""
+    job = get_job(job_id, user.id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Scan job not found.")
+    return job.snapshot()
 
 
 @router.post("/artists", response_model=MusicArtistCard)
@@ -175,7 +217,7 @@ async def catalog_create_collection(
     )
     parent_name = None
     if artist.parent_id:
-        parent = ArtistRepository.get_by_id(db, artist.parent_id)
+        parent = library_service.get_artist(db, artist.parent_id)
         parent_name = parent.display_name if parent else None
     return MusicArtistCard(
         id=artist.id,
@@ -194,12 +236,29 @@ async def catalog_create_collection(
 
 
 @router.delete("/artists/{artist_id}")
-async def catalog_delete_artist(
+def catalog_delete_artist(
     artist_id: int,
+    with_albums: bool = Query(
+        True,
+        description="Delete the card together with its album rows (admin default)",
+    ),
+    with_files: bool = Query(
+        True,
+        description="Also delete the track rows inside the card's folder",
+    ),
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_catalog_user),
 ):
-    return CatalogAdminService.delete_artist(db, artist_id)
+    """Delete a card. `with_albums=true` (default) removes the albums too.
+
+    `with_files=true` (default) removes the track rows of the card's albums
+    from the database. The remote audio copies are never touched, rows already
+    in the trash stay, nested cards keep their own files, and playback or
+    playlist rows follow via ON DELETE CASCADE.
+    """
+    return CatalogAdminService.delete_artist(
+        db, artist_id, with_albums=with_albums, with_files=with_files
+    )
 
 
 @router.get("/albums", response_model=List[MusicAlbumCard])
@@ -213,27 +272,7 @@ async def catalog_albums(
 ):
     if search in ("null", "undefined") or not (search or "").strip():
         search = None
-    if artist_id is not None:
-        albums = AlbumRepository.list_by_artist_id(db, artist_id, limit=limit, offset=offset, search=search)
-    else:
-        albums = AlbumRepository.list_albums(db, search=search, limit=limit, offset=offset)
-    result = []
-    for alb in albums:
-        cov_url, c_url = library_service._cover_pair(alb.cover_url, alb.custom_image_key, alb.enriched_at)
-        result.append(MusicAlbumCard(
-            id=alb.id,
-            folder_id=alb.folder_id,
-            artist_id=alb.artist_id,
-            title=alb.title,
-            year=alb.year,
-            mbid=alb.mbid,
-            cover_url=cov_url,
-            custom_image_url=c_url,
-            confidence=alb.confidence,
-            is_tracks=False,
-            enriched_at=alb.enriched_at,
-        ))
-    return result
+    return library_service.list_albums(db, search=search, artist_id=artist_id, limit=limit, offset=offset)
 
 
 @router.patch("/albums/{album_id}", response_model=MusicAlbumCard)
@@ -268,47 +307,68 @@ async def catalog_scan_album(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_catalog_user),
 ):
+    """Refresh one album's artwork/MBID from Last.fm (album scan level).
+
+    Album artwork is still real on Last.fm, unlike artist artwork. A hand-picked
+    cover is never overwritten — only the enriched `cover_url` is refreshed.
+    """
     if not lastfm_service.metadata_ready():
         raise HTTPException(status_code=503, detail="Last.fm metadata is not configured.")
-    album = db.get(MusicAlbum, album_id)
+    album = library_service.get_album(db, album_id)
     if not album:
         raise HTTPException(status_code=404, detail="Album not found.")
-    artist = db.get(MusicArtist, album.artist_id)
+    artist = library_service.get_artist(db, album.artist_id)
     if not artist:
         raise HTTPException(status_code=404, detail="Album artist not found.")
-    file = db.scalar(
-        select(VFile).where(
-            VFile.folder_id == album.folder_id,
-            VFile.is_trash.is_(False),
-            VFile.mime_type.like("audio/%"),
-        ).limit(1)
-    )
-    if not file:
-        raise HTTPException(status_code=404, detail="Album has no playable track for enrichment.")
-    track_artist, track_title, _ = lastfm_service.parse_track_meta(
-        file.name,
-        artist_hint=artist.display_name,
-        album_hint=album.title,
-    )
-    info = lastfm_service.get_track_info(track_artist, track_title, album.title)
-    if not info:
-        raise HTTPException(status_code=404, detail="Album track was not found on Last.fm.")
-    album.mbid = info.get("mbid") or album.mbid
-    if info.get("image_url"):
-        album.cover_url = info["image_url"]
-    album.enriched_at = utcnow()
-    album.updated_at = utcnow()
-    db.commit()
-    # Warm the local disk cache once, so cards served via ?key= hit local
-    # files and never trigger a per-request remote fetch on display.
-    if info.get("image_url"):
-        try:
-            from app.services.cover_cache_service import cover_cache
 
-            await cover_cache.fetch_and_cache(info["image_url"])
-        except Exception:
-            pass
-    return {"ok": True, "id": album.id, "updated": True, "mbid": album.mbid}
+    info = lastfm_service.get_album_info(artist.display_name, album.title, force=True)
+    if not info or not info.get("image_url"):
+        # Fall back to the album's first track: track.getInfo carries the album
+        # artwork too, and it is the only route when album.getInfo has no entry.
+        file = library_service.first_album_track(db, album.folder_id)
+        if not file:
+            raise HTTPException(status_code=404, detail="Album was not found on Last.fm.")
+        track_artist, track_title, _ = lastfm_service.parse_track_meta(
+            file.name,
+            artist_hint=artist.display_name,
+            album_hint=album.title,
+        )
+        info = lastfm_service.get_track_info(track_artist, track_title, album.title, force=True)
+    if not info:
+        raise HTTPException(status_code=404, detail="Album was not found on Last.fm.")
+
+    fields: List[str] = []
+    if info.get("mbid") and info["mbid"] != album.mbid:
+        album.mbid = info["mbid"]
+        fields.append("mbid")
+    if info.get("image_url") and not album.custom_image_key and info["image_url"] != album.cover_url:
+        album.cover_url = info["image_url"]
+        fields.append("cover_url")
+
+    if fields:
+        album.enriched_at = utcnow()
+        album.updated_at = utcnow()
+        db.commit()
+        db.refresh(album)
+        # Warm the local disk cache once, so cards served via ?key= hit local
+        # files and never trigger a per-request remote fetch on display.
+        if "cover_url" in fields:
+            try:
+                from app.services.cover_cache_service import cover_cache
+
+                await cover_cache.fetch_and_cache(album.cover_url)
+            except Exception:
+                logger.debug("Cover cache warm failed for album %s", album.id, exc_info=True)
+
+    return {
+        "ok": True,
+        "id": album.id,
+        "title": album.title,
+        "updated": bool(fields),
+        "fields": fields,
+        "mbid": album.mbid,
+        "cover_url": album.cover_url,
+    }
 
 
 @router.post("/artists/batch")
@@ -331,6 +391,25 @@ async def catalog_batch_update_artists(
     return {"ok": True, "updated": updated}
 
 
+@router.post("/artists/batch-delete")
+def catalog_batch_delete_artists(
+    body: ArtistBatchDelete,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_catalog_user),
+):
+    """Delete several cards at once, albums and their track rows included.
+
+    Nothing blocks a card any more: albums are catalog metadata of the card and
+    are deleted with it, and the file rows inside the card's folder go too.
+    The remote audio copies are never touched, trash rows stay, and nested
+    cards are detached with their own files intact. Only a card that is gone
+    or fails hard lands in `skipped` (`not_found` / `refused` / `error`) — and
+    it never stops the rest of the selection. Nested cards are detached, never
+    deleted with their parent.
+    """
+    return CatalogAdminService.delete_artists(db, body.artist_ids)
+
+
 @router.post("/albums/batch")
 async def catalog_batch_update_albums(
     body: AlbumBatchUpdate,
@@ -347,3 +426,4 @@ async def catalog_batch_update_albums(
         )
         updated += 1
     return {"ok": True, "updated": updated}
+

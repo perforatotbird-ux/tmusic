@@ -338,10 +338,10 @@ export function LibraryPanel({ section, onRefreshKey }) {
                           : 'недавно'}
                       </div>
                     </div>
-                    <span className="tm-queue-actions" onClick={(e) => e.stopPropagation()}>
+                    <span className="tm-row-actions" onClick={(e) => e.stopPropagation()}>
                       <button
                         type="button"
-                        className="tm-queue-mini"
+                        className="tm-row-mini"
                         onClick={() => queueRow(row, 'next')}
                         aria-label="Играть следующим"
                         title="Играть следующим"
@@ -350,7 +350,7 @@ export function LibraryPanel({ section, onRefreshKey }) {
                       </button>
                       <button
                         type="button"
-                        className="tm-queue-mini"
+                        className="tm-row-mini"
                         onClick={() => queueRow(row, 'queue')}
                         aria-label="Добавить в очередь"
                         title="Добавить в очередь"
@@ -366,6 +366,11 @@ export function LibraryPanel({ section, onRefreshKey }) {
         </section>
       )}
 
+      {/* Legacy: встроенная панель плейлистов. С 2026-10-12 «Плейлисты» из меню
+          профиля открываются отдельным окном (components/PlaylistsModal.jsx),
+          поэтому эта ветка больше не выбирается через onSelectSection. Оставлена
+          как есть до отдельной уборки вместе со своими regression-тестами
+          (tests/error-handling.test.cjs). */}
       {section === 'playlists' && (
         <section>
           <div className="tmusic-panel-head">

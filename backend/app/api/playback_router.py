@@ -5,7 +5,7 @@ Resume positions + listening history.
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -33,6 +33,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/playback", tags=["playback"])
 
 
+def _deliver_lastfm(
+    artist: str,
+    track: str,
+    album: Optional[str],
+    should_scrobble: bool,
+    history_id: Optional[str],
+) -> None:
+    """Push the scrobble/now-playing call off the event loop (sync urllib)."""
+    try:
+        if should_scrobble:
+            lastfm_service.scrobble(artist, track, album)
+        elif not history_id:
+            lastfm_service.update_now_playing(artist, track, album)
+    except Exception:
+        logger.exception("Last.fm delivery failed; local history remains saved")
+
+
 def _require_vfile(db: Session, file_id: int) -> VFile:
     vf = db.scalar(
         select(VFile).where(VFile.id == file_id, VFile.is_trash == False)  # noqa: E712
@@ -43,7 +60,7 @@ def _require_vfile(db: Session, file_id: int) -> VFile:
 
 
 @router.get("/position/{file_id}", response_model=PositionResponse)
-async def get_position(
+def get_position(
     file_id: int,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
@@ -61,7 +78,7 @@ async def get_position(
 
 
 @router.put("/position/{file_id}", response_model=PositionResponse)
-async def put_position(
+def put_position(
     file_id: int,
     body: PositionUpdate,
     db: Session = Depends(get_db),
@@ -103,6 +120,7 @@ async def list_positions(
 @router.post("/history", response_model=HistoryItem)
 async def create_history(
     body: HistoryCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_current_user),
 ):
@@ -114,22 +132,23 @@ async def create_history(
         body.duration_played_sec,
         body.track_duration_sec,
         body.completed,
+        history_id=body.history_id,
     )
-    try:
-        artist, track, album = lastfm_service.parse_track_meta(
-            vf.name, body.artist, body.track, body.album
-        )
-        played = body.duration_played_sec or 0
-        total = body.track_duration_sec or 0
-        should_scrobble = body.completed or (
-            total > 0 and (played >= total * 0.5 or played >= 240)
-        )
-        if should_scrobble:
-            lastfm_service.scrobble(artist, track, album)
-        else:
-            lastfm_service.update_now_playing(artist, track, album)
-    except Exception:
-        logger.exception("Last.fm delivery failed; local history remains saved")
+    artist, track, album = lastfm_service.parse_track_meta(
+        vf.name, body.artist, body.track, body.album
+    )
+    played = body.duration_played_sec or 0
+    total = body.track_duration_sec or 0
+    should_scrobble = body.completed or (
+        total > 0 and (played >= total * 0.5 or played >= 240)
+    )
+    # Last.fm uses a blocking urllib call with an 8s timeout; running it inline
+    # froze the whole event loop and starved the audio stream on every track
+    # change (2.1s stalls in backend.log). Starlette executes sync background
+    # tasks in its threadpool after the response is sent.
+    background_tasks.add_task(
+        _deliver_lastfm, artist, track, album, should_scrobble, body.history_id
+    )
     return HistoryItem(
         id=row.id,
         file_id=row.file_id,

@@ -58,7 +58,15 @@ if (-not (Test-Path $localProps) -and -not $env:ANDROID_HOME) {
     Write-Warning "Android SDK not found! Run .\scripts\setup_android_sdk.ps1 to download and install Android SDK automatically."
 }
 
-# 2. Server URL override if passed
+# 2. Server URL and build mode configuration
+if ($Release) {
+    $env:TMUSIC_RELEASE = "true"
+    $env:NODE_ENV = "production"
+    Write-Host "[1/4] Build mode: RELEASE (strict HTTPS, cleartext disabled, restricted navigation)" -ForegroundColor Magenta
+} else {
+    $env:TMUSIC_RELEASE = "false"
+}
+
 if ($ServerUrl) {
     Write-Host "[1/4] Setting fixed server URL: $ServerUrl" -ForegroundColor Yellow
     $env:TMUSIC_SERVER_URL = $ServerUrl

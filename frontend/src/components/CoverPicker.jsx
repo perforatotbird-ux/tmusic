@@ -5,6 +5,12 @@ import Modal from './ui/Modal'
 import { useConfirm } from './ui/useConfirm'
 import { ClickableRow } from './ui/ClickableRow'
 
+export const COVER_TARGET_LABEL = {
+  artist: 'Артист / сборник',
+  album: 'Альбом',
+  track: 'Трек',
+}
+
 export function CoverPicker({ target, onClose, onUpdated }) {
   const [activeTab, setActiveTab] = useState('url') // 'url' | 'file'
   const [url, setUrl] = useState('')
@@ -149,8 +155,13 @@ export function CoverPicker({ target, onClose, onUpdated }) {
           <h3 id="cover-picker-title" className="title-zine" style={{ fontSize: '18px', marginBottom: '4px' }}>
             Обложка: {target?.title || target?.displayName}
           </h3>
+          {/* Naming the level and the id removes the ambiguity when the picker
+              is opened for one card right after another — a stale cover used to
+              read as "the wrong artist was updated". */}
           <p style={{ color: 'var(--dim)', fontSize: '12.5px', marginBottom: '18px' }}>
-            Загрузите файл или укажите защищённый URL изображения
+            {COVER_TARGET_LABEL[target?.type] || target?.type}
+            {target?.id != null ? ` · #${target.id}` : ''} — загрузите файл или укажите
+            защищённый URL изображения
           </p>
 
           {error && (

@@ -1,6 +1,7 @@
 """
 T-Music Database Engine and Session Management
 """
+import re
 import time
 import logging
 from typing import Generator
@@ -11,13 +12,24 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+_TEST_SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+
+_connect_args = {}
+if settings.TEST_DATABASE_SCHEMA:
+    schema = settings.TEST_DATABASE_SCHEMA.strip().lower()
+    if not _TEST_SCHEMA_RE.fullmatch(schema) or schema == "public":
+        raise RuntimeError("TEST_DATABASE_SCHEMA must be a valid non-public schema name.")
+    # psycopg2 option: keep every unqualified table in the disposable schema.
+    _connect_args["options"] = f"-csearch_path={schema}"
+
 engine = create_engine(
     settings.DATABASE_URL,
     pool_size=15,
     max_overflow=25,
     pool_timeout=30,
     pool_recycle=1800,
-    pool_pre_ping=True
+    pool_pre_ping=True,
+    connect_args=_connect_args,
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -125,14 +137,19 @@ def ensure_catalog_schema() -> None:
     """Additive schema patch for the music catalog hierarchy.
 
     music_artists.parent_id enables the admin card-nesting feature (drag an
-    artist/collection card into another card). Safe to run on every startup:
-    ADD COLUMN IF NOT EXISTS + conditional index creation.
+    artist/collection card into another card). vfiles.custom_image_key lets the
+    admin assign artwork to an individual track, exactly like artists/albums.
+    Safe to run on every startup: ADD COLUMN IF NOT EXISTS + conditional index
+    creation.
     """
     _run_schema_step(
         "Catalog schema",
         "ALTER TABLE music_artists "
         "ADD COLUMN IF NOT EXISTS parent_id INTEGER REFERENCES music_artists(id) ON DELETE SET NULL",
         "CREATE INDEX IF NOT EXISTS idx_music_artists_parent ON music_artists (parent_id)",
+        "ALTER TABLE vfiles "
+        "ADD COLUMN IF NOT EXISTS custom_image_key VARCHAR(128)",
+        "CREATE INDEX IF NOT EXISTS idx_vfiles_custom_image_key ON vfiles (custom_image_key)",
     )
 
 

@@ -7,74 +7,80 @@ Auth query params: u, p (password/token) OR t=md5(token+salt)&s=salt, c, v, f=js
 """
 import logging
 import re
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
-from sqlalchemy import func, or_, select
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.password_work import run_password_work
 from app.core.database import get_db
 from app.models.auth import AppUser
-from app.models.music import MusicAlbum, MusicArtist
-from app.models.playlist import Playlist, PlaylistItem
-from app.models.share import ShareLink
-from app.models.vfs import VFile
+from app.models.playlist import Playlist
 from app.repositories.file_repository import FileRepository
 from app.services import lastfm_service, lyrics_service, subsonic_auth
+from app.utils.client_ip import get_client_ip
+from app.services.subsonic_service import (
+    album_by_id,
+    album_for_track,
+    album_info,
+    album_list_entries,
+    album_payload,
+    artist_albums,
+    artist_by_name,
+    artist_index,
+    artist_info_payload,
+    catalog_artist as _catalog_artist,
+    file_artist_name as _file_artist_name,
+    file_song as _file_song,
+    get_song as _get_song,
+    parse_id as _parse_id,
+    playlist_by_id,
+    playlist_song_count,
+    playlist_songs,
+    random_song_rows as _random_song_rows,
+    replace_playlist_items,
+    search_result,
+    similar_songs,
+    user_playlists,
+    user_shares,
+)
 from app.services.playback_service import playback_service
 from app.services.stream_service import stream_service
 from app.services.subsonic_response import (
-    album_entry,
     artist_entry,
     dict_to_subsonic_xml,
     fail,
     ok_envelope,
     playlist_entry,
-    song_entry,
     ts,
 )
-from app.utils.like import escape_like
 
 logger = logging.getLogger("tmusic.subsonic")
 router = APIRouter(tags=["subsonic"])
-
-_ID_RE = re.compile(r"^(ar|al|fl|pl)-(\d+)$")
-
-
-def _parse_id(raw: Any) -> Tuple[Optional[str], Optional[int]]:
-    if raw is None:
-        return None, None
-    s = str(raw).strip()
-    m = _ID_RE.match(s)
-    if m:
-        return m.group(1), int(m.group(2))
-    if s.isdigit():
-        return None, int(s)
-    return None, None
-
 
 def _wants_xml(f: Optional[str]) -> bool:
     return (f or "xml").lower() != "json"
 
 
 def _http_auth_user(
-    request: Request,
+    request: Optional[Request],
     db: Session,
     u: Optional[str],
     p: Optional[str],
     t: Optional[str],
     s: Optional[str],
 ) -> Optional[AppUser]:
+    client_ip = get_client_ip(request) if request else "127.0.0.1"
     return subsonic_auth.authenticate_subsonic(
         db,
         username=u,
         password=p,
         token=t,
         salt=s,
+        client_ip=client_ip,
     )
 
 
@@ -88,109 +94,11 @@ def _respond(payload: Dict[str, Any], f: Optional[str], status_code: int = 200):
     return JSONResponse(content=payload, status_code=status_code)
 
 
-def _catalog_artist(db: Session, artist_id: int) -> Optional[MusicArtist]:
-    return db.scalar(select(MusicArtist).where(MusicArtist.id == artist_id))
-
-
-def _album_songs(db: Session, album: MusicAlbum) -> list:
-    artist = _catalog_artist(db, album.artist_id)
-    tracks = FileRepository.list_tracks_recursive(db, album.folder_id)
-    out = []
-    for i, vf in enumerate(tracks, start=1):
-        out.append(
-            song_entry(
-                vf,
-                artist=artist.display_name if artist else "Unknown",
-                album=album.title,
-                artist_id=album.artist_id,
-                album_id=album.id,
-                track_no=i,
-            )
-        )
-    return out
-
-
-def _artist_songs(db: Session, artist: MusicArtist, limit: int = 500) -> list:
-    albums = db.scalars(
-        select(MusicAlbum).where(MusicAlbum.artist_id == artist.id).order_by(MusicAlbum.year, MusicAlbum.title)
-    ).all()
-    out = []
-    for alb in albums:
-        out.extend(_album_songs(db, alb))
-        if len(out) >= limit:
-            break
-    return out[:limit]
-
-
-def _random_song_rows(db: Session, size: int) -> list:
-    stmt = (
-        select(VFile)
-        .where(VFile.is_trash == False, VFile.mime_type.like("audio/%"))  # noqa: E712
-        .order_by(func.random())
-        .limit(max(1, min(size, 500)))
-    )
-    files = list(db.scalars(stmt).all())
-    rows = []
-    for vf in files:
-        alb = None
-        artist = None
-        if vf.folder_id:
-            alb = db.scalar(select(MusicAlbum).where(MusicAlbum.folder_id == vf.folder_id))
-            if alb:
-                artist = _catalog_artist(db, alb.artist_id)
-        rows.append(
-            song_entry(
-                vf,
-                artist=artist.display_name if artist else "Unknown",
-                album=alb.title if alb else "Unknown",
-                artist_id=alb.artist_id if alb else None,
-                album_id=alb.id if alb else None,
-            )
-        )
-    return rows
-
-
-def _file_song(db: Session, vf: VFile) -> Dict[str, Any]:
-    alb = None
-    artist = None
-    if vf.folder_id:
-        alb = db.scalar(select(MusicAlbum).where(MusicAlbum.folder_id == vf.folder_id))
-        if alb:
-            artist = _catalog_artist(db, alb.artist_id)
-    return song_entry(
-        vf,
-        artist=artist.display_name if artist else "Unknown",
-        album=alb.title if alb else "Unknown",
-        artist_id=alb.artist_id if alb else None,
-        album_id=alb.id if alb else None,
-    )
-
-
-def _file_artist_name(db: Session, vf: VFile) -> Optional[str]:
-    if not vf.folder_id:
-        return None
-    alb = db.scalar(select(MusicAlbum).where(MusicAlbum.folder_id == vf.folder_id))
-    if not alb:
-        return None
-    artist = _catalog_artist(db, alb.artist_id)
-    return artist.display_name if artist else None
-
-
 def _multi_ids(request: Request, params: Dict[str, Any], key: str = "id") -> list:
     vals = request.query_params.getlist(key) or request.query_params.getlist(f"{key}[]")
     if not vals and params.get(key):
         vals = [params.get(key)]
     return vals
-
-
-def _get_song(db: Session, raw_id: Any):
-    kind, num = _parse_id(raw_id)
-    if num is None:
-        return None
-    vf = FileRepository.get_by_id(db, num)
-    if not vf or vf.is_trash or not (vf.mime_type or "").startswith("audio/"):
-        return None
-    return vf
 
 
 _LRC_RE = re.compile(r"\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]")
@@ -267,24 +175,7 @@ async def _handle(
         return ok("musicFolders", [{"id": 1, "name": "T-Music"}])
 
     if method in ("getIndexes", "getArtists"):
-        stmt = select(MusicArtist).order_by(MusicArtist.display_name)
-        artists = list(db.scalars(stmt).all())
-        entries = []
-        index_map: Dict[str, list] = {}
-        for a in artists:
-            cnt = db.scalar(
-                select(func.count(MusicAlbum.id)).where(MusicAlbum.artist_id == a.id)
-            )
-            entry = artist_entry(a, album_count=cnt or 0)
-            entries.append(entry)
-            letter = (a.display_name or "#")[0].upper()
-            if not letter.isalpha():
-                letter = "#"
-            index_map.setdefault(letter, []).append(entry)
-        indexes = [
-            {"name": letter, "artist": index_map[letter]}
-            for letter in sorted(index_map.keys())
-        ]
+        indexes = artist_index(db)
         if method == "getIndexes":
             return ok(
                 "indexes",
@@ -305,63 +196,28 @@ async def _handle(
         artist = _catalog_artist(db, num)
         if not artist:
             return _respond(fail(70, "Artist not found."), f)
-        albums = db.scalars(
-            select(MusicAlbum).where(MusicAlbum.artist_id == artist.id).order_by(MusicAlbum.year, MusicAlbum.title)
-        ).all()
-        album_list = []
-        for alb in albums:
-            sc = db.scalar(
-                select(func.count(VFile.id)).where(
-                    VFile.folder_id == alb.folder_id,
-                    VFile.is_trash == False,  # noqa: E712
-                    VFile.mime_type.like("audio/%"),
-                )
-            )
-            album_list.append(album_entry(alb, artist=artist.display_name, artist_id=artist.id, song_count=sc or 0))
+        album_list = artist_albums(db, artist)
         payload = artist_entry(artist, album_count=len(album_list))
         payload["album"] = album_list
         return ok("artist", payload)
 
     if method in ("getAlbum", "getAlbumInfo2"):
-        kind, num = _parse_id(params.get("id"))
+        _kind, num = _parse_id(params.get("id"))
         if num is None:
             return _respond(fail(70, "Album not found."), f)
-        # bare numeric id may mean album
-        alb = db.scalar(select(MusicAlbum).where(MusicAlbum.id == num))
-        if not alb:
+        payload = album_payload(db, num)
+        if payload is None:
             return _respond(fail(70, "Album not found."), f)
-        artist = _catalog_artist(db, alb.artist_id)
-        songs = _album_songs(db, alb)
-        payload = album_entry(
-            alb,
-            artist=artist.display_name if artist else "Unknown",
-            artist_id=alb.artist_id,
-            song_count=len(songs),
-        )
-        payload["song"] = songs
         return ok("album", payload)
 
     if method in ("getSong",):
-        kind, num = _parse_id(params.get("id"))
+        _kind, num = _parse_id(params.get("id"))
         if num is None:
             return _respond(fail(70, "Song not found."), f)
         vf = FileRepository.get_by_id(db, num)
         if not vf:
             return _respond(fail(70, "Song not found."), f)
-        alb = None
-        artist = None
-        if vf.folder_id:
-            alb = db.scalar(select(MusicAlbum).where(MusicAlbum.folder_id == vf.folder_id))
-            if alb:
-                artist = _catalog_artist(db, alb.artist_id)
-        entry = song_entry(
-            vf,
-            artist=artist.display_name if artist else "Unknown",
-            album=alb.title if alb else "Unknown",
-            artist_id=alb.artist_id if alb else None,
-            album_id=alb.id if alb else None,
-        )
-        return ok("song", entry)
+        return ok("song", _file_song(db, vf))
 
     if method in ("getAlbumList", "getAlbumList2"):
         try:
@@ -370,27 +226,7 @@ async def _handle(
             size = 50
         size = max(1, min(size, 500))
         type_ = (params.get("type") or "alphabeticalByArtist").lower()
-        stmt = select(MusicAlbum)
-        if type_ in ("recent", "newest"):
-            stmt = stmt.order_by(MusicAlbum.created_at.desc())
-        elif type_ in ("random",):
-            stmt = stmt.order_by(func.random())
-        elif type_ in ("frequent", "recentlyplayed"):
-            stmt = stmt.order_by(MusicAlbum.updated_at.desc())
-        else:
-            stmt = stmt.order_by(MusicAlbum.title)
-        stmt = stmt.limit(size)
-        albums = list(db.scalars(stmt).all())
-        entries = []
-        for alb in albums:
-            artist = _catalog_artist(db, alb.artist_id)
-            entries.append(
-                album_entry(
-                    alb,
-                    artist=artist.display_name if artist else "Unknown",
-                    artist_id=alb.artist_id,
-                )
-            )
+        entries = album_list_entries(db, type_, size)
         return ok("albumList2" if method == "getAlbumList2" else "albumList", entries)
 
     if method in ("getRandomSongs",):
@@ -413,153 +249,48 @@ async def _handle(
         if not query:
             key = "searchResult3" if method == "search3" else "searchResult2"
             return ok(key, {})
-        pattern = f"%{escape_like(query)}%"
-        artists = list(
-            db.scalars(
-                select(MusicArtist)
-                .where(
-                    or_(
-                        MusicArtist.display_name.ilike(pattern, escape="\\"),
-                        MusicArtist.search_name.ilike(pattern, escape="\\"),
-                    )
-                )
-                .limit(artist_count)
-            ).all()
-        )
-        albums = list(
-            db.scalars(
-                select(MusicAlbum).where(MusicAlbum.title.ilike(pattern, escape="\\")).limit(album_count)
-            ).all()
-        )
-        tracks = list(
-            db.scalars(
-                select(VFile)
-                .where(
-                    VFile.is_trash == False,  # noqa: E712
-                    VFile.mime_type.like("audio/%"),
-                    VFile.name.ilike(pattern, escape="\\"),
-                )
-                .limit(song_count)
-            ).all()
-        )
-        result = {
-            "artist": [artist_entry(a) for a in artists],
-            "album": [
-                album_entry(
-                    alb,
-                    artist=(_catalog_artist(db, alb.artist_id).display_name if _catalog_artist(db, alb.artist_id) else "Unknown"),
-                    artist_id=alb.artist_id,
-                )
-                for alb in albums
-            ],
-            "song": [],
-        }
-        for vf in tracks:
-            alb = None
-            artist = None
-            if vf.folder_id:
-                alb = db.scalar(select(MusicAlbum).where(MusicAlbum.folder_id == vf.folder_id))
-                if alb:
-                    artist = _catalog_artist(db, alb.artist_id)
-            result["song"].append(
-                song_entry(
-                    vf,
-                    artist=artist.display_name if artist else "Unknown",
-                    album=alb.title if alb else "Unknown",
-                    artist_id=alb.artist_id if alb else None,
-                    album_id=alb.id if alb else None,
-                )
-            )
+        result = search_result(db, query, song_count, album_count, artist_count)
         key = "searchResult3" if method == "search3" else "searchResult2"
         return ok(key, result)
 
     if method in ("getPlaylists",):
-        rows = db.scalars(
-            select(Playlist).where(Playlist.user_id == user.id).order_by(Playlist.updated_at.desc())
-        ).all()
-        entries = []
-        for pl in rows:
-            cnt = db.scalar(select(func.count(PlaylistItem.id)).where(PlaylistItem.playlist_id == pl.id))
-            entries.append(playlist_entry(pl, song_count=cnt or 0))
-        return ok("playlists", entries)
+        return ok("playlists", user_playlists(db, user.id))
 
     if method in ("getPlaylist",):
         kind, num = _parse_id(params.get("id"))
         if num is None:
             return _respond(fail(70, "Playlist not found."), f)
-        pl = db.scalar(select(Playlist).where(Playlist.id == num, Playlist.user_id == user.id))
+        pl = playlist_by_id(db, num, user.id)
         if not pl:
             return _respond(fail(70, "Playlist not found."), f)
-        items = list(
-            db.execute(
-                select(PlaylistItem, VFile)
-                .outerjoin(VFile, VFile.id == PlaylistItem.file_id)
-                .where(PlaylistItem.playlist_id == pl.id)
-                .order_by(PlaylistItem.position, PlaylistItem.id)
-            ).all()
-        )
-        songs = []
-        for idx, (item, vf) in enumerate(items, start=1):
-            if not vf:
-                continue
-            alb = None
-            artist = None
-            if vf.folder_id:
-                alb = db.scalar(select(MusicAlbum).where(MusicAlbum.folder_id == vf.folder_id))
-                if alb:
-                    artist = _catalog_artist(db, alb.artist_id)
-            songs.append(
-                song_entry(
-                    vf,
-                    artist=artist.display_name if artist else "Unknown",
-                    album=alb.title if alb else "Unknown",
-                    artist_id=alb.artist_id if alb else None,
-                    album_id=alb.id if alb else None,
-                    track_no=idx,
-                )
-            )
+        songs = playlist_songs(db, pl)
         payload = playlist_entry(pl, song_count=len(songs))
         payload["entry"] = songs
         return ok("playlist", payload)
 
     if method in ("createPlaylist",):
-        name = params.get("name") or "Playlist"
-        name = str(name).strip()
+        name = str(params.get("name") or "Playlist").strip()
         if not name or len(name) > 120:
             return _respond(fail(10, "Playlist name must contain 1 to 120 characters."), f)
-        playlist_id = params.get("playlistId")
+        _kind, playlist_num = _parse_id(params.get("playlistId")) if params.get("playlistId") else (None, None)
         song_ids = request.query_params.getlist("songId") or request.query_params.getlist("songId[]")
-        if playlist_id:
-            kind, num = _parse_id(playlist_id)
-            pl = db.scalar(select(Playlist).where(Playlist.id == num, Playlist.user_id == user.id).with_for_update()) if num else None
+        if params.get("playlistId"):
+            pl = playlist_by_id(db, playlist_num, user.id, lock=True)
         else:
-            new_pl = Playlist(user_id=user.id, name=name)
-            db.add(new_pl)
+            pl = Playlist(user_id=user.id, name=name)
+            db.add(pl)
             db.commit()
-            db.refresh(new_pl)
-            pl = new_pl
+            db.refresh(pl)
         if not pl:
             return _respond(fail(50, "Playlist not found."), f)
         if song_ids:
-            db.query(PlaylistItem).filter(PlaylistItem.playlist_id == pl.id).delete()
-            pos = 1
-            for sid in song_ids:
-                _, num = _parse_id(sid)
-                if num is None:
-                    continue
-                if not FileRepository.get_by_id(db, num):
-                    continue
-                db.add(PlaylistItem(playlist_id=pl.id, file_id=num, position=pos))
-                pos += 1
+            replace_playlist_items(db, pl, song_ids)
             db.commit()
-        payload = playlist_entry(pl, song_count=db.scalar(
-            select(func.count(PlaylistItem.id)).where(PlaylistItem.playlist_id == pl.id)
-        ) or 0)
-        return ok("playlist", payload)
+        return ok("playlist", playlist_entry(pl, song_count=playlist_song_count(db, pl)))
 
     if method in ("updatePlaylist",):
-        kind, num = _parse_id(params.get("playlistId"))
-        pl = db.scalar(select(Playlist).where(Playlist.id == num, Playlist.user_id == user.id).with_for_update()) if num else None
+        _kind, num = _parse_id(params.get("playlistId"))
+        pl = playlist_by_id(db, num, user.id, lock=True)
         if not pl:
             return _respond(fail(70, "Playlist not found."), f)
         name = params.get("name")
@@ -570,19 +301,13 @@ async def _handle(
             pl.name = name
         song_ids = request.query_params.getlist("songId") or request.query_params.getlist("songId[]")
         if song_ids:
-            db.query(PlaylistItem).filter(PlaylistItem.playlist_id == pl.id).delete()
-            pos = 1
-            for sid in song_ids:
-                _, fid = _parse_id(sid)
-                if fid and FileRepository.get_by_id(db, fid):
-                    db.add(PlaylistItem(playlist_id=pl.id, file_id=fid, position=pos))
-                    pos += 1
+            replace_playlist_items(db, pl, song_ids)
         db.commit()
         return ok("playlist", playlist_entry(pl))
 
     if method in ("deletePlaylist",):
-        kind, num = _parse_id(params.get("id"))
-        pl = db.scalar(select(Playlist).where(Playlist.id == num, Playlist.user_id == user.id).with_for_update()) if num else None
+        _kind, num = _parse_id(params.get("id"))
+        pl = playlist_by_id(db, num, user.id, lock=True)
         if not pl:
             return _respond(fail(70, "Playlist not found."), f)
         db.delete(pl)
@@ -602,7 +327,7 @@ async def _handle(
         kind, num = _parse_id(params.get("id"))
         # Prefer album cover via existing proxy when possible; empty 1x1 otherwise
         if kind == "al" and num:
-            alb = db.scalar(select(MusicAlbum).where(MusicAlbum.id == num))
+            alb = album_by_id(db, num)
             if alb and alb.custom_image_key:
                 from fastapi.responses import RedirectResponse
 
@@ -662,9 +387,7 @@ async def _handle(
             time_ms = int(params.get("time") or 0)
         except (TypeError, ValueError):
             time_ms = 0
-        alb = None
-        if vf.folder_id:
-            alb = db.scalar(select(MusicAlbum).where(MusicAlbum.folder_id == vf.folder_id))
+        alb = album_for_track(db, vf)
         album_title = alb.title if alb else None
         artist, track, album = lastfm_service.parse_track_meta(
             vf.name, _file_artist_name(db, vf), None, album_title
@@ -718,9 +441,7 @@ async def _handle(
         vf = _get_song(db, params.get("id"))
         if not vf:
             return _respond(fail(70, "Song not found."), f)
-        alb = None
-        if vf.folder_id:
-            alb = db.scalar(select(MusicAlbum).where(MusicAlbum.folder_id == vf.folder_id))
+        alb = album_for_track(db, vf)
         artist_name = _file_artist_name(db, vf)
         base = (vf.name or "").rsplit("/", 1)[-1]
         if "." in base:
@@ -771,36 +492,7 @@ async def _handle(
         vf = _get_song(db, params.get("id"))
         if not vf:
             return _respond(fail(70, "Song not found."), f)
-        artist_name = _file_artist_name(db, vf)
-        similar_names = []
-        if artist_name:
-            try:
-                info = lastfm_service.get_artist_info(artist_name)
-                if info:
-                    similar_names = info.get("similar") or []
-            except Exception:
-                similar_names = []
-        rows = []
-        if similar_names:
-            pattern_list = [n.lower() for n in similar_names if n]
-            if pattern_list:
-                artists = list(
-                    db.scalars(
-                        select(MusicArtist)
-                        .where(func.lower(MusicArtist.display_name).in_(pattern_list))
-                        .limit(limit)
-                    ).all()
-                )
-                for a in artists:
-                    for song in _artist_songs(db, a, limit=limit):
-                        rows.append(song)
-                        if len(rows) >= limit:
-                            break
-                    if len(rows) >= limit:
-                        break
-        if not rows:
-            rows = _random_song_rows(db, limit)
-        return ok("similarSongs", rows[:limit])
+        return ok("similarSongs", similar_songs(db, vf, limit))
 
     if method in ("getTopSongs",):
         try:
@@ -818,57 +510,18 @@ async def _handle(
         else:
             name = (params.get("artist") or "").strip()
             if name:
-                artist = db.scalar(
-                    select(MusicArtist).where(func.lower(MusicArtist.display_name) == name.lower())
-                )
+                artist = artist_by_name(db, name)
         if not artist:
             return _respond(fail(70, "Artist not found."), f)
-        bio = artist.bio or ""
-        similar_names: list = []
-        tags: list = []
-        if lastfm_service.metadata_ready():
-            try:
-                info = lastfm_service.get_artist_info(artist.display_name)
-                if info:
-                    bio = bio or info.get("summary") or ""
-                    similar_names = info.get("similar") or []
-                    tags = info.get("tags") or []
-            except Exception:
-                pass
-        payload = {
-            "id": f"ar-{artist.id}",
-            "name": artist.display_name,
-            "coverArt": f"ar-{artist.id}",
-            "albumCount": db.scalar(
-                select(func.count(MusicAlbum.id)).where(MusicAlbum.artist_id == artist.id)
-            )
-            or 0,
-            "biography": bio,
-            "mbid": artist.mbid,
-            "similarArtist": [
-                {"id": None, "name": n, "albumCount": 0, "coverArt": None}
-                for n in similar_names[:10]
-            ],
-            "externalInfo": {
-                "tags": tags,
-            },
-        }
-        return ok("artistInfo", payload)
+        return ok("artistInfo", artist_info_payload(db, artist))
 
     if method in ("getAlbumInfo",):
-        kind, num = _parse_id(params.get("id"))
+        _kind, num = _parse_id(params.get("id"))
         if num is None:
             return _respond(fail(70, "Album not found."), f)
-        alb = db.scalar(select(MusicAlbum).where(MusicAlbum.id == num))
-        if not alb:
+        payload = album_info(db, num)
+        if payload is None:
             return _respond(fail(70, "Album not found."), f)
-        artist = _catalog_artist(db, alb.artist_id)
-        payload = album_entry(
-            alb,
-            artist=artist.display_name if artist else "Unknown",
-            artist_id=alb.artist_id,
-        )
-        payload["notes"] = ""
         return ok("albumInfo", payload)
 
     if method in ("getNowPlayingList",):
@@ -903,26 +556,7 @@ async def _handle(
         return ok("share", shares[0])
 
     if method in ("getShares",):
-        rows = db.execute(
-            select(ShareLink, VFile)
-            .outerjoin(VFile, VFile.id == ShareLink.file_id)
-            .where(ShareLink.user_id == user.id)
-            .order_by(ShareLink.created_at.desc())
-        ).all()
-        entries = []
-        for share, vf in rows:
-            if not vf:
-                continue
-            entries.append(
-                {
-                    "id": str(share.id),
-                    "url": share.token,
-                    "description": vf.name,
-                    "created": ts(share.created_at),
-                    "entry": [_file_song(db, vf)],
-                }
-            )
-        return ok("shares", entries)
+        return ok("shares", user_shares(db, user.id))
 
     return _respond(fail(0, f"Method '{method}' is not implemented by T-Music."), f)
 

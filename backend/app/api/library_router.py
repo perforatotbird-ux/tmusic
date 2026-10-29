@@ -2,18 +2,18 @@
 T-Music Library API Router
 Endpoints for artist lists, album discographies, direct album catalog, statistics, and secure cover proxying.
 """
-import os
 import re
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, Response as RawResponse
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.core.database import get_db
 from app.api.dependencies import get_admin_user, get_current_user
 from app.models.auth import AppUser
 from app.schemas.library import (
-    MusicArtistCard, MusicArtistDetail, MusicAlbumCard, LibraryStats, SetCoverRequest
+    MusicArtistCard, MusicArtistDetail, MusicAlbumCard, LibraryStats
 )
 from app.services.music_library_service import library_service
 from app.services.cover_cache_service import cover_cache, is_safe_host, MAX_IMAGE_BYTES
@@ -30,6 +30,7 @@ MAX_UPLOAD_BYTES = MAX_IMAGE_BYTES + 1
 async def get_artists(
     kind: Optional[str] = Query(None, description="artist, compilation, standalone_album, genre_collection"),
     search: Optional[str] = Query(None, description="Search query"),
+    root_only: Optional[bool] = Query(None, description="Filter to root artists only (parent_id IS NULL)"),
     limit: int = Query(200, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -41,7 +42,11 @@ async def get_artists(
         kind = None
     if search in ("null", "undefined") or not (search or "").strip():
         search = None
-    return library_service.list_artists(db, kind=kind, search=search, limit=limit, offset=offset)
+    if root_only is None and not search:
+        root_only = True
+    return library_service.list_artists(
+        db, kind=kind, search=search, root_only=root_only, limit=limit, offset=offset
+    )
 
 
 @router.get("/albums", response_model=List[MusicAlbumCard])
@@ -102,12 +107,19 @@ async def get_covers_manifest(
         raise HTTPException(status_code=400, detail="No keys provided.")
     for k in raw:
         if not _MANIFEST_KEY_RE.match(k):
-            raise HTTPException(status_code=400, detail=f"Invalid key format: {k[:32]}")
+            # Fixed text: never echo client input back in an error detail.
+            raise HTTPException(status_code=400, detail="Invalid key format.")
 
     is_custom = custom == 1
+    # Up to 500 keys x several stat() calls each: keep the filesystem walk off
+    # the event loop, otherwise it stalls in-flight audio streams for seconds.
+    return await run_in_threadpool(_probe_cached_covers, raw, is_custom)
+
+
+def _probe_cached_covers(keys: List[str], is_custom: bool) -> dict:
     found = {}
     missing = []
-    for k in raw:
+    for k in keys:
         path = cover_cache.get_cached_path(k, is_custom=is_custom)
         if path:
             found[k] = cover_etag(k)
@@ -138,13 +150,13 @@ async def get_cover(
     """
     if key:
         is_custom = custom == 1
-        cached = cover_cache.get_cached_item(key, is_custom=is_custom)
+        cached = await run_in_threadpool(cover_cache.get_cached_item, key, is_custom=is_custom)
         if cached:
             data, mime = cached
             headers = cover_cache_headers(key)
             return RawResponse(content=data, media_type=mime, headers=headers)
 
-        path = cover_cache.get_cached_path(key, is_custom=is_custom)
+        path = await run_in_threadpool(cover_cache.get_cached_path, key, is_custom=is_custom)
         if path:
             headers = cover_cache_headers(key)
             return FileResponse(path, headers=headers)
@@ -152,7 +164,7 @@ async def get_cover(
 
     if url:
         cache_key = cover_cache.url_to_key(url)
-        cached = cover_cache.get_cached_item(cache_key, is_custom=False)
+        cached = await run_in_threadpool(cover_cache.get_cached_item, cache_key, is_custom=False)
         if cached:
             data, mime = cached
             headers = cover_cache_headers(cache_key)
@@ -202,16 +214,19 @@ async def set_cover(
             await file.close()
         if len(content) >= MAX_UPLOAD_BYTES:
             raise HTTPException(status_code=413, detail="Uploaded file is too large.")
-        custom_key = cover_cache.save_custom_cover(content)
+        custom_key = await run_in_threadpool(cover_cache.save_custom_cover, content)
         if not custom_key:
             raise HTTPException(status_code=400, detail="Invalid image file or unsupported format.")
     elif url:
         if not await is_safe_host(url):
             raise HTTPException(status_code=400, detail="Restricted or invalid image URL.")
-        data, _ = await cover_cache.fetch_and_cache(url)
+        # A hand-picked cover must be the bytes for THIS url. fetch_and_cache
+        # short-circuits on the URL-keyed cache (right for enrichment), which
+        # could hand back a picture stored for a different purpose.
+        data, _ = await cover_cache.fetch_fresh(url)
         if not data:
             raise HTTPException(status_code=502, detail="Failed to download image from provided URL.")
-        custom_key = cover_cache.save_custom_cover(data)
+        custom_key = await run_in_threadpool(cover_cache.save_custom_cover, data)
     else:
         raise HTTPException(status_code=400, detail="Provide either an image file or a valid URL.")
 

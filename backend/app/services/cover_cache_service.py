@@ -152,6 +152,30 @@ class _PinnedResolver(AbstractResolver):
         pass
 
 
+async def _read_limited_body(resp) -> Optional[bytes]:
+    """Read an image body without ever buffering more than the configured cap.
+
+    aiohttp's ``resp.read()`` downloads the whole body first; checking the size
+    afterwards lets an authenticated caller exhaust process memory with one
+    oversized URL (SEC-009). Content-Length is only a fast-path hint — the
+    chunk loop is the real limit because a server may omit or lie about it.
+    """
+    declared = resp.headers.get("Content-Length")
+    if declared:
+        try:
+            if int(declared) > MAX_IMAGE_BYTES:
+                return None
+        except (TypeError, ValueError):
+            pass
+
+    body = bytearray()
+    async for chunk in resp.content.iter_chunked(64 * 1024):
+        if len(body) + len(chunk) > MAX_IMAGE_BYTES:
+            return None
+        body.extend(chunk)
+    return bytes(body) if body else None
+
+
 async def _fetch_safe(session: aiohttp.ClientSession, url: str) -> Optional[bytes]:
     """
     GET with manual redirect handling. Every hop is resolved once, validated,
@@ -187,10 +211,7 @@ async def _fetch_safe(session: aiohttp.ClientSession, url: str) -> Optional[byte
                         continue
                     if resp.status != 200:
                         return None
-                    data = await resp.read()
-                    if len(data) > MAX_IMAGE_BYTES:
-                        return None
-                    return data
+                    return await _read_limited_body(resp)
         except Exception as e:
             logger.warning("Failed to fetch image from %s: %s", current, e)
             return None
@@ -294,7 +315,7 @@ class CoverCacheService:
                     try:
                         ct = meta_path.read_text(encoding="utf-8").strip() or ct
                     except Exception:
-                        pass
+                        logger.debug("Failed to read cover meta file %s", meta_path, exc_info=True)
                 mime = _detect_mime_and_validate(data) or ct
                 return data, mime
 
@@ -311,15 +332,23 @@ class CoverCacheService:
                     return target
         return None
 
-    async def fetch_and_cache(self, url: str) -> Tuple[Optional[bytes], Optional[str]]:
-        """Fetch remote image with in-flight deduplication, SSRF defense, and permanent disk caching."""
+    async def fetch_and_cache(self, url: str, force: bool = False) -> Tuple[Optional[bytes], Optional[str]]:
+        """Fetch remote image with in-flight deduplication, SSRF defense, and permanent disk caching.
+
+        ``force=True`` skips the URL-keyed cache hit. Enrichment wants the cache
+        (same URL → same picture, zero network), but a hand-picked cover must
+        reflect the URL that was just typed: the cache is keyed by
+        ``scheme://netloc/path`` only, so a stale entry from another context can
+        serve bytes for a URL that has since changed. See ``fetch_fresh``.
+        """
         generation = self._generation
         key = self.url_to_key(url)
 
-        # Check local cache first
-        cached = self.get_cached_item(key, is_custom=False)
-        if cached:
-            return cached
+        # Check local cache first (file I/O stays off the event loop)
+        if not force:
+            cached = await asyncio.to_thread(self.get_cached_item, key, False)
+            if cached:
+                return cached
 
         # SSRF validation
         if not await is_safe_host(url):
@@ -341,6 +370,18 @@ class CoverCacheService:
 
         return await asyncio.shield(future)
 
+    async def fetch_fresh(self, url: str) -> Tuple[Optional[bytes], Optional[str]]:
+        """Download an image for a hand-picked cover, bypassing the URL cache.
+
+        ``fetch_and_cache`` is right for enrichment, but a custom cover goes
+        through ``save_custom_cover``, which keys by *content* hash. Reusing the
+        URL-keyed cache here means a picture fetched for a different purpose —
+        an enriched album cover, or an older version of the same URL — can end
+        up stored as the admin's hand-picked artwork. The fetch still writes the
+        URL-keyed entry, so enriched display paths keep their cache.
+        """
+        return await self.fetch_and_cache(url, force=True)
+
     async def _do_fetch(self, url: str, key: str, future: asyncio.Future):
         result = (None, None)
         try:
@@ -350,8 +391,8 @@ class CoverCacheService:
             if mime:
                 bin_dest = settings.IMG_CACHE_DIR / f"{key}.bin"
                 meta_dest = settings.IMG_CACHE_DIR / f"{key}.meta"
-                bin_dest.write_bytes(data)
-                meta_dest.write_text(mime, encoding="utf-8")
+                await asyncio.to_thread(bin_dest.write_bytes, data)
+                await asyncio.to_thread(meta_dest.write_text, mime, encoding="utf-8")
                 result = (data, mime)
         except Exception as e:
             logger.warning("Failed to fetch image from %s: %s", url, e)
@@ -375,6 +416,29 @@ class CoverCacheService:
         dest = settings.COVER_CACHE_DIR / key
         dest.write_bytes(data)
         return key
+
+    def purge_key(self, key: str) -> None:
+        """Best-effort removal of every local file stored for a cover key.
+
+        Custom covers are keyed by content hash and live as ``{key}`` in
+        COVER_CACHE_DIR; URL-keyed entries live as ``{key}.bin`` + ``{key}.meta``
+        in IMG_CACHE_DIR. Callers must ensure no entity still references the
+        key before purging.
+        """
+        safe = os.path.basename(key or "")
+        if not safe or safe in (".", ".."):
+            return
+        for d in self._cache_dirs(is_custom=False):
+            for name in (safe, f"{safe}.bin", f"{safe}.meta"):
+                try:
+                    candidate = self._safe_resolve_in(d, name)
+                except OSError:
+                    candidate = None
+                if candidate is not None:
+                    try:
+                        candidate.unlink()
+                    except OSError:
+                        logger.debug("Cover purge failed for %s", candidate, exc_info=True)
 
 
 cover_cache = CoverCacheService()

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, Upload
 from fastapi.responses import Response as RawResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.core.config import settings
 from app.core.password_work import run_password_work
@@ -133,11 +134,15 @@ async def get_avatar(user: AppUser = Depends(get_current_user)):
     """Serve the current user's profile avatar (custom-cover store)."""
     if not user.avatar_key:
         raise HTTPException(status_code=404, detail="No avatar set.")
-    cached = cover_cache.get_cached_item(user.avatar_key, is_custom=True)
+    cached = await run_in_threadpool(
+        cover_cache.get_cached_item, user.avatar_key, True
+    )
     if cached:
         data, mime = cached
         return RawResponse(content=data, media_type=mime, headers=cover_cache_headers(user.avatar_key))
-    path = cover_cache.get_cached_path(user.avatar_key, is_custom=True)
+    path = await run_in_threadpool(
+        cover_cache.get_cached_path, user.avatar_key, True
+    )
     if path:
         from fastapi.responses import FileResponse
         return FileResponse(path, headers=cover_cache_headers(user.avatar_key))
@@ -167,7 +172,7 @@ async def set_avatar(
             await file.close()
         if len(content) >= MAX_AVATAR_UPLOAD_BYTES:
             raise HTTPException(status_code=413, detail="Uploaded file is too large.")
-        key = cover_cache.save_custom_cover(content)
+        key = await run_in_threadpool(cover_cache.save_custom_cover, content)
         if not key:
             raise HTTPException(status_code=400, detail="Invalid image file or unsupported format.")
     elif url:
@@ -176,7 +181,7 @@ async def set_avatar(
         data, _ = await cover_cache.fetch_and_cache(url)
         if not data:
             raise HTTPException(status_code=502, detail="Failed to download image from provided URL.")
-        key = cover_cache.save_custom_cover(data)
+        key = await run_in_threadpool(cover_cache.save_custom_cover, data)
     else:
         raise HTTPException(status_code=400, detail="Provide either an image file or a valid URL.")
 

@@ -15,6 +15,7 @@ from app.schemas.playlist import (
     PlaylistMirror,
     PlaylistDetail,
     PlaylistItemAdd,
+    PlaylistName,
     PlaylistReorder,
     PlaylistSummary,
     PlaylistTrack,
@@ -104,6 +105,27 @@ def get_playlist(
         created_at=pl.created_at,
         updated_at=pl.updated_at,
         tracks=_tracks_payload(rows),
+    )
+
+
+@router.patch("/{playlist_id}", response_model=PlaylistSummary)
+def rename_playlist(
+    playlist_id: int,
+    body: PlaylistName,
+    db: Session = Depends(get_db),
+    user: AppUser = Depends(get_current_user),
+):
+    """Rename a playlist owned by the current user (track list untouched)."""
+    pl = playlist_service.rename_playlist(db, user.id, playlist_id, body.name)
+    if not pl:
+        raise HTTPException(status_code=404, detail="Playlist not found.")
+    rows = playlist_service.playlist_tracks(db, playlist_id)
+    return PlaylistSummary(
+        id=pl.id,
+        name=pl.name,
+        track_count=len(rows),
+        created_at=pl.created_at,
+        updated_at=pl.updated_at,
     )
 
 

@@ -29,6 +29,7 @@ import { AdminCatalog } from './AdminCatalog'
 import { AdminVfsImport } from './AdminVfsImport'
 import { useConfirm } from './ui/useConfirm'
 import { usePrompt } from './ui/usePrompt'
+import { readViewState, writeViewState } from '../utils/viewPersistence'
 
 const TABS = [
   { id: 'overview', label: 'Обзор', icon: Activity },
@@ -47,11 +48,36 @@ function fmtBytes(n) {
   const u = ['B', 'KB', 'MB', 'GB', 'TB']
   let i = 0
   let v = Number(n)
+  if (!Number.isFinite(v)) return '—'
   while (v >= 1024 && i < u.length - 1) {
     v /= 1024
     i++
   }
   return `${v.toFixed(i ? 1 : 0)} ${u[i]}`
+}
+
+function fmtDuration(sec) {
+  if (!sec || sec <= 0) return '0 с'
+  const m = Math.floor(sec / 60)
+  const s = Math.round(sec % 60)
+  if (m === 0) return `${s} с`
+  return `${m} мин ${s} с`
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—'
+  try {
+    const d = new Date(iso)
+    if (isNaN(d.getTime())) return String(iso).slice(0, 16)
+    return d.toLocaleString('ru-RU', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  } catch {
+    return String(iso).slice(0, 16)
+  }
 }
 
 function Btn({ children, onClick, variant = 'ghost', disabled, title, 'aria-label': ariaLabel, ...rest }) {
@@ -132,7 +158,11 @@ function Panel({ title, children, right }) {
 }
 
 export function AdminPanel({ onBack, onOpenCoverPicker }) {
-  const [tab, setTab] = useState('overview')
+  // Открытая вкладка переживает перезагрузку: админ, обновлявший страницу на
+  // «Аналитике», возвращается туда же, а не на «Обзор».
+  const [tab, setTab] = useState(
+    () => readViewState({ adminTabs: TABS.map((t) => t.id) }).adminTab || 'overview'
+  )
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -148,6 +178,8 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
   const loadSequence = useRef(0)
   const [vfsFolders, setVfsFolders] = useState([])
   const [analytics, setAnalytics] = useState(null)
+  const [analyticsDays, setAnalyticsDays] = useState(30)
+  const [analyticsLoading, setAnalyticsLoading] = useState(false)
   const [subsonic, setSubsonic] = useState(null)
   const [newUser, setNewUser] = useState({ username: '', password: '', role: 'user' })
   const { confirm, confirmDialog } = useConfirm()
@@ -163,6 +195,12 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
       toastTimer.current = null
     }
   }, [])
+
+  // Пишется отдельным ключом снимка: навигацию каталога ведёт MusicLibrary,
+  // и запись не должна её затирать.
+  useEffect(() => {
+    writeViewState({ adminTab: tab })
+  }, [tab])
   const flash = useCallback((msg, kind = 'ok') => {
     if (!toastMounted.current) return
     clearTimeout(toastTimer.current)
@@ -172,6 +210,18 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
       setToast(null)
     }, 3500)
   }, [])
+
+  const loadAnalytics = useCallback(async (days = analyticsDays) => {
+    setAnalyticsLoading(true)
+    try {
+      const data = await adminApi.analytics(days)
+      setAnalytics(data)
+    } catch (e) {
+      flash(e?.message || 'Ошибка аналитики', 'err')
+    } finally {
+      setAnalyticsLoading(false)
+    }
+  }, [analyticsDays, flash])
 
   const loadAll = useCallback(async () => {
     const sequence = ++loadSequence.current
@@ -212,6 +262,13 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
     }
   }, [])
 
+  const handleRefresh = useCallback(() => {
+    loadAll()
+    if (tab === 'analytics') {
+      loadAnalytics(analyticsDays)
+    }
+  }, [loadAll, tab, analyticsDays, loadAnalytics])
+
   const refreshVfs = useCallback(async () => {
     setBusy(true)
     try {
@@ -234,12 +291,12 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
 
   useEffect(() => {
     if (tab === 'analytics') {
-      adminApi.analytics(30).then(setAnalytics).catch((e) => flash(e.message || 'Ошибка аналитики', 'err'))
+      loadAnalytics(analyticsDays)
     }
     if (tab === 'settings') {
       adminApi.subsonicCredentials().then(setSubsonic).catch(() => setSubsonic(null))
     }
-  }, [tab, flash])
+  }, [tab, analyticsDays, loadAnalytics])
 
   useEffect(() => {
     if (tab !== 'db') return
@@ -324,7 +381,7 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
           {overview?.viewer?.username} · роль {overview?.viewer?.role}
         </span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-          <Btn onClick={loadAll} title="Обновить">
+          <Btn onClick={handleRefresh} title="Обновить">
             <RefreshCw size={14} /> Обновить
           </Btn>
         </div>
@@ -605,9 +662,43 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
         </Panel>
       )}
 
+      {tab === 'analytics' && !analytics && (
+        <Panel title="Аналитика прослушиваний">
+          <div style={{ padding: 30, textAlign: 'center', color: 'var(--dim)' }}>
+            <Loader2 size={24} className="animate-spin" style={{ color: 'var(--accent)', margin: '0 auto 8px auto' }} />
+            <div>Загрузка аналитики…</div>
+          </div>
+        </Panel>
+      )}
+
       {tab === 'analytics' && analytics && (
         <>
-          <Panel title="Аналитика прослушиваний за 30 дней">
+          <Panel
+            title={`Аналитика прослушиваний за ${analyticsDays} дн.`}
+            right={
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                {[7, 30, 90].map((d) => (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => setAnalyticsDays(d)}
+                    className={`tmusic-library-bar-btn ${analyticsDays === d ? 'active' : ''}`}
+                    style={{ fontSize: 11, padding: '4px 8px', minHeight: 28 }}
+                  >
+                    {d} дн
+                  </button>
+                ))}
+                <Btn
+                  disabled={analyticsLoading}
+                  onClick={() => loadAnalytics(analyticsDays)}
+                  title="Обновить аналитику"
+                  style={{ minHeight: 28, padding: '4px 8px' }}
+                >
+                  <RefreshCw size={12} className={analyticsLoading ? 'animate-spin' : ''} />
+                </Btn>
+              </div>
+            }
+          >
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: 8 }}>
               {[
                 ['Прослушиваний', analytics.totals?.plays],
@@ -623,6 +714,86 @@ export function AdminPanel({ onBack, onOpenCoverPicker }) {
               ))}
             </div>
           </Panel>
+
+          <Panel title="Свежие прослушивания (последние события)">
+            {(!analytics.recent || analytics.recent.length === 0) && (
+              <div style={{ color: 'var(--dim)', fontSize: 12 }}>Данных пока нет</div>
+            )}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {(analytics.recent || []).map((ev) => (
+                <div
+                  key={ev.id}
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'minmax(95px, auto) minmax(90px, auto) 1fr minmax(75px, auto) minmax(85px, auto)',
+                    gap: 8,
+                    alignItems: 'center',
+                    padding: '6px 4px',
+                    borderBottom: '1px solid var(--line)',
+                    fontSize: 12,
+                  }}
+                >
+                  <span style={{ color: 'var(--dim)', whiteSpace: 'nowrap' }}>{fmtDate(ev.started_at)}</span>
+                  <span style={{ fontWeight: 600, color: 'var(--accent)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {ev.username}
+                  </span>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {ev.track_name}
+                  </span>
+                  <span style={{ color: 'var(--dim)', whiteSpace: 'nowrap', textAlign: 'right' }}>
+                    {fmtDuration(ev.duration_played_sec)}
+                  </span>
+                  <span style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    {ev.completed ? (
+                      <span style={{ color: 'var(--accent)', display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11 }}>
+                        <CheckCircle2 size={12} /> Завершён
+                      </span>
+                    ) : (
+                      <span style={{ color: 'var(--dim)', fontSize: 11 }}>
+                        {ev.duration_played_sec > 0 ? 'Частично' : 'Старт'}
+                      </span>
+                    )}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </Panel>
+
+          <Panel title="Активность по дням">
+            {(!analytics.daily || analytics.daily.length === 0) && (
+              <div style={{ color: 'var(--dim)', fontSize: 12 }}>Данных пока нет</div>
+            )}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {(analytics.daily || []).slice(-14).reverse().map((d) => (
+                <div
+                  key={d.day}
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'minmax(90px, auto) minmax(85px, auto) minmax(85px, auto) 1fr',
+                    gap: 8,
+                    alignItems: 'center',
+                    padding: '5px 4px',
+                    borderBottom: '1px solid var(--line)',
+                    fontSize: 12,
+                  }}
+                >
+                  <span style={{ fontWeight: 600 }}>{d.day}</span>
+                  <span style={{ color: 'var(--accent)' }}>{d.plays} воспр.</span>
+                  <span style={{ color: 'var(--dim)' }}>{Math.round((d.seconds || 0) / 60)} мин</span>
+                  <div style={{ background: 'var(--line)', borderRadius: 4, height: 6, overflow: 'hidden' }}>
+                    <div
+                      style={{
+                        background: 'var(--accent)',
+                        height: '100%',
+                        width: `${Math.min(100, Math.round((d.plays / Math.max(1, ...analytics.daily.map((x) => x.plays || 1))) * 100))}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Panel>
+
           <Panel title="Популярные треки">
             {(analytics.top_tracks || []).map((track) => (
               <div key={track.id} style={{ display: 'flex', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--line)', fontSize: 12 }}>

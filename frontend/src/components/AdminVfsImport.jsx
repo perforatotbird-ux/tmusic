@@ -28,6 +28,7 @@ function formatBytes(value) {
   if (!value && value !== 0) return '—'
   const units = ['B', 'KB', 'MB', 'GB']
   let size = Number(value)
+  if (!Number.isFinite(size)) return '—'
   let index = 0
   while (size >= 1024 && index < units.length - 1) {
     size /= 1024
@@ -37,7 +38,8 @@ function formatBytes(value) {
 }
 
 function formatNumber(value) {
-  return Number(value || 0).toLocaleString('ru-RU')
+  const n = Number(value || 0)
+  return (Number.isFinite(n) ? n : 0).toLocaleString('ru-RU')
 }
 
 export function AdminVfsImport({ targetFolders = [], onImported, disabled = false }) {
@@ -75,6 +77,7 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
 
   const pollRef = useRef(null)
   const importEpoch = useRef(0)
+  const startingRef = useRef(false)
   const stopPolling = useCallback(() => {
     importEpoch.current += 1
     pollRef.current?.stop()
@@ -213,23 +216,26 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
     }
   }
 
+  // childId -> parentId index, rebuilt only when childrenMap changes (O(n)),
+  // so findAncestorIds no longer rescans every parent on each step (was O(n²)).
+  const parentByChild = useMemo(() => {
+    const map = new Map()
+    for (const [pid, data] of Object.entries(childrenMap)) {
+      for (const f of (data.folders || [])) map.set(f.id, Number(pid))
+    }
+    return map
+  }, [childrenMap])
+
   const findAncestorIds = (folderId) => {
     const ancestors = []
+    const seen = new Set()
     let currId = folderId
-    while (currId) {
-      let foundParentId = null
-      for (const [pid, data] of Object.entries(childrenMap)) {
-        if ((data.folders || []).some((f) => f.id === currId)) {
-          foundParentId = Number(pid)
-          break
-        }
-      }
-      if (foundParentId) {
-        ancestors.push(foundParentId)
-        currId = foundParentId
-      } else {
-        break
-      }
+    while (currId && !seen.has(currId)) {
+      seen.add(currId)
+      const parentId = parentByChild.get(currId)
+      if (!parentId) break
+      ancestors.push(parentId)
+      currId = parentId
     }
     return ancestors
   }
@@ -343,34 +349,44 @@ export function AdminVfsImport({ targetFolders = [], onImported, disabled = fals
 
   // Run import
   const handleRunImport = async () => {
-    if (!staged?.import_id || pollRef.current) return
+    if (!staged?.import_id || pollRef.current || startingRef.current) return
+    startingRef.current = true
+    let polling = null
     const summary = preview?.summary || {}
-    const confirmed = await confirm({
-      title: 'Запустить импорт',
-      message:
-        `Импортировать ${formatNumber(summary.files_imported || 0)} новых треков в T-Music?\n\n` +
-        `Папок будет создано: ${summary.folders_create || 0}\n` +
-        `Папок будет объединено: ${summary.folders_reuse || 0}\n` +
-        `Существующие дубликаты (${summary.files_skipped || 0} файлов) будут пропущены.`,
-      confirmLabel: 'Импортировать',
-    })
-    if (!confirmed) return
+    try {
+      const confirmed = await confirm({
+        title: 'Запустить импорт',
+        message:
+          `Импортировать ${formatNumber(summary.files_imported || 0)} новых треков в T-Music?\n\n` +
+          `Папок будет создано: ${summary.folders_create || 0}\n` +
+          `Папок будет объединено: ${summary.folders_reuse || 0}\n` +
+          `Существующие дубликаты (${summary.files_skipped || 0} файлов) будут пропущены.`,
+        confirmLabel: 'Импортировать',
+      })
+      if (!confirmed) return
 
-    if (importBusy) return
-    stopPolling()
+      if (importBusy) return
+      stopPolling()
+      const generation = importEpoch.current
+      const importId = staged.import_id
+      setImportBusy(true)
+      setError(null)
+      setProgress({ current: 0, total: summary.files_total || 0, message: 'Запуск импорта…' })
+
+      polling = startSerialPolling(
+        () => adminApi.getVfsImportStatus(importId),
+        (status) => {
+          if (generation === importEpoch.current && status?.progress) setProgress(status.progress)
+        },
+      )
+      pollRef.current = polling
+    } finally {
+      startingRef.current = false
+    }
+
+    if (!polling) return
     const generation = importEpoch.current
     const importId = staged.import_id
-    setImportBusy(true)
-    setError(null)
-    setProgress({ current: 0, total: summary.files_total || 0, message: 'Запуск импорта…' })
-
-    const polling = startSerialPolling(
-      () => adminApi.getVfsImportStatus(importId),
-      (status) => {
-        if (generation === importEpoch.current && status?.progress) setProgress(status.progress)
-      },
-    )
-    pollRef.current = polling
 
     try {
       const resp = await adminApi.runTreeImport(importId, {

@@ -24,6 +24,7 @@ class PositionUpdate(BaseModel):
 
 
 class HistoryCreate(BaseModel):
+    history_id: Optional[int] = None
     file_id: int
     duration_played_sec: FiniteFloat = Field(default=0.0, ge=0, le=MAX_HISTORY_DURATION_SEC)
     track_duration_sec: Optional[FiniteFloat] = Field(default=None, ge=0, le=MAX_HISTORY_DURATION_SEC)

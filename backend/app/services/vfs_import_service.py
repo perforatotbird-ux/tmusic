@@ -16,12 +16,13 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 from fastapi import UploadFile
-from sqlalchemy import delete, select, func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.vfs import Folder, FolderClosure, TGAccount, VFile
-from app.models.music import MusicArtist, MusicAlbum
+from app.models.vfs import Folder, FolderClosure, VFile
+from app.repositories.file_repository import FileRepository
+from app.repositories.folder_repository import FolderRepository
+from app.repositories.tg_account_repository import TGAccountRepository
 from app.utils.time import utcnow
 
 logger = logging.getLogger("tmusic.vfs.import")
@@ -350,7 +351,7 @@ def _account_ids(account_map: Dict[str, Any]) -> Set[int]:
 
 
 def _account_mapping(snapshot: SourceSnapshot, db: Session) -> Dict[int, int]:
-    target_accounts = list(db.scalars(select(TGAccount)).all())
+    target_accounts = TGAccountRepository.list_all(db)
     target_ids = {account.id for account in target_accounts}
     target_by_name: Dict[str, List[int]] = {}
     for account in target_accounts:
@@ -556,7 +557,7 @@ def _select_subtree(snapshot: SourceSnapshot, root_id: int) -> Set[int]:
 def _target_root(db: Session, target_root_id: Optional[int]) -> Optional[Folder]:
     if target_root_id is None:
         return None
-    root = db.get(Folder, target_root_id)
+    root = FolderRepository.get(db, target_root_id)
     if not root or root.is_trash:
         raise VfsImportError("Целевая папка T-Music не найдена")
     return root
@@ -564,7 +565,7 @@ def _target_root(db: Session, target_root_id: Optional[int]) -> Optional[Folder]
 
 def _target_index(db: Session) -> Dict[Tuple[Optional[int], str], List[Folder]]:
     result: Dict[Tuple[Optional[int], str], List[Folder]] = {}
-    for folder in db.scalars(select(Folder)).all():
+    for folder in FolderRepository.list_all(db):
         if folder.is_trash or not folder.name:
             continue
         result.setdefault((folder.parent_id, folder.name.casefold()), []).append(folder)
@@ -613,12 +614,7 @@ def _existing_names(db: Session, folder_ids: List[int]) -> Dict[int, Set[str]]:
     result: Dict[int, Set[str]] = {folder_id: set() for folder_id in folder_ids}
     if not folder_ids:
         return result
-    rows = db.execute(
-        select(VFile.folder_id, VFile.name).where(
-            VFile.folder_id.in_(folder_ids),
-            VFile.is_trash.is_(False),
-        )
-    ).all()
+    rows = FileRepository.names_in_folders(db, folder_ids)
     for folder_id, name in rows:
         if folder_id in result and name:
             result[folder_id].add(name.casefold())
@@ -908,8 +904,8 @@ def _get_session(import_id: str, actor_id: int) -> ImportSession:
 
 
 def _rebuild_closures(db: Session) -> None:
-    db.execute(delete(FolderClosure))
-    folders = list(db.scalars(select(Folder)).all())
+    FolderRepository.delete_all_closures(db)
+    folders = FolderRepository.list_all(db)
     parents = {folder.id: folder.parent_id for folder in folders}
     for folder in folders:
         current_id = folder.id
@@ -1214,8 +1210,11 @@ def _init_staging_sqlite(db_path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = OFF")
     conn.execute("PRAGMA synchronous = 0")
-    conn.execute("PRAGMA cache_size = 200000")
-    conn.execute("PRAGMA temp_store = MEMORY")
+    # Staging is bounded by MAX_IMPORT_DECOMPRESSED_BYTES, but a large dump can
+    # still spill gigabytes into temp files. Keep temp data on disk and use a
+    # modest page cache instead of pinning ~200k pages in RAM (SEC-013).
+    conn.execute("PRAGMA cache_size = 32768")
+    conn.execute("PRAGMA temp_store = FILE")
     conn.execute("PRAGMA locking_mode = EXCLUSIVE")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS folders (
@@ -1309,7 +1308,13 @@ def _populate_staging_db(sql_path: Path, conn: sqlite3.Connection) -> Tuple[int,
         in_copy_table: Optional[str] = None
         col_map: Dict[str, int] = {}
 
+        row_count = 0
         for raw_line in handle:
+            if len(raw_line.encode("utf-8")) > MAX_LINE_BYTES:
+                raise VfsImportError("Строка SQL-файла превышает допустимый размер")
+            row_count += 1
+            if row_count > MAX_ROWS:
+                raise VfsImportError("SQL-файл содержит слишком много строк")
             line = raw_line.rstrip("\r\n")
             if not line:
                 continue
@@ -1772,7 +1777,13 @@ def _expand_import_folders(
     if preserve_parent_path:
         for fid in leaf_selected_folders:
             curr = fid
+            seen: Set[int] = set()
             while True:
+                if curr in seen:
+                    # Cyclic parent chain in a corrupt/forged source dump: stop
+                    # instead of looping forever and hanging the import worker.
+                    break
+                seen.add(curr)
                 row = conn.execute("SELECT id, name, parent_id FROM folders WHERE id = ?", (curr,)).fetchone()
                 if not row or not row["parent_id"]:
                     break
@@ -1824,8 +1835,10 @@ def _sync_catalog_for_imported_tree(
             if not inspector.has_table("music_artists") or not inspector.has_table("music_albums"):
                 return
     except Exception:
+        logger.debug("Catalog table inspection failed; skipping catalog sync", exc_info=True)
         return
 
+    top_level_target_ids = []
     for staged_id, target_id in folder_mapping.items():
         if target_id is None:
             continue
@@ -1833,7 +1846,7 @@ def _sync_catalog_for_imported_tree(
         if not staged_folder:
             continue
 
-        target_folder = db.get(Folder, target_id)
+        target_folder = FolderRepository.get(db, target_id)
         if not target_folder or target_folder.is_trash:
             continue
 
@@ -1841,97 +1854,20 @@ def _sync_catalog_for_imported_tree(
         mapped_parent_id = folder_mapping.get(staged_parent_id) if staged_parent_id else None
 
         is_top_level = (mapped_parent_id is None) or (target_folder.parent_id == target_root_id)
-
         if is_top_level:
-            imported_children_fids = [
-                folder_mapping[sub_id]
-                for sub_id, sf in staged_folders.items()
-                if sf.get("parent_id") == staged_id and folder_mapping.get(sub_id) is not None
-            ]
+            top_level_target_ids.append(target_folder.id)
 
-            if imported_children_fids:
-                artist = db.query(MusicArtist).filter(MusicArtist.folder_id == target_folder.id).first()
-                if not artist:
-                    kind = catalog_kind if catalog_kind in ("compilation", "artist", "genre_collection") else "compilation"
-                    artist = MusicArtist(
-                        folder_id=target_folder.id,
-                        kind=kind,
-                        display_name=target_folder.name,
-                        search_name=target_folder.name.casefold(),
-                        confidence=100,
-                        locked=True,
-                        created_at=utcnow(),
-                        updated_at=utcnow(),
-                    )
-                    db.add(artist)
-                    db.flush()
-
-                for child_fid in imported_children_fids:
-                    child_folder = db.get(Folder, child_fid)
-                    if not child_folder or child_folder.is_trash:
-                        continue
-                    album = db.query(MusicAlbum).filter(MusicAlbum.folder_id == child_folder.id).first()
-                    if not album:
-                        album = MusicAlbum(
-                            folder_id=child_folder.id,
-                            artist_id=artist.id,
-                            title=child_folder.name,
-                            confidence=100,
-                            created_at=utcnow(),
-                            updated_at=utcnow(),
-                        )
-                        db.add(album)
-            else:
-                audio_count = db.query(func.count(VFile.id)).filter(
-                    VFile.folder_id == target_folder.id,
-                    VFile.is_trash.is_(False),
-                    VFile.mime_type.like("audio/%"),
-                ).scalar() or 0
-
-                if audio_count > 0:
-                    parent_artist = None
-                    if target_root_id:
-                        parent_artist = db.query(MusicArtist).filter(MusicArtist.folder_id == target_root_id).first()
-
-                    if parent_artist:
-                        album = db.query(MusicAlbum).filter(MusicAlbum.folder_id == target_folder.id).first()
-                        if not album:
-                            album = MusicAlbum(
-                                folder_id=target_folder.id,
-                                artist_id=parent_artist.id,
-                                title=target_folder.name,
-                                confidence=100,
-                                created_at=utcnow(),
-                                updated_at=utcnow(),
-                            )
-                            db.add(album)
-                    else:
-                        artist = db.query(MusicArtist).filter(MusicArtist.folder_id == target_folder.id).first()
-                        if not artist:
-                            artist = MusicArtist(
-                                folder_id=target_folder.id,
-                                kind="standalone_album",
-                                display_name=target_folder.name,
-                                search_name=target_folder.name.casefold(),
-                                confidence=100,
-                                locked=True,
-                                created_at=utcnow(),
-                                updated_at=utcnow(),
-                            )
-                            db.add(artist)
-                            db.flush()
-
-                        album = db.query(MusicAlbum).filter(MusicAlbum.folder_id == target_folder.id).first()
-                        if not album:
-                            album = MusicAlbum(
-                                folder_id=target_folder.id,
-                                artist_id=artist.id,
-                                title=target_folder.name,
-                                confidence=100,
-                                created_at=utcnow(),
-                                updated_at=utcnow(),
-                            )
-                            db.add(album)
+    from app.services.music_library_service import CatalogAdminService
+    for tf_id in top_level_target_ids:
+        try:
+            # commit=False: the import owns the transaction. A commit here made
+            # the tree import non-atomic — a later audit failure could no longer
+            # roll back the imported files/catalog rows.
+            CatalogAdminService.sync_catalog_folder_tree(
+                db, tf_id, catalog_kind=catalog_kind, commit=False
+            )
+        except Exception:
+            logger.warning("Recursive catalog sync failed for folder %s", tf_id, exc_info=True)
 
     db.flush()
 
@@ -1964,13 +1900,27 @@ def preview_tree_import(
         target_index = _target_index(db)
         target_root = _target_root(db, target_root_id)
 
+        # Memoized depth (O(n) total) instead of recomputing the whole parent
+        # chain for every sort key (was O(n * depth) -> O(n^2) on a deep tree).
+        depth_cache: Dict[int, int] = {}
+
         def get_staged_depth(fid: int) -> int:
-            depth = 0
-            cur = staged_folders.get(fid)
-            while cur and cur["parent_id"] in staged_folders:
-                depth += 1
-                cur = staged_folders.get(cur["parent_id"])
-            return depth
+            cached = depth_cache.get(fid)
+            if cached is not None:
+                return cached
+            path: List[int] = []
+            seen: Set[int] = set()
+            cur: Optional[int] = fid
+            while cur is not None and cur in staged_folders and cur not in depth_cache and cur not in seen:
+                seen.add(cur)
+                path.append(cur)
+                parent = staged_folders[cur]["parent_id"]
+                cur = parent if (parent is not None and parent in staged_folders) else None
+            base = depth_cache[cur] if (cur is not None and cur in depth_cache) else 0
+            for node_id in reversed(path):
+                base += 1
+                depth_cache[node_id] = base
+            return depth_cache[fid]
 
         ordered_folder_ids = sorted(all_folder_ids, key=get_staged_depth)
 
@@ -2156,13 +2106,27 @@ def run_tree_import(
         target_index = _target_index(db)
         target_root = _target_root(db, target_root_id)
 
+        # Memoized depth (O(n) total) instead of recomputing the whole parent
+        # chain for every sort key (was O(n * depth) -> O(n^2) on a deep tree).
+        depth_cache: Dict[int, int] = {}
+
         def get_staged_depth(fid: int) -> int:
-            depth = 0
-            cur = staged_folders.get(fid)
-            while cur and cur["parent_id"] in staged_folders:
-                depth += 1
-                cur = staged_folders.get(cur["parent_id"])
-            return depth
+            cached = depth_cache.get(fid)
+            if cached is not None:
+                return cached
+            path: List[int] = []
+            seen: Set[int] = set()
+            cur: Optional[int] = fid
+            while cur is not None and cur in staged_folders and cur not in depth_cache and cur not in seen:
+                seen.add(cur)
+                path.append(cur)
+                parent = staged_folders[cur]["parent_id"]
+                cur = parent if (parent is not None and parent in staged_folders) else None
+            base = depth_cache[cur] if (cur is not None and cur in depth_cache) else 0
+            for node_id in reversed(path):
+                base += 1
+                depth_cache[node_id] = base
+            return depth_cache[fid]
 
         ordered_folder_ids = sorted(all_folder_ids, key=get_staged_depth)
         folder_mapping: Dict[int, int] = {}

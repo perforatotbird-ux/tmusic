@@ -5,18 +5,14 @@ special character escaping, and API routes.
 """
 import sys
 from pathlib import Path
-import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core.database import SessionLocal
 from app.services.search_service import SearchService, clean_track_title
-from app.repositories.search_repository import SearchRepository
 from app.schemas.search import (
     SearchUnifiedResponse,
     SearchPaginatedTracks,
-    SearchPaginatedArtists,
-    SearchPaginatedAlbums,
 )
 
 

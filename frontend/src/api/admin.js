@@ -149,6 +149,9 @@ export const adminApi = {
       body: JSON.stringify(body),
     }),
   scanArtist: (id) => request(`/api/admin/catalog/artists/${id}/scan`, { method: 'POST' }),
+  // The scan itself is a background job: the POST only starts it and returns the
+  // job snapshot, progress is read back through this endpoint.
+  getScanJob: (jobId) => request(`/api/admin/catalog/scan/${encodeURIComponent(jobId)}`),
   scanAlbum: (id) => request(`/api/admin/catalog/albums/${id}/scan`, { method: 'POST' }),
   patchArtist: (id, body) =>
     request(`/api/admin/catalog/artists/${id}`, {
@@ -162,7 +165,18 @@ export const adminApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     }),
-  deleteArtist: (id) => request(`/api/admin/catalog/artists/${id}`, { method: 'DELETE' }),
+  // `with_albums=true` + `with_files=true`: удалить карточку целиком, вместе с
+  // её альбомами и треками (строками файлов). Аудиофайлы в хранилище не трогаются.
+  deleteArtist: (id) =>
+    request(`/api/admin/catalog/artists/${id}?with_albums=true&with_files=true`, { method: 'DELETE' }),
+  // Bulk delete: the response separates `deleted` from `skipped` (a card that
+  // vanished or failed), so one bad card never hides the rest.
+  batchDeleteArtists: (body) =>
+    request('/api/admin/catalog/artists/batch-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
 
   catalogAlbums: (params = {}) => {
     const qs = new URLSearchParams(
