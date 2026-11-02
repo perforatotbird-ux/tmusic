@@ -189,3 +189,24 @@ async def get_backup_admin(
     if not user_has_permission(user, "admin.backups.manage"):
         raise HTTPException(status_code=403, detail="Backup management permission required.")
     return user
+
+
+async def get_optional_user(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_bearer),
+    db: Session = Depends(get_db),
+) -> Optional[AppUser]:
+    """Best-effort session resolution: returns None instead of raising 401.
+
+    For endpoints that must stay reachable before login (client log ingestion)
+    but should still attribute a request to a user when a session exists. A
+    missing, malformed or expired token means "anonymous" — never an error, so
+    a stale cookie cannot block log shipping.
+    """
+    token = _extract_token(request, credentials, None)
+    if not token:
+        return None
+    try:
+        return _authenticate_request(request, credentials, db)
+    except HTTPException:
+        return None

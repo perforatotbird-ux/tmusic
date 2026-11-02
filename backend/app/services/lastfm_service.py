@@ -17,7 +17,7 @@ import json
 import logging
 import time
 from typing import Any, Dict, Optional
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -27,6 +27,78 @@ from app.core.disk_cache import external_cache
 logger = logging.getLogger("tmusic.scrobble")
 
 API_URL = "https://ws.audioscrobbler.com/2.0/"
+
+# Last.fm removed artist imagery from the API: `artist.getInfo` now answers with
+# the same generic "star" asset for every artist and every size. Writing it into
+# a row is worse than writing nothing — the URL is identical for all artists, so
+# the deterministic cover_cache key collapses every scanned artist onto one
+# placeholder image, and it silently replaces artwork that other imports had
+# already supplied. Album artwork is still real, so albums stay a valid source.
+PLACEHOLDER_IMAGE_MARKER = "2a96cbd8b46e442fc41c2b86b821562f"
+
+# artist.getInfo returns the image array smallest → largest. The first entry is
+# the 34px thumbnail, which is what the old `next(...)` picked.
+_IMAGE_SIZE_RANK = {"mega": 5, "extralarge": 4, "large": 3, "medium": 2, "small": 1, "": 0}
+
+# Last.fm ends every wiki summary with this link text. When the artist has no
+# wiki at all the summary is *only* this stub — writing it as a bio is noise.
+BIO_STUB = "Read more on Last.fm"
+
+
+def is_placeholder_image(url: Optional[str]) -> bool:
+    """True for Last.fm's generic 'no artwork' asset, and for empty values."""
+    if not url:
+        return True
+    return PLACEHOLDER_IMAGE_MARKER in url.lower()
+
+
+def pick_image(images: Any) -> Optional[str]:
+    """Largest non-placeholder URL from a Last.fm image array (or None)."""
+    best_rank, best_url = -1, None
+    for img in images or []:
+        if not isinstance(img, dict):
+            continue
+        url = img.get("#text")
+        if not url or is_placeholder_image(url):
+            continue
+        rank = _IMAGE_SIZE_RANK.get(str(img.get("size") or "").lower(), 0)
+        if rank > best_rank:
+            best_rank, best_url = rank, url
+    return best_url
+
+
+def clean_bio(summary: Optional[str]) -> str:
+    """Strip Last.fm's trailing 'Read more on Last.fm' link text.
+
+    Returns "" when nothing but the stub remains, so callers can treat it as
+    "no bio" instead of storing the placeholder as the artist's biography.
+    """
+    text = (summary or "").strip()
+    if text.endswith(BIO_STUB):
+        text = text[: -len(BIO_STUB)].strip()
+    return text
+
+
+def _sanitize_cached(info: Optional[dict]) -> Optional[dict]:
+    """Re-apply the provider guards to a value read from the disk cache.
+
+    The Last.fm cache lives for 14 days and survives restarts, so entries
+    written before the placeholder filter existed are still on disk. Filtering
+    on read is what keeps a stale entry from re-injecting the shared artwork or
+    the «Read more on Last.fm» stub into the catalog.
+
+    Only keys that are actually present are touched: this is a filter, not a
+    normaliser, and adding an `image_url` that was never cached would make a
+    cache hit differ from the fetch that produced it.
+    """
+    if not isinstance(info, dict):
+        return info
+    clean = dict(info)
+    if "image_url" in clean and is_placeholder_image(clean.get("image_url")):
+        clean["image_url"] = None
+    if "summary" in clean:
+        clean["summary"] = clean_bio(clean.get("summary"))
+    return clean
 
 
 def _secret() -> str:
@@ -82,6 +154,21 @@ def _request(params: Dict[str, Any], signed: bool = False, method: str = "GET") 
         with urlopen(req, timeout=8) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
             return json.loads(raw) if raw else None
+    except HTTPError as e:
+        # A miss is a normal provider answer, not an outage: Last.fm reports
+        # "Album not found" / "Track not found" as an HTTP 404 with a JSON
+        # error body. Scans ask about many albums, so logging those as
+        # failures would bury real problems.
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+            expected = isinstance(json.loads(body).get("error"), int)
+        except Exception:
+            expected = False
+        if expected:
+            logger.debug("Last.fm %s: %s", params.get("method"), body[:120])
+        else:
+            logger.warning("Last.fm request failed (HTTP %s) for %s", e.code, params.get("method"))
+        return None
     except (URLError, OSError, ValueError) as e:
         logger.warning("Last.fm request failed (%s)", type(e).__name__)
         return None
@@ -118,14 +205,19 @@ def parse_track_meta(
     return artist, track, album
 
 
-def get_artist_info(artist: str) -> Optional[dict]:
-    """artist.getInfo via the external disk cache (misses cached briefly too)."""
+def get_artist_info(artist: str, force: bool = False) -> Optional[dict]:
+    """artist.getInfo via the external disk cache.
+
+    `force=True` skips the cache and rewrites it — the admin «Сканировать»
+    action must reflect Last.fm right now, not a snapshot up to 14 days old.
+    """
     if not artist or not metadata_ready():
         return None
     parts = {"m": "artist", "artist": artist.strip().casefold()}
-    hit, cached = external_cache.get("lastfm", parts)
-    if hit:
-        return cached
+    if not force:
+        hit, cached = external_cache.get("lastfm", parts)
+        if hit:
+            return _sanitize_cached(cached)
     result = _fetch_artist_info(artist)
     external_cache.put(
         "lastfm", parts, result, ttl_sec=int(getattr(settings, "LASTFM_CACHE_TTL_SEC", 14 * 24 * 3600))
@@ -167,17 +259,16 @@ def _fetch_artist_info(artist: str) -> Optional[dict]:
         "name": node.get("name") or artist,
         "mbid": node.get("mbid") or None,
         "url": node.get("url") or None,
-        "summary": summary,
+        "summary": clean_bio(summary),
         "similar": similar[:8],
         "tags": tags[:10],
-        "image_url": next(
-            (img.get("#text") for img in (node.get("image") or []) if isinstance(img, dict) and img.get("#text")),
-            None,
-        ),
+        # None whenever Last.fm only has the shared placeholder — see
+        # PLACEHOLDER_IMAGE_MARKER. Callers must not fall back to it.
+        "image_url": pick_image(node.get("image")),
     }
 
 
-def get_track_info(artist: str, track: str, album: Optional[str] = None) -> Optional[dict]:
+def get_track_info(artist: str, track: str, album: Optional[str] = None, force: bool = False) -> Optional[dict]:
     """track.getInfo via the external disk cache (misses cached briefly too)."""
     if not artist or not track or not metadata_ready():
         return None
@@ -187,9 +278,10 @@ def get_track_info(artist: str, track: str, album: Optional[str] = None) -> Opti
         "track": track.strip().casefold(),
         "album": (album or "").strip().casefold(),
     }
-    hit, cached = external_cache.get("lastfm", parts)
-    if hit:
-        return cached
+    if not force:
+        hit, cached = external_cache.get("lastfm", parts)
+        if hit:
+            return _sanitize_cached(cached)
     result = _fetch_track_info(artist, track, album)
     external_cache.put(
         "lastfm", parts, result, ttl_sec=int(getattr(settings, "LASTFM_CACHE_TTL_SEC", 14 * 24 * 3600))
@@ -221,10 +313,56 @@ def _fetch_track_info(artist: str, track: str, album: Optional[str] = None) -> O
         "duration_sec": duration,
         "mbid": node.get("mbid") or None,
         "url": node.get("url") or None,
-        "image_url": next(
-            (img.get("#text") for img in (album_node.get("image") or []) if isinstance(img, dict) and img.get("#text")),
-            None,
-        ),
+        "image_url": pick_image(album_node.get("image")),
+    }
+
+
+def get_album_info(artist: str, album: str, force: bool = False) -> Optional[dict]:
+    """album.getInfo via the external disk cache.
+
+    Unlike artist artwork, Last.fm album covers are still real — which makes
+    this the working cover source for an artist that has none of its own.
+    """
+    if not artist or not album or not metadata_ready():
+        return None
+    parts = {
+        "m": "album",
+        "artist": artist.strip().casefold(),
+        "album": album.strip().casefold(),
+    }
+    if not force:
+        hit, cached = external_cache.get("lastfm", parts)
+        if hit:
+            return _sanitize_cached(cached)
+    result = _fetch_album_info(artist, album)
+    external_cache.put(
+        "lastfm", parts, result, ttl_sec=int(getattr(settings, "LASTFM_CACHE_TTL_SEC", 14 * 24 * 3600))
+    )
+    return result
+
+
+def _fetch_album_info(artist: str, album: str) -> Optional[dict]:
+    """album.getInfo — release artwork, mbid, wiki summary."""
+    if not artist or not album or not metadata_ready():
+        return None
+    data = _request(
+        {"method": "album.getInfo", "artist": artist, "album": album},
+        signed=False,
+        method="GET",
+    )
+    if not data:
+        return None
+    # A miss comes back as {"error": 6, "message": "Album not found"} — no node.
+    node = data.get("album")
+    if not isinstance(node, dict) or not node:
+        return None
+    return {
+        "name": node.get("name") or album,
+        "artist": node.get("artist") or artist,
+        "mbid": node.get("mbid") or None,
+        "url": node.get("url") or None,
+        "summary": clean_bio((node.get("wiki") or {}).get("summary")),
+        "image_url": pick_image(node.get("image")),
     }
 
 

@@ -72,3 +72,8 @@ backend/app/utils/ffmpeg/*.exe
 
 # Local Docker secret files must never be tracked or baked into images.
 .secrets/
+
+# Agent workspace data (local only — not project source)
+.workbuddy-ai/
+photo_a_analysis/
+*.htm

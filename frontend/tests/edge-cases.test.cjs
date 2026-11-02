@@ -85,12 +85,12 @@ test('API client 429 waits using parsed HTTP-date, never NaN', async () => {
   let delay
   const context = {
     retryAfterSeconds, createLogger: () => logger, document: { cookie: '' }, performance: { now: () => 0 },
-    fetch: async () => ({ status: 429, headers: { get: () => new Date(Date.now() + 60000).toUTCString() } }),
+    fetch: async () => ({ status: 429, headers: { get: () => new Date(Date.now() + 2000).toUTCString() } }),
     setTimeout: (callback, ms) => { delay = ms; callback() }, window: { dispatchEvent: noop }, CustomEvent: function () {},
   }
   const source = fs.readFileSync(path.join(__dirname, '../src/api/client.js'), 'utf8')
     .replace(/^import .*\r?\n/gm, '').replace(/export /g, '')
   vm.createContext(context); vm.runInContext(source, context)
   await assert.rejects(context.request('/api/test'), (error) => error.code === 'rate_limited' && error.status === 429)
-  assert(Number.isFinite(delay) && delay >= 59000 && delay <= 60000)
+  assert(Number.isFinite(delay) && delay >= 1000 && delay <= 2000)
 })

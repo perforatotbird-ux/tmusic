@@ -27,7 +27,9 @@ TOKEN_BYTES = 18  # ~24-char URL-safe token
 
 
 def _share_url(request: Request, token: str) -> str:
-    base = str(request.base_url).rstrip("/")
+    # Prefer the configured public origin: a forged Host header must never
+    # change the domain of a link the user copies and sends to someone else.
+    base = (settings.PUBLIC_BASE_URL or str(request.base_url)).rstrip("/")
     return f"{base}/s/{token}"
 
 

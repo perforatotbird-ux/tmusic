@@ -8,18 +8,22 @@ Abuse resistance:
 - POST-only, payload capped (≤50 events, msg ≤2000 chars, logger ≤64 chars).
 - Level whitelisted to the five standard names.
 - Shared /api/* sliding-window rate limit already applies.
-- Bearer/cookie auth NOT required (login-page errors must be loggable);
-  CSRF applies automatically for cookie sessions (mutations via /api/*).
+- Bearer/cookie auth NOT required for source="web" (login-page errors must be
+  loggable); any other source needs a session. Anonymous batches are stamped
+  `anonymous=true` so they can be filtered/alerted on.
+- CSRF applies automatically for cookie sessions (mutations via /api/*).
 """
 import logging
 import re
 from typing import List, Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.core.logging_config import get_frontend_logger, utc_iso
 from app.core.rate_limiter import limiter
+from app.api.dependencies import get_optional_user
+from app.models.auth import AppUser
 from app.utils.client_ip import get_client_ip
 
 router = APIRouter(prefix="/api/system", tags=["logs"])
@@ -78,11 +82,24 @@ class ClientLogBatch(BaseModel):
 
 
 @router.post("/client-logs")
-async def ingest_client_logs(batch: ClientLogBatch, request: Request):
-    """Append a batch of frontend events to frontend.log."""
+async def ingest_client_logs(
+    batch: ClientLogBatch,
+    request: Request,
+    user: Optional[AppUser] = Depends(get_optional_user),
+):
+    """Append a batch of frontend events to frontend.log.
+
+    SECURITY: the endpoint stays reachable without a session so login-page
+    errors can be shipped, but every event is stamped `anonymous=true|false`
+    and only the browser source ("web") is accepted anonymously — any other
+    source must present a valid session, so a third party cannot forge events
+    attributed to a native client.
+    """
     client_ip = get_client_ip(request)
     if limiter.is_rate_limited(f"clientlogs:{client_ip}", CLIENT_LOGS_PER_MIN, 60):
         raise HTTPException(status_code=429, detail="Too many log batches.")
+    if batch.source != "web" and user is None:
+        raise HTTPException(status_code=401, detail="Authentication required for this log source.")
     ip = get_client_ip(request)
     ua = (request.headers.get("user-agent") or "")[:200]
     written = 0
@@ -94,6 +111,8 @@ async def ingest_client_logs(batch: ClientLogBatch, request: Request):
             "client_ip": ip,
             "user_agent": ua or None,
             "event_logger": ev.logger,
+            "anonymous": user is None,
+            "user_id": user.id if user else None,
         }
         if ev.data:
             extra["data"] = _sanitize(ev.data)

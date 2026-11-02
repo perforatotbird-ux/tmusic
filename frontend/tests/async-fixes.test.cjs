@@ -30,7 +30,7 @@ function auth(api) {
 
 test('resume ignores a late previous-track reply (including A -> B -> A)', async () => {
   const d = deferred()
-  const ctx = load('services/playbackProgress.js', { playbackApi: { getPosition: () => d.promise } })
+  const ctx = load('services/playbackProgress.js', { playbackApi: { getPosition: () => d.promise }, createLogger: () => logger })
   const audio = { currentTime: 0, duration: 300 }
   ctx.onTrackChanged(1)
   const pending = ctx.tryRestorePosition(audio, 1)
@@ -40,7 +40,7 @@ test('resume ignores a late previous-track reply (including A -> B -> A)', async
 })
 test('resume applies only finite offset to matching audio binding', async () => {
   for (const [position, binding, expected] of [[42, '1', 42], [42, '2', 0], ['NaN', '1', 0]]) {
-    const ctx = load('services/playbackProgress.js', { playbackApi: { getPosition: async () => ({ position_sec: position }) } })
+    const ctx = load('services/playbackProgress.js', { playbackApi: { getPosition: async () => ({ position_sec: position }) }, createLogger: () => logger })
     const audio = { currentTime: 0, duration: 300, getAttribute: () => binding }
     ctx.onTrackChanged(1); await ctx.tryRestorePosition(audio, 1)
     assert.equal(audio.currentTime, expected)
@@ -186,11 +186,12 @@ test('old import run reply cannot overwrite new result or stop its polling', asy
   const old = deferred(), fresh = deferred(), controllers = []
   const results = [], errors = []
   let calls = 0
-  const ctx = { staged: { import_id: 'old' }, pollRef: { current: null }, importEpoch: { current: 0 },
+  const ctx = { staged: { import_id: 'old' }, pollRef: { current: null }, startingRef: { current: false }, importEpoch: { current: 0 },
     importBusy: false, preview: null, selectedFolders: new Set([1]), selectedFiles: new Set(),
     targetRootId: '', preserveParentPath: true, catalogKind: 'compilation', formatNumber: String,
     setImportBusy: noop, setError: (v) => { if (v) errors.push(v) }, setProgress: noop, setResult: (r) => results.push(r), setPreview: noop,
     window: { confirm: () => true, dispatchEvent: noop }, CustomEvent: function () {},
+    confirm: () => true,
     startSerialPolling: () => { const c = { stopped: false, stop() { this.stopped = true } }; controllers.push(c); return c },
     adminApi: { getVfsImportStatus: noop, runTreeImport: (id) => { calls++; return id === 'old' ? old.promise : fresh.promise } },
     stopPolling: () => { ctx.importEpoch.current++; ctx.pollRef.current?.stop(); ctx.pollRef.current = null }, onImported: noop }

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { useAuthStore } from './store/authStore'
 import { usePlayerStore } from './store/playerStore'
 import { useFavoritesStore } from './store/favoritesStore'
@@ -8,6 +8,7 @@ import {
   onTrackChanged,
   tryRestorePosition,
   onTimeUpdate as playbackOnTimeUpdate,
+  onPause as playbackOnPause,
   onEnded as playbackOnEnded,
 } from './services/playbackProgress'
 import { AuthModal } from './components/AuthModal'
@@ -15,7 +16,10 @@ import { PasswordChangeModal } from './components/PasswordChangeModal'
 import { MusicLibrary } from './components/MusicLibrary'
 import { MusicLibraryPlayer } from './components/MusicLibraryPlayer'
 import { CoverPicker } from './components/CoverPicker'
-import { StorageSettingsModal } from './components/StorageSettingsModal'
+const StorageSettingsModal = lazy(() =>
+  import('./components/StorageSettingsModal').then((m) => ({ default: m.StorageSettingsModal }))
+)
+import { ScanProgressHost } from './components/ScanProgressHost'
 import { ToastHost } from './components/ui/ToastHost'
 import { useOfflineStore } from './store/offlineStore'
 import { createLogger } from './utils/logger'
@@ -30,9 +34,29 @@ export function App() {
   const [passwordChangeOpen, setPasswordChangeOpen] = useState(false)
   // Track id we've already bound restore/metadata for (store owns src/play).
   const boundTrackIdRef = useRef(null)
-  const errorTrackRef = useRef({ id: null, count: 0 })
+  // M-04: the fixed offline banner overlaps the sticky topbar unless the
+  // topbar is pushed down by its real height (it wraps to two lines on
+  // narrow phones, so a hardcoded value would lie).
+  const bannerRef = useRef(null)
 
   const { storageModalOpen, setStorageModalOpen, isOffline, cachedTrackIds } = useOfflineStore()
+
+  // M-04: keep --offline-banner-h in sync with the real banner height so the
+  // sticky topbar (MusicLibrary) and the scan-progress host sit below it.
+  useEffect(() => {
+    const root = document.documentElement
+    if (!isOffline) {
+      root.style.setProperty('--offline-banner-h', '0px')
+      return undefined
+    }
+    const update = () => {
+      const h = bannerRef.current?.offsetHeight || 0
+      root.style.setProperty('--offline-banner-h', `${h}px`)
+    }
+    update()
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
+  }, [isOffline, cachedTrackIds.size])
 
   useEffect(() => {
     const offlineMgr = useOfflineStore.getState()
@@ -41,6 +65,23 @@ export function App() {
   }, [])
 
   const { user, isAuthenticated, checkAuth, setAuthModalOpen } = useAuthStore()
+  const isPreparing = usePlayerStore((state) => state.isPreparing)
+
+  // Kick audio playback as soon as preparation finishes and real MP3 is bound
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio) return
+    const state = usePlayerStore.getState()
+    // `data-track-id` is only present once a real track source is bound; while
+    // preparing, the element holds the silent pre-roll (blob: URL) and must not
+    // be started.
+    if (state.isPlaying && !isPreparing && audio.paused && audio.src && audio.getAttribute('data-track-id')) {
+      const p = audio.play()
+      if (p && p.catch) {
+        p.catch((err) => log.warn('playback did not resume after preparation', { error: err?.name || String(err) }))
+      }
+    }
+  }, [isPreparing])
 
   useEffect(() => {
     if (isAuthenticated && !user?.password_change_required) {
@@ -67,7 +108,7 @@ export function App() {
       .then((config) => {
         if (config?.site_title) document.title = config.site_title
       })
-      .catch(() => {})
+      .catch((e) => log.debug('system config fetch failed', { error: e?.message }))
   }, [])
 
   useEffect(() => {
@@ -102,7 +143,7 @@ export function App() {
       resumeIfNeeded = () => {
         if (document.visibilityState && document.visibilityState !== 'visible') return
         const { isPlaying, currentTrack: track, audioElement } = usePlayerStore.getState()
-        if (isPlaying && track && audioElement && audioElement.paused) {
+        if (isPlaying && !usePlayerStore.getState().isPreparing && track && audioElement && audioElement.paused) {
           const p = audioElement.play()
           if (p && p.catch) p.catch(() => {})
         }
@@ -148,7 +189,7 @@ export function App() {
       if (key === ' ' || key === 'Spacebar') {
         e.preventDefault()
         const audio = s.audioElement
-        if (s.isPlaying && audio?.paused) s.forceResume()
+        if (s.isPlaying && !s.isPreparing && audio?.paused) s.forceResume()
         else s.togglePlay()
         log.debug('hotkey', { key: 'space' })
         return
@@ -236,7 +277,7 @@ export function App() {
 
     // If store already set src but browser paused — kick play when track appears
     const state = usePlayerStore.getState()
-    if (state.isPlaying && audio.paused) {
+    if (state.isPlaying && !state.isPreparing && audio.paused) {
       const p = audio.play()
       if (p && p.catch) p.catch(() => {})
     }
@@ -245,6 +286,7 @@ export function App() {
   }, [currentTrack?.id, currentRelease])
 
   const handleTimeUpdate = () => {
+    if (usePlayerStore.getState().isPreparing) return
     const audio = audioRef.current
     if (!audio) return
     const cur = audio.currentTime
@@ -296,12 +338,14 @@ export function App() {
   }
 
   const handleWaiting = () => {
-    if (usePlayerStore.getState().isPlaying) usePlayerStore.getState().setBuffering(true)
+    if (usePlayerStore.getState().isPlaying && !usePlayerStore.getState().isPreparing) {
+      usePlayerStore.getState().setBuffering(true)
+    }
   }
 
   const handlePlaying = () => {
+    if (usePlayerStore.getState().isPreparing) return
     usePlayerStore.getState().setBuffering(false)
-    errorTrackRef.current = { id: null, count: 0 }
     updateMediaSessionPosition(
       audioRef.current?.duration || 0,
       audioRef.current?.currentTime || 0
@@ -314,25 +358,20 @@ export function App() {
   }
 
   const handleError = () => {
-    const state = usePlayerStore.getState()
-    if (!state.currentTrack) return
-    state.setBuffering(false)
-    const trackId = state.currentTrack.id
-    const name = (state.currentTrack.name || 'Трек').replace(/\.[^/.]+$/, '')
-    const previous = errorTrackRef.current
-    const count = previous.id === trackId ? previous.count + 1 : 1
-    errorTrackRef.current = { id: trackId, count }
-    if (count >= 2) {
-      state.audioElement?.pause()
-      usePlayerStore.setState({ isPlaying: false })
-      setMediaPlaybackState('none')
-      state.setNotice({ kind: 'error', text: `Не удалось воспроизвести «${name}» — поток недоступен` })
-      return
+    // Preparation and browser decode errors are not playlist completion.
+    usePlayerStore.getState().recoverAudioError()
+  }
+
+  const handlePause = () => {
+    const audio = audioRef.current
+    const trackId = usePlayerStore.getState().currentTrack?.id
+    if (audio && trackId) {
+      playbackOnPause(
+        trackId,
+        audio.currentTime,
+        Number.isFinite(audio.duration) ? audio.duration : null
+      )
     }
-    log.warn('Audio stream error, skipping failed track', { id: trackId })
-    state.setNotice({ kind: 'error', text: `Проблемы с потоком «${name}» — пропускаем` })
-    boundTrackIdRef.current = null
-    state.nextTrack({ skipCurrent: true })
   }
 
   /**
@@ -362,6 +401,7 @@ export function App() {
       {/* Offline Status Top Banner */}
       {isOffline && (
         <div
+          ref={bannerRef}
           role="status"
           style={{
             position: 'fixed',
@@ -424,6 +464,7 @@ export function App() {
         onEnded={handleEnded}
         onError={handleError}
         onPlaying={handlePlaying}
+        onPause={handlePause}
       />
 
       {/* Main Music Library View */}
@@ -454,22 +495,29 @@ export function App() {
       {/* Cover Art Picker Modal */}
       {coverTarget && (
         <CoverPicker
+          // Remount per target: a stale `url`/`preview` from the previously
+          // edited row must never be submitted for a different artist/album.
+          key={`${coverTarget.type}:${coverTarget.id}`}
           target={coverTarget}
           onClose={() => setCoverTarget(null)}
-          // UI-08: refetch the catalog instead of reloading the whole page — a
-          // hard reload killed playback, the queue and the Media Session while
-          // the user was listening. MusicLibrary listens for this event.
-          onUpdated={() => {
-            // Tell the library view to re-fetch without a page reload.
-            window.dispatchEvent(new CustomEvent('tmusic:catalog-changed'))
-          }}
+          // UI-08: no hard reload — it killed playback, the queue and the Media
+          // Session. The API layer emits `tmusic:catalog-changed` with the
+          // touched row; MusicLibrary / AdminCatalog listen and refresh in
+          // place.
+          onUpdated={() => {}}
         />
       )}
 
       {/* Telegram-style Storage & Cache Settings Modal */}
       {storageModalOpen && (
-        <StorageSettingsModal onClose={() => setStorageModalOpen(false)} />
+        <Suspense fallback={null}>
+          <StorageSettingsModal onClose={() => setStorageModalOpen(false)} />
+        </Suspense>
       )}
+
+      {/* Catalog scans run as background jobs: their progress lives here so it
+          survives navigating away from the admin panel mid-scan. */}
+      <ScanProgressHost />
     </div>
   )
 }

@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: tmusic
+          POSTGRES_PASSWORD: ci_password
+          POSTGRES_DB: tgmusic
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tmusic -d tgmusic"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://tmusic:ci_password@127.0.0.1:5432/tgmusic
+      TMUSIC_TEST_SCHEMA: tmusic_test
+      SECRET_KEY: ci-secret-key-0123456789abcdef0123456789
+      SESSION_SECRET: ci-session-secret-0123456789abcdef0123456
+      LOG_ARCHIVE_PASSWORD: ci-log-archive-password
+      ENVIRONMENT: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+      - name: Ruff
+        run: ruff check backend
+      - name: Backend tests (disposable schema)
+        working-directory: backend
+        run: pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Frontend tests
+        run: npm test
+      - name: Production build
+        run: npm run build
+      - name: npm audit (production dependencies)
+        run: npm audit --omit=dev --audit-level=high
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: pip-audit
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          python -m pip_audit -r backend/requirements.txt

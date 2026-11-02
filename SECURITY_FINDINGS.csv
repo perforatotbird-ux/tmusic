@@ -1,0 +1,9 @@
+Finding_ID,Title,Severity,CVSS_v31,CWE,OWASP_Top10_2025,Component,File_Path,Line_Range,Release_Blocker,Remediation_Priority,Status
+SEC-001,Default / Weak Admin Credentials (123) in Public Threat Model,CRITICAL,9.8,CWE-259; CWE-521,A07:2025,Authentication / Admin Bootstrap,backend/app/services/bootstrap.py,44-78,YES,P0,Open
+SEC-002,Unauthenticated Account Lockout DoS via Subsonic API,HIGH,7.5,CWE-307; CWE-400,A04:2025,Subsonic API / Lockout,backend/app/services/subsonic_auth.py,127-142,NO,P0,Resolved
+SEC-003,Historical Database Credentials in Git Commit History,HIGH,7.4,CWE-798; CWE-522,A01:2025,Git Repository History,git log (d09674c),N/A,NO,P1,Open
+SEC-004,Insecure Cleartext Traffic and Permissive Navigation in Mobile App,HIGH,7.5,CWE-319; CWE-942,A02:2025,Mobile App (Capacitor/Android),mobile/capacitor.config.ts,16-19,NO,P1,Resolved
+SEC-005,Public Exposure of UDP LAN Discovery Port 8211,MEDIUM,5.3,CWE-200; CWE-406,A05:2025,LAN Discovery Service,docker-compose.yml,35,NO,P2,Open
+SEC-006,Insecure Default Cookie Flags and Missing HSTS,MEDIUM,4.8,CWE-614; CWE-319,A05:2025,Session Cookies / HTTP Headers,music.env,COOKIE_SECURE,NO,P2,Open
+SEC-007,Reverse Proxy IP Spoofing and Shared IP Lockout Risk,MEDIUM,5.3,CWE-290; CWE-307,A05:2025,Reverse Proxy Configuration,music.env; backend/app/main.py,65,NO,P2,Open
+SEC-008,Catastrophic ReDoS in Frontend Build Dependency (source-map-js),LOW,3.3,CWE-1333,A06:2025,Frontend Build Tooling,package-lock.json,source-map-js@1.0.2,NO,P3,Resolved

@@ -87,6 +87,29 @@ def test_subsonic_panel_password_rejected():
     assert body["error"]["code"] == 40
 
 
+def test_subsonic_failure_does_not_lock_web_user():
+    """SEC-002 regression: Repeated Subsonic auth failures must not lock out the web user."""
+    _ensure_user()
+    for i in range(6):
+        resp = client.get(
+            "/rest/ping.view",
+            params={"u": USERNAME, "p": f"bad_token_{i}", "v": "1.16.1", "c": "test", "f": "json"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["subsonic-response"]["status"] == "failed"
+
+    # User in DB must not have locked_until or accumulated failed attempts from Subsonic
+    with SessionLocal() as db:
+        user = db.scalar(select(AppUser).where(AppUser.username == USERNAME))
+        assert user.locked_until is None
+        assert (user.failed_login_attempts or 0) == 0
+
+    # Web login must continue to succeed
+    login_resp = client.post("/api/auth/login", json={"username": USERNAME, "password": PASSWORD})
+    assert login_resp.status_code == 200
+    assert "access_token" in login_resp.json()
+
+
 def test_subsonic_ping_token_as_password():
     """p=<dedicated token> authenticates."""
     resp = client.get(

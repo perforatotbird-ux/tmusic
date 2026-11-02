@@ -75,9 +75,14 @@ def assert_admin_hash_intact(expected_line: str) -> None:
 def check_env_unchanged(before: str) -> None:
     """Teardown hook: verify the hash line survived the test run unchanged."""
     if not before:
-        raise PasswordMutationError(
-            f"{MESSAGE}\nReason: {ADMIN_HASH_KEY} is missing from {ENV_PATH}."
-        )
+        # Clean checkout / CI (audit B-2): there is no local music.env with an
+        # ADMIN_PASSWORD_HASH line, so there is nothing to protect. A test run
+        # must not *create* one either.
+        if current_admin_hash_line():
+            raise PasswordMutationError(
+                f"{MESSAGE}\nReason: a test run wrote {ADMIN_HASH_KEY} into {ENV_PATH}."
+            )
+        return
     assert_admin_hash_intact(before)
 
 

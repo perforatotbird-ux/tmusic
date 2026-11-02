@@ -10,7 +10,7 @@ Hardening (2026-09 security audit):
 """
 import logging
 from typing import Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -21,12 +21,16 @@ from app.core.security import (
     timing_equalizer_hash, password_needs_rehash, password_change_required,
 )
 from app.core.rate_limiter import limiter
+from app.core.login_device import device_id_for, issue_device_token
 from app.core.user_cache import get_attached_user, invalidate_user
 from app.utils.time import utcnow
 from app.models.auth import AppUser
 from app.schemas.auth import TokenResponse
 
 logger = logging.getLogger("tmusic.auth")
+
+# One answer for every account-level failure (H-1: no account enumeration).
+GENERIC_LOGIN_ERROR = "Invalid credentials."
 
 
 class AuthService:
@@ -42,12 +46,13 @@ class AuthService:
         return None
 
     @staticmethod
-    def _account_gate(user: AppUser, client_ip: str) -> Optional[str]:
-        """Per-account lockout check. Returns a generic error message or None."""
-        if user.locked_until and user.locked_until > utcnow():
-            logger.warning("Login blocked (account lockout): ip=%s user=%r", client_ip, user.username)
-            return "Account temporarily locked. Try again later."
-        return None
+    def _account_locked(user: AppUser) -> bool:
+        return bool(user.locked_until and user.locked_until > utcnow())
+
+    @staticmethod
+    def _burn_verify(password: str) -> None:
+        """Spend one Argon2id verify so every failure branch costs the same."""
+        verify_password(password, timing_equalizer_hash())
 
     @staticmethod
     def _register_failure(db: Session, user: AppUser, client_ip: str, what: str) -> None:
@@ -58,7 +63,7 @@ class AuthService:
         if user.failed_login_attempts >= settings.MAX_FAILED_LOGIN_ATTEMPTS:
             user.locked_until = utcnow() + timedelta(minutes=settings.LOCKOUT_MINUTES)
             logger.warning(
-                "Account locked after %d failed attempts: ip=%s user=%r",
+                "Account locked for untrusted devices after %d failed attempts: ip=%s user=%r",
                 user.failed_login_attempts, client_ip, user.username,
             )
         db.commit()
@@ -70,14 +75,16 @@ class AuthService:
 
     @staticmethod
     def _finish_success(db: Session, user: AppUser, client_ip: str,
-                        claims: dict, kind: str) -> Tuple[TokenResponse, None]:
+                        claims: dict, kind: str,
+                        device_id: Optional[str] = None) -> Tuple[TokenResponse, None]:
         """Reset counters and mint a session token (shared tail of all flows)."""
         limiter.record_success(client_ip)
+        if device_id:
+            limiter.record_success(f"device:{device_id}")
         user.failed_login_attempts = 0
         user.locked_until = None
         db.commit()
         invalidate_user(user.username)
-
         logger.info("Successful login (%s): ip=%s user=%r", kind, client_ip, user.username)
         token_str, _, expire_dt = create_access_token(
             subject=user.username, claims=claims,
@@ -88,6 +95,7 @@ class AuthService:
             token_type="bearer",
             expires_in=int((expire_dt - utcnow()).total_seconds()),
             password_change_required=claims.get("pwd_reset", False),
+            device_token=issue_device_token(user.id, user.token_version or 0),
         ), None
 
     @staticmethod
@@ -95,30 +103,59 @@ class AuthService:
         db: Session,
         username: str,
         password: str,
-        client_ip: str
+        client_ip: str,
+        device_token: Optional[str] = None,
     ) -> Tuple[Optional[TokenResponse], Optional[str]]:
-        """Authenticate user with username and password with brute-force lockout."""
-        # 1. Check IP lockout (generic message — exact countdown stays server-side)
-        if err := AuthService._ip_gate(client_ip, username):
-            return None, err
+        """Authenticate with brute-force protection that cannot lock out the owner.
 
-        # 2. Find user
-        user = db.execute(select(AppUser).where(AppUser.username == username).with_for_update()).scalar_one_or_none()
-        if not user or not user.is_active:
-            # Burn a dummy Argon2id verify so timing does not reveal account existence
-            verify_password(password, timing_equalizer_hash())
-            limiter.record_failure(client_ip, settings.MAX_FAILED_LOGIN_ATTEMPTS, settings.LOCKOUT_MINUTES * 60)
-            logger.warning("Failed login (unknown/inactive user): ip=%s user=%r", client_ip, username)
-            return None, "Invalid credentials."
+        2026-11-02 audit (H-1):
+        * A valid known-device cookie bypasses the account-wide and per-IP
+          lockouts; its failures are counted (and locked) per device only.
+        * Untrusted clients keep the per-IP and per-account limits.
+        * Every account-level failure (unknown, inactive, locked, wrong
+          password) answers with the same message after one Argon2id verify,
+          so neither the text nor the timing reveals whether an account exists.
+        """
+        user = db.execute(
+            select(AppUser).where(AppUser.username == username).with_for_update()
+        ).scalar_one_or_none()
+        usable = bool(user and user.is_active)
+        device_id = (
+            device_id_for(device_token, user.id, user.token_version or 0) if usable else None
+        )
 
-        # 3. Check account lockout (generic message — countdown stays server-side)
-        if err := AuthService._account_gate(user, client_ip):
-            return None, err
-
-        # 4. Verify password
-        if not verify_password(password, user.password_hash):
-            AuthService._register_failure(db, user, client_ip, "bad password")
-            return None, "Invalid credentials."
+        if device_id:
+            device_key = f"device:{device_id}"
+            locked, _ = limiter.is_locked_out(device_key)
+            if locked:
+                AuthService._burn_verify(password)
+                logger.warning("Login blocked (device lockout): ip=%s user=%r", client_ip, username)
+                return None, GENERIC_LOGIN_ERROR
+            if not verify_password(password, user.password_hash):
+                limiter.record_failure(
+                    device_key, settings.MAX_FAILED_LOGIN_ATTEMPTS, settings.LOCKOUT_MINUTES * 60)
+                logger.warning("Failed login (bad password, known device): ip=%s user=%r", client_ip, username)
+                return None, GENERIC_LOGIN_ERROR
+        else:
+            # 1. IP lockout (independent of the username, so it leaks nothing)
+            if err := AuthService._ip_gate(client_ip, username):
+                return None, err
+            # 2. Unknown / inactive account
+            if not usable:
+                AuthService._burn_verify(password)
+                limiter.record_failure(client_ip, settings.MAX_FAILED_LOGIN_ATTEMPTS, settings.LOCKOUT_MINUTES * 60)
+                logger.warning("Failed login (unknown/inactive user): ip=%s user=%r", client_ip, username)
+                return None, GENERIC_LOGIN_ERROR
+            # 3. Account locked for untrusted devices: same cost, same answer
+            if AuthService._account_locked(user):
+                AuthService._burn_verify(password)
+                limiter.record_failure(client_ip, settings.MAX_FAILED_LOGIN_ATTEMPTS, settings.LOCKOUT_MINUTES * 60)
+                logger.warning("Login blocked (account lockout, untrusted device): ip=%s user=%r", client_ip, username)
+                return None, GENERIC_LOGIN_ERROR
+            # 4. Verify password
+            if not verify_password(password, user.password_hash):
+                AuthService._register_failure(db, user, client_ip, "bad password")
+                return None, GENERIC_LOGIN_ERROR
 
         # Rehash only an unambiguous password. Row lock prevents a concurrent
         # password reset from being overwritten by opportunistic migration.
@@ -126,11 +163,13 @@ class AuthService:
         if not must_change and password_needs_rehash(user.password_hash):
             user.password_hash = hash_password(password)
             logger.info("Upgraded password hash to Argon2id: user=%r", username)
-
         claims = {"uid": user.id, "tv": user.token_version or 0}
         if must_change:
             claims["pwd_reset"] = True
-        return AuthService._finish_success(db, user, client_ip, claims, "password")
+        return AuthService._finish_success(
+            db, user, client_ip, claims, "password" if not device_id else "password, known device",
+            device_id=device_id,
+        )
 
     @staticmethod
     def change_password(db: Session, user: AppUser, new_password: str):

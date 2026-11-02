@@ -353,7 +353,6 @@ def test_subsonic_rejects_panel_password(monkeypatch):
     """KEY FIX: panel bcrypt password must NOT authenticate via p= anymore."""
     import app.services.subsonic_auth as sa
     from app.core.security import hash_password
-    from datetime import datetime
 
     panel_password = "CorrectHorse1!"
     user = SimpleNamespace(
@@ -383,7 +382,6 @@ def test_subsonic_accepts_dedicated_token(monkeypatch):
     from app.core.security import hash_password
     from cryptography.fernet import Fernet
     import base64, hashlib
-    from datetime import datetime
 
     token = "subsonic-token-abc"
     secret = "test-session-secret"

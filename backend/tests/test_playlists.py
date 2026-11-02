@@ -39,3 +39,15 @@ def test_playlist_reorder_requires_valid_permutation():
     """With no session the reorder must never mutate (401/403/404 only)."""
     resp = client.put("/api/playlists/1/items/order", json={"item_ids": [1, 2, 3]})
     assert resp.status_code in (200, 401, 403, 404, 400)
+
+
+def test_playlist_rename_endpoint_guard():
+    """PATCH /api/playlists/{id} is a mutation: без сессии данные не меняются."""
+    resp = client.patch("/api/playlists/1", json={"name": "Renamed"})
+    assert resp.status_code in (200, 401, 403, 404)
+
+
+def test_playlist_rename_rejects_empty_name():
+    """Пустое имя отбивается валидацией схемы PlaylistName."""
+    resp = client.patch("/api/playlists/1", json={"name": ""})
+    assert resp.status_code in (400, 401, 403, 404, 422)

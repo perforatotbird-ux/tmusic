@@ -27,7 +27,8 @@ src/
 │   ├── MusicLibraryPlayer.jsx
 │   ├── AlbumDetail.jsx
 │   ├── AuthModal.jsx
-│   └── CoverPicker.jsx
+│   ├── CoverPicker.jsx
+│   └── PlaylistsModal.jsx   # окно-редактор плейлистов (меню профиля)
 ├── store/
 │   ├── authStore.js
 │   └── playerStore.js
@@ -35,7 +36,13 @@ src/
 │   ├── mediaSession.js
 │   └── coverMissing.js
 └── utils/
-    └── cover.js
+    ├── cover.js        # resolveCoverUrl — обложки не наследуются по иерархии
+    ├── adminEdits.js   # trackRenamePatch — общая валидация inline-переименования
+    ├── scanReport.js   # describeScan — текст отчёта кнопки «Сканировать»
+    └── scanProgress.js # percentOf / scanCounter — арифметика progress bar-а скана
+    api/library.js   # setCoverUrl / uploadCoverFile / resetCover шлют
+                      # `tmusic:catalog-changed` с detail: {type, id, custom_key}
+                      # — слушатели обновляют конкретную строку
 ```
 
 ---
@@ -89,6 +96,7 @@ Docker multi-stage собирает `dist` внутри контейнера.
 
 - [[Zustand stores]]
 - [[API Auth]] · [[API Library]] · [[API Stream]]
+- [[Окно плейлистов]]
 - [[Docker]]
 - [[00-Главная]]
 

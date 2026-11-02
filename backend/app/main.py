@@ -5,7 +5,7 @@ Industrial-grade, internet-facing music catalog and streaming server.
 Hardening (2026-09 security audit):
 - serve_spa: path traversal (C-1) fixed via resolve() + is_relative_to().
 - CSP: 'unsafe-inline' removed from script-src; deprecated X-XSS-Protection
-  header removed; HSTS emitted when COOKIE_SECURE=true (i.e. behind HTTPS).
+  header removed; HSTS emitted over HTTPS (COOKIE_SECURE=true or auto-detected).
 - /api/* sliding-window rate limit (120 req/min per IP), stricter 10 req/min
   on the auth endpoints, on top of the existing login lockout.
 - Startup self-heals the admin account from ADMIN_PASSWORD_HASH and warns
@@ -14,15 +14,16 @@ Hardening (2026-09 security audit):
 import logging
 import time
 import uuid
-from pathlib import Path
-from urllib.parse import parse_qsl, unquote, urlencode
+from urllib.parse import parse_qsl, urlencode
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.concurrency import run_in_threadpool
 
 from app.core.config import settings
 from app.core.logging_config import (
@@ -34,7 +35,9 @@ from app.core.logging_config import (
 setup_logging()
 
 from app.core.csrf import CSRF_COOKIE, csrf_check_failed
+from app.core.body_limits import BodySizeLimitMiddleware
 from app.core.database import (
+    engine,
     wait_for_database,
     ensure_performance_indexes,
     ensure_auth_schema,
@@ -48,7 +51,7 @@ from app.core.rate_limiter import limiter
 from app.tg.manager import tg_manager
 from app.services.cover_cache_service import cover_cache
 from app.services.bootstrap import ensure_admin_bootstrap
-from app.utils.client_ip import get_client_ip
+from app.utils.client_ip import get_client_ip, cookie_secure
 
 from app.api.auth_router import router as auth_router
 from app.api.library_router import router as library_router
@@ -72,6 +75,37 @@ from app.api.search_router import router as search_router
 from app.services import admin_service
 
 logger = logging.getLogger("tmusic.main")
+
+# Session-level PostgreSQL advisory lock used to detect a second worker
+# (SEC-010). The connection is held for the process lifetime; closing it
+# releases the lock.
+_SINGLE_INSTANCE_LOCK_KEY = 0x544D5553  # "TMUS"
+
+
+def acquire_single_instance_lock():
+    """Return the lock connection, or None when multi-worker is acknowledged."""
+    if settings.ALLOW_MULTI_WORKER or engine.dialect.name != "postgresql":
+        return None
+    conn = engine.connect()
+    try:
+        acquired = conn.execute(
+            text("SELECT pg_try_advisory_lock(:key)"), {"key": _SINGLE_INSTANCE_LOCK_KEY}
+        ).scalar()
+        if not acquired:
+            conn.close()
+            raise RuntimeError(
+                "Another T-Music worker already holds the single-instance lock. "
+                "This release keeps rate limits and job state in-process; run one "
+                "worker or set ALLOW_MULTI_WORKER=true after moving that state to "
+                "a shared store."
+            )
+        return conn
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        raise
 
 # ─── Rate-limit policy (requests per minute per client IP) ────────────────────
 # Budgets live in music.env (API_RATE_LIMIT_PER_MIN / AUTH_RATE_LIMIT_PER_MIN).
@@ -104,13 +138,24 @@ async def lifespan(app: FastAPI):
             "SECURITY WARNING: REQUIRE_AUTH=false — the library API is exposed "
             "without authentication. Do not use this on an Internet-facing host."
         )
+    if "*" in settings.TRUSTED_HOSTS:
+        logger.warning(
+            "TRUSTED_HOSTS contains '*': Host-header validation is disabled. "
+            "Set explicit hostnames for LAN/Internet deployments."
+        )
+    if not settings.PUBLIC_BASE_URL:
+        logger.info(
+            "PUBLIC_BASE_URL is not set; share links fall back to request.base_url."
+        )
 
     # 1. Database readiness check
+    single_instance_conn = None
     db_ok = wait_for_database(timeout=15)
     if not db_ok:
         logger.error("Database connection failed on startup. Exiting.")
     else:
         logger.info("Database connection established successfully.")
+        single_instance_conn = acquire_single_instance_lock()
         ensure_performance_indexes()
         ensure_auth_schema()
         ensure_trigram_indexes()
@@ -132,6 +177,7 @@ async def lifespan(app: FastAPI):
 
     # 2. Telegram MTProto multi-account cluster initialization
     await tg_manager.start()
+    tg_manager.start_keepalive()
 
     # 3. Scheduled DB backups (admin panel config)
     try:
@@ -139,11 +185,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Backup scheduler failed to start: %s", e)
 
+    # Loud warnings for insecure production defaults (2026-11-02 audit, M-6).
+    from app.core.config import insecure_default_warnings
+    for warning in insecure_default_warnings(settings):
+        logger.warning("SECURITY CONFIG: %s", warning)
+
     # 4. LAN Discovery Service (UDP broadcast responder for mobile clients)
-    try:
-        await discovery_service.start(http_port=settings.PORT, project_name=settings.PROJECT_NAME)
-    except Exception as e:
-        logger.warning("Discovery service failed to start: %s", e)
+    # Off by default since the 2026-11-02 audit (M-3): set DISCOVERY_ENABLED=true.
+    if settings.DISCOVERY_ENABLED:
+        try:
+            await discovery_service.start(
+                http_port=settings.PORT,
+                project_name=settings.PROJECT_NAME,
+                discovery_port=settings.DISCOVERY_PORT,
+            )
+        except Exception as e:
+            logger.warning("Discovery service failed to start: %s", e)
+    else:
+        logger.info("LAN discovery disabled (DISCOVERY_ENABLED=false).")
 
     # 5. Transcoding Service (background ffmpeg workers for non-browser audio formats)
     try:
@@ -158,11 +217,14 @@ async def lifespan(app: FastAPI):
     try:
         await stop_backup_scheduler()
     except Exception:
-        pass
+        logger.debug("Backup scheduler stop failed during shutdown", exc_info=True)
     await discovery_service.stop()
     await transcoding_service.shutdown()
+    await tg_manager.stop_keepalive()
     await tg_manager.stop()
     await cover_cache.close()
+    if single_instance_conn is not None:
+        single_instance_conn.close()
     logger.info("T-Music Server stopped cleanly.")
 
 
@@ -175,6 +237,14 @@ app = FastAPI(
     redoc_url=None
 )
 
+# ─── Actual-byte request body caps, before JSON/multipart parsing ──────────
+# Uploads have explicit larger limits; ordinary API bodies stay capped at 1 MB.
+# 2026-11-02 audit (M-1): registered FIRST so it is the innermost middleware —
+# TrustedHost, CORS, rate limiting and CSRF now run before any body byte is
+# read or spooled. Very large upload paths are additionally pre-authorized
+# (see app.core.body_limits) before the body is accepted.
+app.add_middleware(BodySizeLimitMiddleware)
+
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
@@ -186,7 +256,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
             "method": request.method,
             "path": request.url.path,
             "request_id": rid,
-            "client_ip": request.client.host if request.client else None,
+            "client_ip": get_client_ip(request),
             "exc_type": type(exc).__name__,
         },
     )
@@ -212,7 +282,7 @@ async def csrf_protect_middleware(request: Request, call_next):
                 "method": request.method,
                 "path": request.url.path,
                 "status": 403,
-                "client_ip": request.client.host if request.client else None,
+                "client_ip": get_client_ip(request),
             },
         )
         missing_cookie = not request.cookies.get(CSRF_COOKIE)
@@ -286,18 +356,25 @@ async def security_headers_middleware(request: Request, call_next):
     response.headers["Permissions-Policy"] = "accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=()"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "img-src 'self' data: https: blob:; "
+        # Remote artwork is proxied through /api/library/cover; no direct
+        # third-party image origins are needed anymore.
+        "img-src 'self' data: blob:; "
         "media-src 'self' blob:; "
         "script-src 'self' 'sha256-cEEJXZkc6tLNJmk1I/w8YnMuXFWQuspQWrTyhDyTmmY='; "
         "script-src-elem 'self' 'sha256-cEEJXZkc6tLNJmk1I/w8YnMuXFWQuspQWrTyhDyTmmY='; "
-        "style-src 'self' 'unsafe-inline'; "
-        "connect-src 'self' https: ws:; "
+        # React uses style attributes heavily. Keep only style-src-attr inline
+        # so injected <style>/<link> elements and third-party CSS are blocked.
+        "style-src 'self'; "
+        "style-src-attr 'unsafe-inline'; "
+        # No outbound third-party origins: API, SSE and media are same-origin.
+        "connect-src 'self'; "
         "object-src 'none'; "
         "base-uri 'self'; "
         "frame-ancestors 'none'"
     )
-    if settings.COOKIE_SECURE:
-        # Only meaningful over HTTPS; COOKIE_SECURE=true implies an HTTPS deployment
+    if cookie_secure(request):
+        # Only meaningful over HTTPS: explicit COOKIE_SECURE=true or a request
+        # that actually arrived over HTTPS (auto mode).
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
@@ -330,7 +407,7 @@ async def access_log_middleware(request: Request, call_next):
                     "path": request.url.path,
                     "status": 500,
                     "duration_ms": duration_ms,
-                    "client_ip": request.client.host if request.client else None,
+                    "client_ip": get_client_ip(request),
                 },
             )
             raise
@@ -351,7 +428,7 @@ async def access_log_middleware(request: Request, call_next):
                 "path": path,
                 "status": status,
                 "duration_ms": duration_ms,
-                "client_ip": request.client.host if request.client else None,
+                "client_ip": get_client_ip(request),
                 "query": _safe_log_query(str(request.url.query)),
             },
         )
@@ -362,8 +439,10 @@ async def access_log_middleware(request: Request, call_next):
 
 
 # ─── CORS Middleware ─────────────────────────────────────────────────────────
-# 2026-09-29: the private-range regex is gated by CORS_ALLOW_LAN — turn it
-# off once every client is covered by an explicit ALLOWED_ORIGINS entry.
+# 2026-10-11: CORS_ALLOW_LAN now defaults to False — an explicit ALLOWED_ORIGINS
+# entry is preferred. When enabled, the private-range regex below allows any
+# RFC1918/localhost origin *with credentials*, so keep it off unless a LAN client
+# (e.g. a mobile WebView) genuinely cannot be pinned to an explicit origin.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -437,12 +516,6 @@ async def maintenance_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-# ─── Actual-byte request body caps, before JSON/multipart parsing ──────────
-# Uploads have explicit larger limits; ordinary API bodies stay capped at 1 MB.
-from app.core.body_limits import BodySizeLimitMiddleware
-
-
-app.add_middleware(BodySizeLimitMiddleware)
 
 
 # ─── Include API Routers ──────────────────────────────────────────────────────
@@ -473,6 +546,33 @@ async def health():
         "environment": settings.ENVIRONMENT,
     }
 
+
+def _database_ready() -> bool:
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql("SELECT 1")
+        return True
+    except Exception:
+        logger.warning("Readiness check: database is unavailable", exc_info=True)
+        return False
+
+
+@app.get("/health/ready", tags=["system"])
+async def health_ready():
+    """Readiness probe: the process can serve requests that need the database.
+
+    Liveness stays separate on purpose: a restarting database must not make the
+    container look alive/healthy and keep receiving traffic.
+    """
+    db_ok = await run_in_threadpool(_database_ready)
+    payload = {
+        "status": "ready" if db_ok else "not_ready",
+        "database": db_ok,
+        "telegram_started": tg_manager.is_started,
+        "environment": settings.ENVIRONMENT,
+    }
+    return JSONResponse(status_code=200 if db_ok else 503, content=payload)
+
 # ─── Frontend Static Files & SPA Routing ──────────────────────────────────────
 FRONTEND_DIST = (settings.BASE_DIR / "frontend" / "dist").resolve()
 
@@ -495,6 +595,10 @@ if FRONTEND_DIST.exists():
 
         if candidate.is_relative_to(FRONTEND_DIST) and candidate.is_file():
             return FileResponse(candidate)
+        # API/health paths must never fall through to the SPA shell: a typo in a
+        # client endpoint would otherwise look like a successful 200 HTML reply.
+        if full_path == "api" or full_path.startswith(("api/", "rest/", "health/")) or full_path == "health":
+            return JSONResponse(status_code=404, content={"detail": "Not Found"})
         # Unknown in-root paths fall through to the SPA shell; escape attempts
         # are indistinguishable from client-side routes by design.
         return FileResponse(FRONTEND_DIST / "index.html")

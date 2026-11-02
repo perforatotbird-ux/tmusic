@@ -3,7 +3,7 @@ T-Music Playlist Models
 User playlists referencing VFS audio files (not Telegram folders).
 """
 from datetime import datetime
-from typing import List, Optional
+from typing import List
 
 from sqlalchemy import DateTime, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship

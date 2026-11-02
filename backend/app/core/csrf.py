@@ -20,10 +20,10 @@ Requests carrying an `Authorization: Bearer` header are NOT cookie-authenticated
 and skip the check. Login/logout are exempt (no session yet / self-invalidating).
 """
 import secrets
+from typing import Optional
 
 from fastapi import Request
 
-from app.core.config import settings
 
 CSRF_COOKIE = "csrf_token"
 CSRF_HEADER = "x-csrf-token"
@@ -47,12 +47,13 @@ def new_csrf_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-def csrf_cookie_kwargs() -> dict:
+def csrf_cookie_kwargs(request: Optional[Request] = None) -> dict:
+    from app.utils.client_ip import cookie_secure
     return {
         "key": CSRF_COOKIE,
         "httponly": False,  # JS must read it to echo into the header (double-submit)
         "samesite": "lax",
-        "secure": settings.COOKIE_SECURE,
+        "secure": cookie_secure(request),
         "path": "/",
     }
 

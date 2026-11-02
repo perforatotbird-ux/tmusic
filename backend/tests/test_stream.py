@@ -98,7 +98,10 @@ def test_encrypted_size_to_plain_size():
 @pytest.mark.asyncio
 async def test_decryption_service_stream_roundtrip():
     # Create synthetic encrypted payload with Master Key
-    master_key = settings.get_master_keys()[0]
+    keys = settings.get_master_keys()
+    if not keys:
+        pytest.skip("ENCRYPTION_RECOVERY_KEY/master keys not configured (audit B-3)")
+    master_key = keys[0]
     salt = os.urandom(16)
     base_nonce = os.urandom(12)
     block_size = 65536  # small block size for testing

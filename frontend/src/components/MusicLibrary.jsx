@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react'
+import React, { lazy, Suspense, useState, useEffect, useMemo, useRef } from 'react'
 import { libraryApi, bustCatalogCache } from '../api/library'
 import { streamApi } from '../api/stream'
 import { adminApi } from '../api/admin'
@@ -6,6 +6,7 @@ import { metadataApi } from '../api/metadata'
 import { playbackApi } from '../api/playback'
 import { missingCoverKeys, probedCoverKeys, markCoverProbed, parseCoverKey } from '../services/coverMissing'
 import { resolveCoverUrl } from '../utils/cover'
+import { trackRenamePatch } from '../utils/adminEdits'
 import {
   groupCachedTracks,
   cachedArtistCard,
@@ -16,11 +17,15 @@ import {
 import { AlbumDetail } from './AlbumDetail'
 import { LibraryPanel } from './HomeExtraPanels'
 import { FolderBrowser } from './FolderBrowser'
-import { AdminPanel } from './AdminPanel'
 import { ProfileMenu, roleLabel } from './ProfileMenu'
 import { usePlayerStore } from '../store/playerStore'
 import { useAuthStore } from '../store/authStore'
 import { useFavoritesStore } from '../store/favoritesStore'
+
+// Rarely used, large screens are split into their own chunks: they must not be
+// part of the initial bundle on a slow phone (PERF-006).
+const AdminPanel = lazy(() => import('./AdminPanel').then((m) => ({ default: m.AdminPanel })))
+const PlaylistsModal = lazy(() => import('./PlaylistsModal').then((m) => ({ default: m.PlaylistsModal })))
 import {
   Search,
   Disc,
@@ -44,11 +49,39 @@ import {
   AlertTriangle,
   Star,
   HardDrive,
+  Pencil,
+  Check,
+  ChevronRight,
 } from 'lucide-react'
 import { useOfflineStore } from '../store/offlineStore'
 import { useSearchStore } from '../store/searchStore'
 import { UnifiedSearchModal } from './search/UnifiedSearchModal'
 import { ClickableRow } from './ui/ClickableRow'
+import {
+  readViewState,
+  writeViewState,
+  clearViewState,
+  readScrollY,
+  saveScrollY,
+  flushScrollY,
+  restoreScrollY,
+  configureScrollRestoration,
+} from '../utils/viewPersistence'
+
+// Small square control for the admin-only inline editors in the artist header.
+const artistHeaderBtn = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: '34px',
+  height: '34px',
+  flexShrink: 0,
+  borderRadius: '8px',
+  border: '1px solid var(--line)',
+  background: 'transparent',
+  color: 'var(--dim)',
+  cursor: 'pointer',
+}
 
 // Deterministic hue generator based on string hash for generative badges
 function hashHue(str) {
@@ -60,11 +93,12 @@ function hashHue(str) {
   return h
 }
 
-// Fallback letter badge with deterministic gradient
-function Fallback({ name, kind = 'artist', size = '100%', className = '' }) {
+// Fallback letter badge with deterministic gradient.
+// Все обложки — «коробка CD», поэтому и заглушка квадратная: раньше артисты
+// получали круг и выбивались из сетки.
+function Fallback({ name, size = '100%', className = '' }) {
   const hue = hashHue(name || '?')
   const letter = (name || '?').trim()[0] || '?'
-  const isCircle = kind === 'artist'
 
   return (
     <div
@@ -73,7 +107,7 @@ function Fallback({ name, kind = 'artist', size = '100%', className = '' }) {
         width: typeof size === 'number' ? `${size}px` : size,
         height: typeof size === 'number' ? `${size}px` : size,
         aspectRatio: '1 / 1',
-        borderRadius: isCircle ? '50%' : '10px',
+        borderRadius: '6px',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -85,7 +119,7 @@ function Fallback({ name, kind = 'artist', size = '100%', className = '' }) {
     >
       <span
         style={{
-          fontSize: isCircle ? 'clamp(26px, 7vw, 40px)' : 'clamp(22px, 6vw, 36px)',
+          fontSize: 'clamp(22px, 6vw, 36px)',
           fontWeight: '900',
           color: 'var(--accent, #D4FF3F)',
           textTransform: 'uppercase',
@@ -100,7 +134,7 @@ function Fallback({ name, kind = 'artist', size = '100%', className = '' }) {
 }
 
 // Image with automatic fallback on error (server caches covers with ETag)
-function ImgWithFallback({ name, kind = 'artist', src, alt = '', style = {}, size = '100%', className = '' }) {
+function ImgWithFallback({ name, src, alt = '', style = {}, size = '100%', className = '' }) {
   const [hasError, setHasError] = useState(false)
   const timerRef = useRef(null)
 
@@ -117,7 +151,7 @@ function ImgWithFallback({ name, kind = 'artist', src, alt = '', style = {}, siz
     !!coverKey && missingCoverKeys.has(`${coverKey.custom ? 1 : 0}:${coverKey.key}`)
 
   if (!src || hasError || manifestMissing) {
-    return <Fallback name={name} kind={kind} size={size} className={className} />
+    return <Fallback name={name} size={size} className={className} />
   }
 
   const handleError = () => {
@@ -148,13 +182,13 @@ const CACHED_KIND = 'cached'
 const SECTIONS = [
   { id: 'artist', label: 'Исполнители', icon: Users, isAlbum: false },
   { id: 'albums', label: 'Альбомы', icon: Disc, isAlbum: true },
-  { id: 'compilation', label: 'Сборники', icon: Layers, isAlbum: true },
+  { id: 'compilation', label: 'Сборники', icon: Layers, isAlbum: false },
   { id: FAVORITES_KIND, label: 'Любимые', icon: Star, isAlbum: true },
   // The cache is browsed as Artist → Album → Track, so this view shows artist
   // cards even though every real card in it is a release.
   { id: CACHED_KIND, label: 'В кэше', icon: HardDrive, isAlbum: false },
   { id: 'standalone_album', label: 'Отдельные релизы', icon: Disc, isAlbum: true },
-  { id: 'genre_collection', label: 'Коллекции', icon: FolderHeart, isAlbum: true },
+  { id: 'genre_collection', label: 'Коллекции', icon: FolderHeart, isAlbum: false },
   { id: 'all', label: 'Все категории', icon: Layers, isAlbum: false },
 ]
 
@@ -212,6 +246,13 @@ const MOBILE_TAB_KIND = { artists: 'artist', albums: 'albums' }
 const LIB_PAGE_SIZE = 200
 
 export function MusicLibrary({ onOpenCoverPicker }) {
+  // «Где я был»: снимок экрана до перезагрузки (см. utils/viewPersistence).
+  // Читается один раз и синхронно — до того, как эффекты успеют перезаписать
+  // его значениями по умолчанию.
+  const [bootView] = useState(() => readViewState({ kinds: SECTIONS.map((s) => s.id) }))
+  // Позиция скролла тоже читается один раз, до первых скролл-событий: иначе
+  // ранний «скролл в 0» от браузера затёр бы сохранённое значение.
+  const [bootScrollY] = useState(() => readScrollY())
   const [items, setItems] = useState([])
   // UI-05: a network/server failure must NOT be disguised as "nothing found".
   // This state holds the failure message; the grid renders it as an alert with a
@@ -225,10 +266,12 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   const [detailError, setDetailError] = useState(null) // { id, message } | null
   const [similarArtists, setSimilarArtists] = useState([])
   const [similarLoading, setSimilarLoading] = useState(false)
+  // Шторка треклиста: восстанавливается из снимка экрана после проверки сессии
+  // (её треклист запрашивается с авторизацией).
   const [selectedAlbum, setSelectedAlbum] = useState(null) // { album, artist } — AlbumDetail sheet
-  const [activeKind, setActiveKind] = useState('artist')
-  const [mobileTab, setMobileTab] = useState('library') // 'library' | 'artists' | 'albums' | 'search' | 'profile'
-  const [search, setSearch] = useState('')
+  const [activeKind, setActiveKind] = useState(bootView.activeKind)
+  const [mobileTab, setMobileTab] = useState(bootView.mobileTab) // 'library' | 'artists' | 'albums' | 'search' | 'profile'
+  const [search, setSearch] = useState(bootView.search)
   const [isLoading, setIsLoading] = useState(true)
   const [hasMore, setHasMore] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -241,9 +284,12 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       return 'covers'
     }
   })
-  // Top bar section: catalog is default; recent/playlists open panels
-  const [libSection, setLibSection] = useState(null) // null | 'recent' | 'playlists'
-  const [showAdmin, setShowAdmin] = useState(false)
+  // Top bar section: catalog is default; 'recent' opens an inline panel
+  const [libSection, setLibSection] = useState(bootView.libSection) // null | 'recent'
+  // «Плейлисты» из меню профиля открываются отдельным окном-редактором,
+  // а не встроенной панелью: нужно править и название, и содержимое.
+  const [playlistsOpen, setPlaylistsOpen] = useState(false)
+  const [showAdmin, setShowAdmin] = useState(bootView.showAdmin)
   // Треки раздела «Любимые»: виртуальный сборник строится на клиенте,
   // поэтому сырые строки избранного живут отдельно от каталожных items.
   const [favoriteRows, setFavoriteRows] = useState([])
@@ -254,7 +300,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   // (fast typing fires parallel loadData calls that resolve out of order).
   const loadSeq = useRef(0)
 
-  const { playQueue, prepareQueue, setPlayerExpanded, currentTrack, currentRelease, isPlaying } = usePlayerStore()
+  const { playQueue, prepareQueue, setPlayerExpanded, currentTrack, currentRelease, isPlaying, isPlayerExpanded } = usePlayerStore()
   const { user, isAuthenticated, logout, setAuthModalOpen, checkAuth } = useAuthStore()
   // Избранное переключают из плеера и альбома; подписка на ids держит счётчик
   // на карточке-сборнике живым без повторного открытия раздела.
@@ -262,6 +308,32 @@ export function MusicLibrary({ onOpenCoverPicker }) {
 
   // Catalog curation (rename / covers / collections) is admin-only.
   const isAdmin = user?.role === 'admin' || user?.username === 'admin'
+
+  // Inline rename of the open artist card. The name is written back into
+  // `selectedArtist` so the header updates without refetching the detail.
+  const [renamingArtist, setRenamingArtist] = useState(false)
+  const [artistNameDraft, setArtistNameDraft] = useState('')
+  const [artistRenameBusy, setArtistRenameBusy] = useState(false)
+
+  const saveArtistName = async () => {
+    const body = trackRenamePatch(artistNameDraft, selectedArtist?.display_name)
+    if (!body) {
+      setRenamingArtist(false)
+      return
+    }
+    setArtistRenameBusy(true)
+    try {
+      await adminApi.patchArtist(selectedArtist.id, { display_name: body.name })
+      setSelectedArtist((prev) => (prev ? { ...prev, display_name: body.name } : prev))
+      bustCatalogCache()
+      setRenamingArtist(false)
+    } catch (e) {
+      console.error('Artist rename failed:', e)
+      usePlayerStore.getState().pushNotice({ kind: 'warn', text: 'Не удалось переименовать артиста.' })
+    } finally {
+      setArtistRenameBusy(false)
+    }
+  }
 
   // Which catalog section is on screen: the Артисты/Альбомы tabs are fixed views,
   // everything else follows the category strip picked under Медиатека.
@@ -658,7 +730,136 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     }
   }
 
+  // ─── Возврат на экран, где пользователь был до перезагрузки ──────────────
+  // Навигация — состояние этого компонента, поэтому F5 выбрасывал на главную.
+  // Снимок применяется один раз, когда сессия уже известна: карточка артиста
+  // требует авторизованного запроса, а админка не должна открываться у того,
+  // кто перестал быть админом.
+  const viewRestoredRef = useRef(false)
+
+  // Восстановление карточки артиста — «best effort»: если строку удалили между
+  // перезагрузкой и сейчас, молча остаёмся в каталоге, без красного алерта.
+  const restoreArtist = async (artistId) => {
+    try {
+      const detail = await libraryApi.getArtistDetail(artistId)
+      setSelectedArtist(detail)
+    } catch (e) {
+      console.warn('Restored artist is gone, falling back to the catalog:', e?.message || e)
+      writeViewState({ artistId: null })
+    }
+  }
+
+  useEffect(() => {
+    if (viewRestoredRef.current || !isAuthenticated) return
+    viewRestoredRef.current = true
+    if (bootView.showAdmin && !isAdmin) setShowAdmin(false)
+    if (bootView.artistId != null) restoreArtist(bootView.artistId)
+    if (bootView.album) setSelectedAlbum({ album: bootView.album, artist: bootView.albumArtist })
+    if (bootView.searchOpen) useSearchStore.getState().openSearch(bootView.searchQuery || '')
+    // Полноэкранный плеер восстанавливается только если сессия плеера жива —
+    // очередь гидрируется в authStore.checkAuth().
+    if (bootView.playerExpanded && usePlayerStore.getState().currentTrack) setPlayerExpanded(true)
+  }, [isAuthenticated, isAdmin, bootView, setPlayerExpanded])
+
+  // Снимок текущего экрана. До восстановления не пишем — иначе первый рендер
+  // затёр бы сохранённое состояние значениями по умолчанию.
+  useEffect(() => {
+    if (!viewRestoredRef.current) return
+    writeViewState({
+      mobileTab,
+      activeKind,
+      libSection,
+      search,
+      showAdmin,
+      artistId: typeof selectedArtist?.id === 'number' ? selectedArtist.id : null,
+      album: selectedAlbum?.album || null,
+      albumArtist: selectedAlbum?.artist || null,
+      playerExpanded: isPlayerExpanded,
+    })
+  }, [
+    mobileTab,
+    activeKind,
+    libSection,
+    search,
+    showAdmin,
+    selectedArtist,
+    selectedAlbum,
+    isPlayerExpanded,
+  ])
+
+  // Окно поиска живёт в глобальном сторе: зеркалим его open/query в снимок
+  // подпиской, чтобы не перерисовывать этот большой компонент на каждую букву.
+  useEffect(
+    () =>
+      useSearchStore.subscribe((state, prev) => {
+        if (!viewRestoredRef.current) return
+        if (state.isOpen === prev.isOpen && state.query === prev.query) return
+        writeViewState({ searchOpen: state.isOpen, searchQuery: state.query })
+      }),
+    []
+  )
+
+  // Выход из аккаунта не должен возвращать следующий вход на чужой экран.
+  const wasAuthenticatedRef = useRef(false)
+  useEffect(() => {
+    if (isAuthenticated) {
+      wasAuthenticatedRef.current = true
+      return
+    }
+    if (!wasAuthenticatedRef.current) return
+    wasAuthenticatedRef.current = false
+    clearViewState()
+    setShowAdmin(false)
+    setSelectedArtist(null)
+    setSelectedAlbum(null)
+    setLibSection(null)
+    setMobileTab('library')
+    setActiveKind('artist')
+    setSearch('')
+  }, [isAuthenticated])
+
+  // ─── Позиция скролла ─────────────────────────────────────────────────────
+  // Браузер восстанавливает её сам, но слишком рано: каталог грузится
+  // асинхронно, документ ещё короткий — и позиция сбрасывается в 0. Управление
+  // забираем на себя (history.scrollRestoration = 'manual').
+  useEffect(() => {
+    configureScrollRestoration()
+    const onScroll = () => saveScrollY(window.scrollY)
+    const onHide = () => {
+      // Пока открыта шторка треклиста, body зафиксирован (position: fixed) и
+      // window.scrollY врёт нулём — такую запись делать нельзя.
+      if (document.body.style.position === 'fixed') return
+      flushScrollY(window.scrollY)
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('pagehide', onHide)
+    return () => {
+      window.removeEventListener('scroll', onScroll)
+      window.removeEventListener('pagehide', onHide)
+    }
+  }, [])
+
+  const scrollRestoredRef = useRef(false)
+  // Снимок содержал открытую шторку треклиста: она зафиксирует body в следующем
+  // рендере, поэтому позицию применяем только после её закрытия.
+  const pendingSheetRef = useRef(Boolean(bootView.album))
+  useEffect(() => {
+    if (scrollRestoredRef.current || !viewRestoredRef.current) return
+    if (selectedAlbum) {
+      pendingSheetRef.current = false
+      return
+    }
+    if (pendingSheetRef.current) return
+    scrollRestoredRef.current = true
+    if (bootScrollY > 0) restoreScrollY(bootScrollY)
+  }, [selectedAlbum, isAuthenticated, bootScrollY, bootView.album])
+
   const handlePlayAlbum = async (album, artist = null) => {
+    // Safety guard: if this card is a compilation or has child folders, open it as an artist/container
+    if (album.children_count > 0 || album.kind === 'compilation' || album.kind === 'genre_collection') {
+      await openArtist(album.id)
+      return
+    }
     if (album.is_favorites) {
       const tracks = favoriteTracks.map(favoriteToTrack)
       if (tracks.length > 0) playQueue(tracks, 0, FAVORITES_RELEASE)
@@ -671,7 +872,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       playQueue(tracks, 0, {
         title: album.title,
         artistName: (artist && artist.display_name) || album.title || 'Кэш устройства',
-        coverUrl: resolveCoverUrl(album, artist, null),
+        coverUrl: resolveCoverUrl(album, null),
       })
       return
     }
@@ -679,10 +880,11 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     if (playBusyId) return
     setPlayBusyId(album.id)
     try {
-      const tracks = await streamApi.getFolderTracks(album.folder_id, !album.is_tracks)
+      const recursive = album.is_tracks === false && !album.children_count && album.kind !== 'compilation'
+      const tracks = await streamApi.getFolderTracks(album.folder_id, recursive)
       if (tracks && tracks.length > 0) {
         const artistName = (artist && artist.display_name) || album.title || 'Альбом'
-        const coverUrl = resolveCoverUrl(album, artist)
+        const coverUrl = resolveCoverUrl(album)
 
         // Stream rows carry no artist/album/cover — attach the release context
         // to each queue track so the offline cache stores it and «В кэше»
@@ -691,7 +893,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         const queueTracks = withReleaseMeta(tracks, {
           artist: artistName,
           album: album.title,
-          coverUrl: resolveCoverUrl(album, artist, null),
+          coverUrl: resolveCoverUrl(album, null),
         })
         playQueue(queueTracks, 0, {
           title: album.title,
@@ -711,6 +913,11 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   // Cover tap → open the fullscreen player with the album loaded but NOT
   // playing (Spotify-style: the bar's play or the queue's item starts audio).
   const openAlbum = async (album, artist = null) => {
+    // Safety guard: if this card is a compilation or has child folders, open it as an artist/container
+    if (album.children_count > 0 || album.kind === 'compilation' || album.kind === 'genre_collection') {
+      await openArtist(album.id)
+      return
+    }
     if (album.is_favorites) {
       const tracks = favoriteTracks.map(favoriteToTrack)
       if (tracks.length === 0) return
@@ -725,14 +932,15 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       return
     }
     try {
-      const tracks = await streamApi.getFolderTracks(album.folder_id, !album.is_tracks)
+      const recursive = album.is_tracks === false && !album.children_count && album.kind !== 'compilation'
+      const tracks = await streamApi.getFolderTracks(album.folder_id, recursive)
       if (!tracks || tracks.length === 0) return
       const artistName = (artist && artist.display_name) || album.title || 'Альбом'
-      const coverUrl = resolveCoverUrl(album, artist)
+      const coverUrl = resolveCoverUrl(album)
       const queueTracks = withReleaseMeta(tracks, {
         artist: artistName,
         album: album.title,
-        coverUrl: resolveCoverUrl(album, artist, null),
+        coverUrl: resolveCoverUrl(album, null),
       })
       prepareQueue(queueTracks, 0, { title: album.title, artistName, coverUrl })
       setPlayerExpanded(true)
@@ -892,6 +1100,16 @@ export function MusicLibrary({ onOpenCoverPicker }) {
   // ─── End admin card curation ─────────────────────────────────────────────
 
   const handlePlayAllArtist = async (artist) => {
+    // If the card has children or is a compilation, do not fetch thousands of tracks recursively
+    if (
+      artist?.children_count > 0 ||
+      (artist?.children && artist.children.length > 0) ||
+      artist?.kind === 'compilation' ||
+      artist?.kind === 'genre_collection'
+    ) {
+      usePlayerStore.getState().pushNotice({ kind: 'info', text: 'Для сборников откройте конкретную папку для воспроизведения.' })
+      return
+    }
     // «В кэше» artist: every cached track of the group, no server round-trip.
     if (artist?.is_cached_group) {
       const group = cachedGroupById.get(artist.id)
@@ -903,7 +1121,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
       playQueue(tracks, 0, {
         title: artist.display_name,
         artistName: artist.display_name,
-        coverUrl: resolveCoverUrl(artist, null, null),
+        coverUrl: resolveCoverUrl(artist, null),
       })
       return
     }
@@ -915,7 +1133,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         // tracks under the real artist instead of «Без исполнителя».
         const queueTracks = withReleaseMeta(tracks, {
           artist: artist.display_name,
-          coverUrl: resolveCoverUrl(artist, null, null),
+          coverUrl: resolveCoverUrl(artist, null),
         })
         playQueue(queueTracks, 0, {
           title: 'Все треки',
@@ -956,19 +1174,118 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         }
       : {}
 
+  const isLeafCard = (artist) =>
+    (artist?.children_count === 0 || !artist?.children_count) &&
+    artist?.kind !== 'compilation' &&
+    artist?.kind !== 'genre_collection' &&
+    Boolean(artist?.parent_id)
+
+  const handleArtistCardClick = async (artist) => {
+    if (
+      artist?.children_count > 0 ||
+      artist?.kind === 'compilation' ||
+      artist?.kind === 'genre_collection'
+    ) {
+      await openArtist(artist.id)
+      return
+    }
+
+    if (artist?.folder_id && isLeafCard(artist)) {
+      await openLeafCard(artist, selectedArtist)
+      return
+    }
+
+    await openArtist(artist.id)
+  }
+
+  const openLeafCard = async (artist, parentArtist = null) => {
+    if (playBusyId) return
+    setPlayBusyId(artist.id)
+    try {
+      const tracks = await streamApi.getFolderTracks(artist.folder_id, false)
+      if (!tracks || tracks.length === 0) {
+        usePlayerStore.getState().pushNotice({ kind: 'info', text: 'В этой папке нет аудиофайлов.' })
+        return
+      }
+      const parentName = (parentArtist && parentArtist.display_name) || artist.parent_name
+      const artistName = parentName || artist.display_name
+      const coverUrl = resolveCoverUrl(artist)
+      const queueTracks = withReleaseMeta(tracks, {
+        artist: artist.display_name || artistName,
+        album: artist.display_name,
+        coverUrl: resolveCoverUrl(artist, null),
+      })
+      prepareQueue(queueTracks, 0, {
+        title: artist.display_name,
+        artistName,
+        coverUrl,
+      })
+      setPlayerExpanded(true)
+    } catch (e) {
+      console.error('Failed to load tracks for leaf card:', e)
+      usePlayerStore.getState().pushNotice({ kind: 'warn', text: 'Не удалось загрузить файлы папки в плейлист.' })
+    } finally {
+      setPlayBusyId(null)
+    }
+  }
+
+  const handlePlayLeafCard = async (artist, parentArtist = null) => {
+    if (playBusyId) return
+    setPlayBusyId(artist.id)
+    try {
+      const tracks = await streamApi.getFolderTracks(artist.folder_id, false)
+      if (!tracks || tracks.length === 0) {
+        usePlayerStore.getState().pushNotice({ kind: 'info', text: 'В этой папке нет аудиофайлов.' })
+        return
+      }
+      const parentName = (parentArtist && parentArtist.display_name) || artist.parent_name
+      const artistName = parentName || artist.display_name
+      const coverUrl = resolveCoverUrl(artist)
+      const queueTracks = withReleaseMeta(tracks, {
+        artist: artist.display_name || artistName,
+        album: artist.display_name,
+        coverUrl: resolveCoverUrl(artist, null),
+      })
+      playQueue(queueTracks, 0, {
+        title: artist.display_name,
+        artistName,
+        coverUrl,
+      })
+    } catch (e) {
+      console.error('Failed to play tracks for leaf card:', e)
+      usePlayerStore.getState().pushNotice({ kind: 'warn', text: 'Не удалось воспроизвести файлы папки.' })
+    } finally {
+      setPlayBusyId(null)
+    }
+  }
+
   const renderArtistCard = (artist) => {
-    const cover = resolveCoverUrl(artist, null, null)
+    const cover = resolveCoverUrl(artist, null)
     const isDragging = dragItem?.type === 'artist' && dragItem.id === artist.id
     const isDropTarget = dropKey === `artist:${artist.id}`
-    const subParts = [
-      `${artist.album_count} ${artist.album_count === 1 ? 'релиз' : 'релизов'}`,
-      ...(artist.parent_id ? [`↳ ${artist.parent_name || 'вложено'}`] : []),
-      ...(artist.children_count > 0 ? [`+${artist.children_count} влож.`] : []),
-    ]
+    const isLeaf = isLeafCard(artist)
+    const isNowPlaying =
+      isLeaf &&
+      !!currentTrack &&
+      !!currentRelease &&
+      currentRelease.title === artist.display_name
+
+    const subParts = []
+    if (artist.children_count > 0) {
+      subParts.push(`${artist.children_count} ${artist.children_count === 1 ? 'папка' : artist.children_count < 5 ? 'папки' : 'папок'}`)
+    } else if (artist.album_count > 0) {
+      subParts.push(`${artist.album_count} ${artist.album_count === 1 ? 'релиз' : 'релизов'}`)
+    } else if (isLeaf) {
+      subParts.push('Треки')
+    }
+    if (artist.parent_id && artist.parent_name) {
+      subParts.push(`↳ ${artist.parent_name}`)
+    }
+
     return (
       <ClickableRow
         key={artist.id}
-        onClick={() => openArtist(artist.id)}
+        onClick={() => handleArtistCardClick(artist)}
         className="tmusic-artist-card"
         {...artistCardDnd(artist)}
         style={{
@@ -976,17 +1293,41 @@ export function MusicLibrary({ onOpenCoverPicker }) {
             ? { outline: '2px dashed var(--accent)', outlineOffset: '3px', borderRadius: '14px' }
             : {}),
           opacity: isDragging ? 0.45 : 1,
-          cursor: isAdmin ? 'grab' : undefined,
+          cursor: isLeaf ? 'pointer' : isAdmin ? 'grab' : undefined,
         }}
       >
         <div className="tmusic-artist-card-avatar-wrap" style={{ position: 'relative' }}>
           <ImgWithFallback
             name={artist.display_name}
-            kind="artist"
             src={cover}
             size="100%"
             className="tmusic-artist-card-avatar"
           />
+          {isNowPlaying && (
+            <span className={`tmusic-card-eq ${isPlaying ? '' : 'paused'}`} title="Сейчас играет">
+              <i />
+              <i />
+              <i />
+            </span>
+          )}
+          {isLeaf && (
+            <button
+              className="tmusic-card-play-btn"
+              onClick={(e) => {
+                e.stopPropagation()
+                handlePlayLeafCard(artist, selectedArtist)
+              }}
+              disabled={playBusyId === artist.id}
+              aria-busy={playBusyId === artist.id || undefined}
+              aria-label={`Воспроизвести ${artist.display_name}`}
+            >
+              {playBusyId === artist.id ? (
+                <Loader2 size={18} className="animate-spin" />
+              ) : (
+                <Play size={20} fill="var(--bg)" style={{ marginLeft: '2px' }} />
+              )}
+            </button>
+          )}
           {isAdmin && artist.parent_id && (
             <button
               onClick={(e) => {
@@ -1015,6 +1356,42 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               <Unlink size={13} />
             </button>
           )}
+          {/* Admin cover curation straight from the grid — for artists and for
+              collections alike. Otherwise the only route was the small overlay
+              button on the artist page. */}
+          {isAdmin && onOpenCoverPicker && !artist.is_cached_group && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                onOpenCoverPicker({
+                  type: 'artist',
+                  id: artist.id,
+                  displayName: artist.display_name,
+                  hasCustom: !!artist.custom_image_url,
+                })
+              }}
+              title="Изменить обложку (админ)"
+              aria-label={`Изменить обложку ${artist.display_name}`}
+              style={{
+                position: 'absolute',
+                top: '6px',
+                right: '6px',
+                width: '26px',
+                height: '26px',
+                borderRadius: '50%',
+                backgroundColor: 'rgba(20, 18, 16, 0.85)',
+                border: '1px solid var(--line-bright)',
+                color: 'var(--ink)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                padding: 0,
+              }}
+            >
+              <ImageIcon size={13} />
+            </button>
+          )}
         </div>
         <div className="tmusic-artist-card-name">{artist.display_name}</div>
         <div className="tmusic-artist-card-sub">
@@ -1026,7 +1403,7 @@ export function MusicLibrary({ onOpenCoverPicker }) {
     }
 
   const renderAlbumCard = (album, artist = null) => {
-    const cover = resolveCoverUrl(album, artist, null)
+    const cover = resolveCoverUrl(album, null)
     const title = album.title || album.display_name
     const isDragging = dragItem?.type === 'album' && dragItem.id === album.id
     const isDropTarget = dropKey === `album:${album.id}`
@@ -1053,7 +1430,6 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         <div className="tmusic-card-cover-wrap">
           <ImgWithFallback
             name={title}
-            kind="album"
             src={cover}
             size="100%"
             className="tmusic-card-img"
@@ -1064,6 +1440,27 @@ export function MusicLibrary({ onOpenCoverPicker }) {
               <i />
               <i />
             </span>
+          )}
+          {/* Admin cover curation straight from the grid. It used to require
+              opening the album and hunting a small overlay button, which made
+              «сменить обложку альбома» effectively undiscoverable. */}
+          {isAdmin && onOpenCoverPicker && !album.is_cached_album && (
+            <button
+              className="tmusic-card-cover-btn"
+              onClick={(e) => {
+                e.stopPropagation()
+                onOpenCoverPicker({
+                  type: 'album',
+                  id: album.id,
+                  title,
+                  hasCustom: !!album.custom_image_url,
+                })
+              }}
+              title="Изменить обложку (админ)"
+              aria-label={`Изменить обложку альбома ${title}`}
+            >
+              <ImageIcon size={14} />
+            </button>
           )}
           <button
             className="tmusic-card-play-btn"
@@ -1102,7 +1499,8 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         className="tmusic-topbar"
         style={{
           position: 'sticky',
-          top: 0,
+          // M-04: sit below the fixed offline banner while it is up.
+          top: 'var(--offline-banner-h, 0px)',
           backgroundColor: 'rgba(20, 18, 16, 0.95)',
           backdropFilter: 'blur(10px)',
           borderBottom: '1px solid var(--line)',
@@ -1223,6 +1621,12 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                 onProfileChanged={checkAuth}
                 libSection={libSection}
                 onSelectSection={(id) => {
+                  if (id === 'playlists') {
+                    // Отдельное окно с редактором плейлистов.
+                    setLibSection(null)
+                    setPlaylistsOpen(true)
+                    return
+                  }
                   setLibSection(id)
                   setMobileTab('library')
                   setSelectedArtist(null)
@@ -1259,9 +1663,19 @@ export function MusicLibrary({ onOpenCoverPicker }) {
 
       {/* ─── Main Content Body ────────────────────────────────────────────────── */}
       <main className="tmusic-main">
-        {/* Admin is a full-page view from anywhere: search, artist, folder mode. */}
-        {showAdmin ? (
-          <AdminPanel onBack={() => setShowAdmin(false)} onOpenCoverPicker={onOpenCoverPicker} />
+        {/* Admin is a full-page view from anywhere: search, artist, folder mode.
+            `isAdmin` is part of the condition: the restored snapshot may still
+            say «админка», while the session belongs to a regular user. */}
+        {showAdmin && isAdmin ? (
+          <Suspense
+            fallback={
+              <div role="status" style={{ padding: 24, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Loader2 size={16} className="tmusic-spin" /> Загрузка панели…
+              </div>
+            }
+          >
+            <AdminPanel onBack={() => setShowAdmin(false)} onOpenCoverPicker={onOpenCoverPicker} />
+          </Suspense>
         ) : (
         <>
         {/* Centered catalog view switch (works in every tab, incl. search) */}
@@ -1296,36 +1710,106 @@ export function MusicLibrary({ onOpenCoverPicker }) {
         {selectedArtist ? (
           /* ─── Artist Detail View ─────────────────────────────────────────── */
           <div>
-            <button
-              onClick={() => setSelectedArtist(null)}
+            <div
               style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--accent)',
-                fontSize: '13.5px',
-                fontWeight: '700',
-                cursor: 'pointer',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '6px',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: '12px',
                 marginBottom: '20px',
               }}
             >
-              <ArrowLeft size={16} /> Назад к каталогу
-            </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedArtist.parent_id) {
+                    openArtist(selectedArtist.parent_id)
+                  } else {
+                    setSelectedArtist(null)
+                  }
+                }}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--accent)',
+                  fontSize: '13.5px',
+                  fontWeight: '700',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: 0,
+                }}
+              >
+                <ArrowLeft size={16} />
+                {selectedArtist.parent_name ? `Назад к «${selectedArtist.parent_name}»` : 'Назад к каталогу'}
+              </button>
+
+              {/* Breadcrumb trail */}
+              <nav
+                aria-label="Навигация по каталогу"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: '13px',
+                  color: 'var(--dim)',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => setSelectedArtist(null)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    color: 'var(--accent)',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    fontWeight: '600',
+                  }}
+                >
+                  Каталог
+                </button>
+                {(selectedArtist.breadcrumbs || []).map((crumb) => (
+                  <React.Fragment key={crumb.id}>
+                    <ChevronRight size={13} style={{ opacity: 0.6 }} />
+                    <button
+                      type="button"
+                      onClick={() => openArtist(crumb.id)}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        padding: 0,
+                        color: 'var(--accent)',
+                        cursor: 'pointer',
+                        fontSize: '13px',
+                        fontWeight: '600',
+                      }}
+                    >
+                      {crumb.display_name}
+                    </button>
+                  </React.Fragment>
+                ))}
+                <ChevronRight size={13} style={{ opacity: 0.6 }} />
+                <span style={{ color: 'var(--ink)', fontWeight: '700' }}>{selectedArtist.display_name}</span>
+              </nav>
+            </div>
 
             {/* Artist Header Banner */}
             <div className="tmusic-artist-header">
               <div className="tmusic-artist-avatar-wrap">
                 <ImgWithFallback
                   name={selectedArtist.display_name}
-                  kind="artist"
-                  src={resolveCoverUrl(selectedArtist, null, null)}
+                  src={resolveCoverUrl(selectedArtist, null)}
                   size={180}
                   className="tmusic-artist-avatar"
                   style={{
-                    borderRadius: '50%',
-                    border: '3px solid var(--line-bright)',
+                    // Та же «коробка CD», что и у карточек в сетке.
+                    borderRadius: '10px',
+                    border: '1px solid var(--line-bright)',
                     boxShadow: '0 10px 25px rgba(0,0,0,0.5)',
                   }}
                 />
@@ -1373,9 +1857,63 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                 >
                   {(selectedArtist.kind || 'artist').toUpperCase()}
                 </div>
-                <h2 className="title-zine" style={{ fontSize: '32px', margin: '6px 0 12px 0' }}>
-                  {selectedArtist.display_name}
-                </h2>
+                {renamingArtist ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '6px 0 12px 0', maxWidth: '520px' }}>
+                    <input
+                      value={artistNameDraft}
+                      onChange={(e) => setArtistNameDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') saveArtistName()
+                        if (e.key === 'Escape') setRenamingArtist(false)
+                      }}
+                      autoFocus
+                      aria-label="Новое имя артиста"
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        fontSize: '20px',
+                        fontWeight: 800,
+                        padding: '8px 10px',
+                        borderRadius: '8px',
+                        border: '1px solid var(--line-bright)',
+                        background: 'var(--bg)',
+                        color: 'var(--ink)',
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={saveArtistName}
+                      disabled={artistRenameBusy}
+                      aria-label="Сохранить имя артиста"
+                      style={{ ...artistHeaderBtn, opacity: artistRenameBusy ? 0.6 : 1 }}
+                    >
+                      {artistRenameBusy ? <Loader2 size={16} className="tmusic-spin" /> : <Check size={17} style={{ color: 'var(--accent)' }} />}
+                    </button>
+                    <button type="button" onClick={() => setRenamingArtist(false)} aria-label="Отмена" style={artistHeaderBtn}>
+                      <X size={17} />
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                    <h2 className="title-zine" style={{ fontSize: '32px', margin: '6px 0 12px 0' }}>
+                      {selectedArtist.display_name}
+                    </h2>
+                    {isAdmin && !selectedArtist.is_cached_group && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setArtistNameDraft(selectedArtist.display_name || '')
+                          setRenamingArtist(true)
+                        }}
+                        title="Переименовать артиста (админ)"
+                        aria-label={`Переименовать ${selectedArtist.display_name}`}
+                        style={{ ...artistHeaderBtn, marginBottom: '12px' }}
+                      >
+                        <Pencil size={15} />
+                      </button>
+                    )}
+                  </div>
+                )}
                 {selectedArtist.bio && (
                   <p style={{ color: 'var(--dim)', fontSize: '13px', lineHeight: '1.6', marginBottom: '18px', maxWidth: '780px' }}>
                     {selectedArtist.bio}
@@ -1419,45 +1957,53 @@ export function MusicLibrary({ onOpenCoverPicker }) {
                     </div>
                   </div>
                 )}
-                <div className="tmusic-artist-actions">
-                  <button
-                    onClick={() => handlePlayAllArtist(selectedArtist)}
-                    style={{
-                      padding: '10px 20px',
-                      backgroundColor: 'var(--accent)',
-                      color: 'var(--on-accent)',
-                      border: 'none',
-                      borderRadius: '999px',
-                      fontWeight: '800',
-                      fontSize: '13px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '8px',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    <Play size={16} fill="currentColor" /> Слушать всё
-                  </button>
-                </div>
+                {(!selectedArtist.children || selectedArtist.children.length === 0) &&
+                  selectedArtist.kind !== 'compilation' &&
+                  selectedArtist.kind !== 'genre_collection' && (
+                  <div className="tmusic-artist-actions">
+                    <button
+                      onClick={() => handlePlayAllArtist(selectedArtist)}
+                      style={{
+                        padding: '10px 20px',
+                        backgroundColor: 'var(--accent)',
+                        color: 'var(--on-accent)',
+                        border: 'none',
+                        borderRadius: '999px',
+                        fontWeight: '800',
+                        fontSize: '13px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <Play size={16} fill="currentColor" /> Слушать всё
+                    </button>
+                  </div>
+                )}
               </div>
-            </div>
-
-            {/* Releases Grid */}
-            <h3 className="title-zine" style={{ fontSize: '18px', marginBottom: '16px' }}>
-              РЕЛИЗЫ И АЛЬБОМЫ ({(selectedArtist.albums || []).length})
-            </h3>
-            <div className="tmusic-grid-albums">
-              {(selectedArtist.albums || []).map((album) => renderAlbumCard(album, selectedArtist))}
             </div>
 
             {/* Nested cards (artists/collections dropped inside this one) */}
             {(selectedArtist.children || []).length > 0 && (
-              <>
-                <h3 className="title-zine" style={{ fontSize: '18px', margin: '26px 0 16px' }}>
-                  ВНУТРИ ({selectedArtist.children.length})
+              <div style={{ marginBottom: (selectedArtist.albums || []).length > 0 ? '28px' : '0' }}>
+                <h3 className="title-zine" style={{ fontSize: '18px', margin: '20px 0 16px' }}>
+                  {selectedArtist.kind === 'compilation' ? 'ИСПОЛНИТЕЛИ И ВЛОЖЕНИЯ' : 'ВНУТРИ'} ({selectedArtist.children.length})
                 </h3>
                 <div className="tmusic-grid-artists">
                   {selectedArtist.children.map((child) => renderArtistCard(child))}
+                </div>
+              </div>
+            )}
+
+            {/* Releases Grid — only shown when artist has releases */}
+            {(selectedArtist.albums || []).length > 0 && (
+              <>
+                <h3 className="title-zine" style={{ fontSize: '18px', marginBottom: '16px', marginTop: '16px' }}>
+                  РЕЛИЗЫ И АЛЬБОМЫ ({(selectedArtist.albums || []).length})
+                </h3>
+                <div className="tmusic-grid-albums">
+                  {(selectedArtist.albums || []).map((album) => renderAlbumCard(album, selectedArtist))}
                 </div>
               </>
             )}
@@ -1979,6 +2525,13 @@ export function MusicLibrary({ onOpenCoverPicker }) {
           })
         }
       />
+
+      {/* Playlists editor window (opened from the avatar menu → «Плейлисты») */}
+      {playlistsOpen && (
+        <Suspense fallback={null}>
+          <PlaylistsModal open={playlistsOpen} onClose={() => setPlaylistsOpen(false)} />
+        </Suspense>
+      )}
 
       {/* Admin curation error toast (drag-and-drop / create failures) */}
       {actionError && (

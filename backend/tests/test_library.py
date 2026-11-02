@@ -4,13 +4,23 @@ Tests for T-Music Library & Repositories
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.repositories.artist_repository import ArtistRepository
 from app.repositories.album_repository import AlbumRepository
 from app.repositories.file_repository import FileRepository
 from app.services.music_library_service import library_service
+
+# These assertions need the migrated production catalog; an empty disposable
+# schema cannot satisfy them (TEST-001).
+pytestmark = pytest.mark.skipif(
+    bool(settings.TEST_DATABASE_SCHEMA),
+    reason="requires migrated catalog data; skipped in an isolated test schema",
+)
 
 
 def test_migrated_library_counts():
@@ -45,3 +55,75 @@ def test_artist_listing_and_detail():
         assert isinstance(detail.albums, list)
     finally:
         db.close()
+
+
+def test_nested_compilation_and_artist_breadcrumbs():
+    """Verify nested catalog structure: compilation -> sub-compilation -> artist, with breadcrumbs."""
+    db = SessionLocal()
+    try:
+        from app.models.music import MusicArtist
+        from sqlalchemy import select
+
+        cab314 = db.execute(
+            select(MusicArtist).where(MusicArtist.folder_id == 15310)
+        ).scalars().first()
+        if not cab314:
+            return  # skip if folder not in current test DB
+
+        # Nested containers are `genre_collection` after the 2026-10-21 kind
+        # renormalization — `compilation` now means a multi-artist collection
+        # only, so a grouping folder must not claim it. See
+        # obsidian/03-Frontend/Каталог в админке 2026-10-21.md.
+        assert cab314.kind in ("compilation", "genre_collection")
+        assert cab314.parent_id is not None
+
+        detail_314 = library_service.get_artist_detail(db, cab314.id)
+        assert len(detail_314.children) > 0
+        assert len(detail_314.breadcrumbs) >= 1
+        assert detail_314.breadcrumbs[0].display_name == "Пранки"
+
+        # Check that parent compilation (Пранки) has 314 as a child with children_count > 0
+        detail_pranki = library_service.get_artist_detail(db, cab314.parent_id)
+        child_314 = next((c for c in detail_pranki.children if c.id == cab314.id), None)
+        assert child_314 is not None
+        assert child_314.children_count > 0
+
+        # Check leaf child inside 314
+        first_child = detail_314.children[0]
+        assert first_child.children_count == 0
+        assert first_child.album_count > 0
+        child_detail = library_service.get_artist_detail(db, first_child.id)
+        assert len(child_detail.breadcrumbs) >= 2
+        assert child_detail.breadcrumbs[0].display_name == "Пранки"
+        assert child_detail.breadcrumbs[1].id == cab314.id
+        assert len(child_detail.albums) > 0
+    finally:
+        db.close()
+
+
+def test_root_artist_filtering():
+    """Verify that root listing excludes nested artists, while search can find them."""
+    db = SessionLocal()
+    try:
+        from app.models.music import MusicArtist
+        from sqlalchemy import select
+
+        nested_artists = db.execute(
+            select(MusicArtist).where(MusicArtist.parent_id.is_not(None))
+        ).scalars().all()
+        if not nested_artists:
+            return
+
+        # Listing with root_only=True must not contain any nested artists
+        root_cards = library_service.list_artists(db, root_only=True, limit=500)
+        for card in root_cards:
+            assert card.parent_id is None, f"Found nested artist {card.display_name} in root listing"
+
+        # Search for a known nested artist should find it
+        sample = nested_artists[0]
+        search_cards = library_service.list_artists(db, search=sample.display_name, limit=50)
+        matching_ids = [c.id for c in search_cards]
+        assert sample.id in matching_ids, f"Search failed to find nested artist {sample.display_name}"
+    finally:
+        db.close()
+

@@ -4,7 +4,7 @@ Database access layer for high-speed catalog searching.
 Strictly isolated from HTTP/FastAPI concerns (ADR-001).
 """
 import logging
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple
 from sqlalchemy import select, func, case, or_, text
 from sqlalchemy.orm import Session
 
@@ -37,7 +37,7 @@ class SearchRepository:
             try:
                 db.rollback()
             except Exception:
-                pass
+                logger.debug("Rollback after search index setup failure failed", exc_info=True)
 
     @staticmethod
     def search_artists(
@@ -206,6 +206,7 @@ class SearchRepository:
                 VFile.size,
                 VFile.mime_type,
                 VFile.folder_id,
+                VFile.custom_image_key,
             )
             .where(filter_condition)
             .order_by(rank_order, VFile.name.asc())
@@ -299,7 +300,9 @@ class SearchRepository:
                 "artist_id": meta.get("artist_id"),
                 "artist_name": meta.get("artist_name"),
                 "cover_url": meta.get("cover_url"),
-                "custom_image_key": meta.get("custom_image_key"),
+                # A track's own artwork wins over the album/artist one; the
+                # album key stays as the inheritance fallback.
+                "custom_image_key": t.custom_image_key or meta.get("custom_image_key"),
                 "enriched_at": meta.get("enriched_at"),
             })
 

@@ -42,15 +42,16 @@ export function SearchArtistCard({ artist, onClick }) {
         e.currentTarget.style.transform = 'translateY(0)'
       }}
     >
-      {/* Circular Avatar */}
+      {/* Квадратная обложка — та же «коробка CD», что и в каталоге */}
       <div
         style={{
           width: '76px',
           height: '76px',
-          borderRadius: '50%',
+          borderRadius: '6px',
           overflow: 'hidden',
           marginBottom: '10px',
           flexShrink: 0,
+          border: '1px solid rgba(255, 255, 255, 0.09)',
           boxShadow: '0 4px 12px rgba(0, 0, 0, 0.3)',
           display: 'flex',
           alignItems: 'center',

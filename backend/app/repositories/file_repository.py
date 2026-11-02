@@ -3,7 +3,7 @@ T-Music File Repository
 Data access layer for audio VFiles with natural sorting.
 """
 from typing import Optional, List
-from sqlalchemy import select, func, Numeric
+from sqlalchemy import select, func, Numeric, delete as sa_delete
 from sqlalchemy.orm import Session, load_only
 
 from app.models.vfs import VFile, FolderClosure
@@ -19,6 +19,7 @@ _TRACK_LIST_COLUMNS = (
     VFile.folder_id,
     VFile.is_encrypted,
     VFile.encryption_salt,
+    VFile.custom_image_key,
     VFile.created_at,
 )
 
@@ -101,3 +102,67 @@ class FileRepository:
             VFile.mime_type.like("audio/%")
         )
         return db.execute(stmt).scalar() or 0
+
+    @staticmethod
+    def names_in_folders(db: Session, folder_ids) -> list:
+        """(folder_id, name) rows for the given folders (non-trash)."""
+        return db.execute(
+            select(VFile.folder_id, VFile.name).where(
+                VFile.folder_id.in_(folder_ids),
+                VFile.is_trash.is_(False),
+            )
+        ).all()
+
+    @staticmethod
+    def count_in_folder(db: Session, folder_id: int) -> int:
+        return db.execute(
+            select(func.count(VFile.id)).where(VFile.folder_id == folder_id)
+        ).scalar() or 0
+
+    @staticmethod
+    def count_audio_in_folder(db: Session, folder_id: int) -> int:
+        return db.execute(
+            select(func.count(VFile.id)).where(
+                VFile.folder_id == folder_id,
+                VFile.is_trash.is_(False),
+                VFile.mime_type.like("audio/%"),
+            )
+        ).scalar() or 0
+
+    @staticmethod
+    def first_album_track(db: Session, folder_id: int) -> Optional[VFile]:
+        """First playable audio track of an album folder (enrichment helper)."""
+        return db.scalar(
+            select(VFile).where(
+                VFile.folder_id == folder_id,
+                VFile.is_trash.is_(False),
+                VFile.mime_type.like("audio/%"),
+            ).limit(1)
+        )
+
+    @staticmethod
+    def custom_cover_keys_in_folder(db: Session, folder_id: int) -> List[str]:
+        """Custom cover keys attached to file rows in a folder (for cache cleanup)."""
+        rows = db.execute(
+            select(VFile.custom_image_key).where(
+                VFile.folder_id == folder_id,
+                VFile.custom_image_key.is_not(None),
+            )
+        ).all()
+        return [row[0] for row in rows]
+
+    @staticmethod
+    def delete_in_folder(db: Session, folder_id: int) -> int:
+        """Delete every non-trash file row directly inside a folder.
+
+        Used by the admin card removal so the card's tracks leave the database
+        together with the card (`with_files=True`). Rows in the trash still
+        stay — they are kept by `count_in_folder`, which also pins the folder.
+        """
+        result = db.execute(
+            sa_delete(VFile).where(
+                VFile.folder_id == folder_id,
+                VFile.is_trash.is_(False),
+            )
+        )
+        return result.rowcount or 0

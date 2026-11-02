@@ -5,8 +5,9 @@ Access: JWT session of user with role=admin (or username admin).
 """
 import json
 import logging
+import math
 from datetime import timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -19,6 +20,7 @@ from app.api.dependencies import get_admin_user
 from app.core.config import settings
 from app.core.password_work import run_password_work
 from app.core.database import get_db
+from app.core.rate_limiter import limiter
 from app.models.auth import AdminAuditEvent, AppUser, RevokedToken
 from app.models.music import MusicAlbum, MusicArtist
 from app.models.playlist import Playlist
@@ -37,6 +39,28 @@ from app.utils.client_ip import get_client_ip
 
 logger = logging.getLogger("tmusic.admin")
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+# Per-user budget for expensive/destructive maintenance operations. The global
+# per-IP window is the only other guard, and a repeated VACUUM/reindex or a
+# Telegram reconnect storm blocks the DB or the MTProto cluster for everyone.
+MAINTENANCE_OPS_PER_MIN = 6
+
+# Only these texts may reach the client from a failed restore; anything else is
+# replaced by a generic message so an internal path or pg_restore detail never
+# leaks into an HTTP response.
+_SAFE_RESTORE_DETAILS = frozenset({
+    "Invalid backup name",
+    "Only custom-format .dump files can be restored",
+})
+
+
+def _maintenance_budget(user: AppUser, op: str) -> None:
+    if limiter.is_rate_limited(f"adminop:{user.id}:{op}", MAINTENANCE_OPS_PER_MIN, 60):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many maintenance operations. Slow down.",
+            headers={"Retry-After": "60"},
+        )
 
 
 class SettingsUpdate(BaseModel):
@@ -125,7 +149,7 @@ def _library_counts(db: Session) -> Dict[str, int]:
 
 
 @router.get("/overview")
-async def admin_overview(
+def admin_overview(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
@@ -168,7 +192,7 @@ async def admin_overview(
 
 
 @router.get("/db/stats")
-async def admin_db_stats(
+def admin_db_stats(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
@@ -179,46 +203,50 @@ async def admin_db_stats(
 
 
 @router.post("/db/vacuum")
-async def admin_db_vacuum(
+def admin_db_vacuum(
     analyze: bool = True,
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
+    _maintenance_budget(user, "vacuum")
     result = admin_service.run_vacuum(db, analyze=analyze)
     logger.info("Admin %s ran VACUUM: %s", user.username, result)
     return result
 
 
 @router.post("/db/analyze")
-async def admin_db_analyze(
+def admin_db_analyze(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
+    _maintenance_budget(user, "analyze")
     result = admin_service.run_analyze(db)
     logger.info("Admin %s ran ANALYZE", user.username)
     return result
 
 
 @router.post("/db/reindex")
-async def admin_db_reindex(
+def admin_db_reindex(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
+    _maintenance_budget(user, "reindex")
     result = admin_service.run_reindex(db)
     logger.info("Admin %s ran REINDEX: %s", user.username, result)
     return result
 
 
 @router.post("/db/ensure-schema")
-async def admin_db_ensure_schema(
+def admin_db_ensure_schema(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
+    _maintenance_budget(user, "ensure-schema")
     return admin_service.ensure_indexes(db)
 
 
 @router.post("/db/purge-tokens")
-async def admin_db_purge_tokens(
+def admin_db_purge_tokens(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
@@ -283,9 +311,20 @@ def admin_restore_backup(
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Backup not found")
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        # Only known, client-safe texts may cross the API boundary; str(exc)
+        # would carry internal paths or pg_restore details if the service
+        # starts raising something else.
+        logger.warning("Backup restore rejected: %s", exc)
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc) if str(exc) in _SAFE_RESTORE_DETAILS else "Invalid restore request.",
+        ) from None
     except PermissionError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        logger.warning("Backup restore confirmation mismatch: %s", exc)
+        raise HTTPException(
+            status_code=400,
+            detail="Restore confirmation must exactly match the backup name.",
+        ) from None
     except RuntimeError:
         logger.exception("Backup restore failed")
         raise HTTPException(status_code=500, detail="Backup restore failed. See server logs.")
@@ -540,7 +579,7 @@ async def admin_delete_user(
 
 
 @router.get("/analytics")
-async def admin_analytics(
+def admin_analytics(
     days: int = Query(30, ge=1, le=365),
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
@@ -601,6 +640,24 @@ async def admin_analytics(
         .group_by(func.date(ListeningHistory.started_at))
         .order_by(func.date(ListeningHistory.started_at))
     ).mappings().all()
+    recent = db.execute(
+        select(
+            ListeningHistory.id,
+            ListeningHistory.user_id,
+            AppUser.username,
+            ListeningHistory.file_id,
+            func.coalesce(VFile.name, "Без названия").label("track_name"),
+            ListeningHistory.started_at,
+            valid_seconds.label("duration_played_sec"),
+            ListeningHistory.track_duration_sec,
+            ListeningHistory.completed,
+        )
+        .outerjoin(VFile, VFile.id == ListeningHistory.file_id)
+        .outerjoin(AppUser, AppUser.id == ListeningHistory.user_id)
+        .where(ListeningHistory.started_at >= since)
+        .order_by(ListeningHistory.started_at.desc(), ListeningHistory.id.desc())
+        .limit(30)
+    ).mappings().all()
     return {
         "days": days,
         "totals": {
@@ -613,11 +670,37 @@ async def admin_analytics(
         "top_tracks": [dict(row) for row in top_tracks],
         "top_users": [dict(row) for row in top_users],
         "daily": [dict(row) for row in daily],
+        "recent": [
+            {
+                "id": int(row["id"]),
+                "user_id": int(row["user_id"]),
+                "username": str(row["username"] or f"User #{row['user_id']}"),
+                "file_id": int(row["file_id"]),
+                "track_name": str(row["track_name"]),
+                "started_at": row["started_at"].isoformat() if row["started_at"] else None,
+                "duration_played_sec": (
+                    round(float(row["duration_played_sec"]), 1)
+                    if row["duration_played_sec"] is not None
+                    and math.isfinite(float(row["duration_played_sec"]))
+                    and 0 <= float(row["duration_played_sec"]) <= MAX_HISTORY_DURATION_SEC
+                    else 0.0
+                ),
+                "track_duration_sec": (
+                    round(float(row["track_duration_sec"]), 1)
+                    if row["track_duration_sec"] is not None
+                    and math.isfinite(float(row["track_duration_sec"]))
+                    and 0 <= float(row["track_duration_sec"]) <= MAX_HISTORY_DURATION_SEC
+                    else None
+                ),
+                "completed": bool(row["completed"]),
+            }
+            for row in recent
+        ],
     }
 
 
 @router.get("/cache/stats")
-async def admin_cache_stats(
+def admin_cache_stats(
     user: AppUser = Depends(get_admin_user),
 ):
     """Size snapshot of the caches the admin panel can act on."""
@@ -628,7 +711,7 @@ async def admin_cache_stats(
 
 
 @router.post("/cache/flush")
-async def admin_cache_flush(
+def admin_cache_flush(
     request: Request,
     kind: str = Query("external", description="external | ram | all"),
     namespace: Optional[str] = Query(None, description="External cache namespace: lyrics | lastfm"),
@@ -659,7 +742,7 @@ async def admin_cache_flush(
 
 
 @router.get("/system/health")
-async def admin_system_health(
+def admin_system_health(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
@@ -684,6 +767,7 @@ async def admin_tg_reconnect(
     db: Session = Depends(get_db),
     user: AppUser = Depends(get_admin_user),
 ):
+    _maintenance_budget(user, "tg-reconnect")
     result = await tg_manager.reconnect()
     _audit(db, request, user, "telegram.reconnected", "telegram", None, result)
     db.commit()
@@ -695,3 +779,4 @@ async def admin_tg_cluster(
     user: AppUser = Depends(get_admin_user),
 ):
     return tg_manager.cluster_status()
+

@@ -212,10 +212,10 @@ function TreeRow({
           </span>
         )}
         {!isFolder && (
-          <span className="tm-queue-actions" onClick={(e) => e.stopPropagation()}>
+          <span className="tm-row-actions" onClick={(e) => e.stopPropagation()}>
             <button
               type="button"
-              className="tm-queue-mini"
+              className="tm-row-mini"
               onClick={() => (isCached ? removeTrack(t.id) : cacheTrack(t))}
               aria-label={isCached ? 'Удалить из кэша' : 'Сохранить в кэш'}
               title={isCached ? 'Удалить из кэша' : 'Сохранить в кэш'}
@@ -225,7 +225,7 @@ function TreeRow({
             </button>
             <button
               type="button"
-              className="tm-queue-mini"
+              className="tm-row-mini"
               onClick={() => onPlayNext(t)}
               aria-label="Играть следующим"
               title="Играть следующим"
@@ -234,7 +234,7 @@ function TreeRow({
             </button>
             <button
               type="button"
-              className="tm-queue-mini"
+              className="tm-row-mini"
               onClick={() => onEnqueue(t)}
               aria-label="Добавить в очередь"
               title="Добавить в очередь"

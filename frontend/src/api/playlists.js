@@ -22,6 +22,13 @@ export const playlistsApi = {
 
   get: (id) => request(`/api/playlists/${id}`),
 
+  rename: (id, name) =>
+    request(`/api/playlists/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    }),
+
   remove: (id) => request(`/api/playlists/${id}`, { method: 'DELETE' }),
 
   addTrack: (playlistId, fileId) =>

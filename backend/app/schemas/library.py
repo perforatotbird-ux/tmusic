@@ -39,6 +39,14 @@ class MusicArtistCard(BaseModel):
     enriched_at: Optional[datetime] = None
 
 
+class BreadcrumbItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    display_name: str
+    kind: str
+
+
 class MusicArtistDetail(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -59,6 +67,7 @@ class MusicArtistDetail(BaseModel):
     enriched_at: Optional[datetime] = None
     albums: List[MusicAlbumCard] = []
     children: List[MusicArtistCard] = []
+    breadcrumbs: List[BreadcrumbItem] = []
 
 
 class LibraryStats(BaseModel):

@@ -19,6 +19,9 @@ class TrackResponse(BaseModel):
     # Real duration learned from playback history (None until the track has
     # been streamed at least once — VFS stores no probe metadata).
     duration: Optional[float] = None
+    # Admin-assigned per-track artwork. None means "use the album/artist
+    # artwork", exactly like the catalog cards.
+    custom_image_url: Optional[str] = None
 
 
 class StreamTicketResponse(BaseModel):

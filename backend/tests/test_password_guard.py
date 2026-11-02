@@ -28,11 +28,19 @@ from password_guard import (  # noqa: E402
 )
 
 
+_NO_LOCAL_ENV = pytest.mark.skipif(
+    not current_admin_hash_line(),
+    reason="no local music.env with ADMIN_PASSWORD_HASH (clean checkout / CI)",
+)
+
+
+@_NO_LOCAL_ENV
 def test_env_file_present_and_carries_admin_hash():
     assert ENV_PATH.exists(), f"{ENV_PATH} must exist for the bootstrap"
     assert current_admin_hash_line(), f"{ADMIN_HASH_KEY} missing from {ENV_PATH}"
 
 
+@_NO_LOCAL_ENV
 def test_admin_hash_uses_a_supported_scheme():
     """Never a bare/plaintext password — the guard relies on a real hash."""
     line = current_admin_hash_line()
@@ -80,6 +88,17 @@ def test_guard_detects_a_changed_hash():
     assert ADMIN_HASH_KEY in str(err.value)
 
 
+def test_guard_allows_absent_env_in_clean_checkout():
+    with _Env(""):
+        check_env_unchanged("")  # nothing to protect, must not raise
+
+
+def test_guard_detects_a_hash_created_by_tests():
+    with _Env("ADMIN_PASSWORD_HASH=$argon2id$v=19$m=65536,t=3,p=1$AAAA$BBBB\n"):
+        with pytest.raises(PasswordMutationError):
+            check_env_unchanged("")
+
+
 def test_guard_detects_a_removed_hash():
     with _Env("PORT=8005\n"):
         with pytest.raises(PasswordMutationError):
@@ -88,6 +107,7 @@ def test_guard_detects_a_removed_hash():
             )
 
 
+@_NO_LOCAL_ENV
 def test_guard_tolerates_whitespace_only_drift():
     """Indentation is not a password change; the value itself must be stable."""
     before = snapshot_admin_hash_line()
@@ -99,6 +119,7 @@ def test_refusal_message_names_the_owner_decision():
     assert "music.env" in MESSAGE
 
 
+@_NO_LOCAL_ENV
 def test_env_read_is_non_empty_and_never_logged_secret():
     """Sanity: the file reads, and the guard never returns the secret itself."""
     content = read_env()

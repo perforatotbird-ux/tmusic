@@ -1,6 +1,5 @@
 """Business-logic regressions. Synthetic fixtures; no live DB/TG/ffmpeg."""
 import asyncio
-from collections import OrderedDict
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -9,7 +8,7 @@ import struct
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from starlette.requests import Request
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -17,7 +16,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from app.api import admin_catalog_router, share_router, stream_router, subsonic_router
 from app.core.config import settings
 from app.models.base import Base
-from app.models import auth, music, playback, playlist, share, vfs
+from app.models import auth, music, vfs
 from app.repositories.album_repository import AlbumRepository
 from app.services import transcoding_service as transcodes, vfs_import_service as imports
 from app.services.decryption_service import DecryptionService

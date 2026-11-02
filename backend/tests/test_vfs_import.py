@@ -158,8 +158,6 @@ def test_stage_upload_and_tree_navigation_and_merge(tmp_path):
         preview_tree_import,
         run_tree_import,
         get_import_status,
-        _cleanup_sessions,
-        _remove_file,
     )
 
     sql_content = _synthetic_dump().encode("utf-8")
@@ -313,7 +311,6 @@ def test_stage_upload_sqlite_insert_dump():
 
 
 def test_stage_upload_real_cloudbyte_backup_if_present():
-    import os
     from pathlib import Path
     from fastapi import UploadFile
     from app.services.vfs_import_service import stage_vfs_upload, get_staged_children

@@ -14,12 +14,14 @@ always rolled back, so the admin password on disk is never touched.
 import sys
 from pathlib import Path
 from fastapi.testclient import TestClient
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import select
 
 from app.main import app
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.security import hash_password, verify_password
 from app.models.auth import AppUser
@@ -164,6 +166,10 @@ def test_auth_rejection():
     assert cover_resp.status_code == 401
 
 
+@pytest.mark.skipif(
+    bool(settings.TEST_DATABASE_SCHEMA),
+    reason="requires migrated catalog data; skipped in an isolated test schema",
+)
 def test_library_endpoints_authenticated():
     client.cookies.clear()
     with _AdminPasswordSandbox():
