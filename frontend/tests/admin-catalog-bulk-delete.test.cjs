@@ -34,7 +34,7 @@ test('the bulk action is wired to the checkbox selection', () => {
 test('deleting asks for confirmation and warns that albums go too', () => {
   assert.match(catalog, /title: 'Удалить выбранные карточки'/)
   assert.match(catalog, /Вместе с карточками удалятся их альбомы/)
-  assert.match(catalog, /Аудиофайлы остаются в файловом дереве/)
+  assert.match(catalog, /Аудиофайлы в удалённом хранилище не трогаются/)
   assert.match(catalog, /danger: true/)
 })
 

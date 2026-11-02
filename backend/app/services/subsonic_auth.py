@@ -24,13 +24,14 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.rate_limiter import limiter
-from app.core.security import hash_password, verify_password
 from app.core.user_cache import get_attached_user, invalidate_user
 from app.models.auth import AppUser
-from app.utils.time import utcnow
 
 logger = logging.getLogger("tmusic.subsonic")
-_DUMMY_HASH = hash_password("tmusic-subsonic-dummy")
+# Stand-in secret for unknown users so every branch does the same cheap work
+# (2026-11-02 audit, M-5: the old dummy Argon2 verify ran only for unknown
+# users and made them ~100x slower than known ones — a timing oracle).
+_DUMMY_SHARED = secrets.token_urlsafe(24)
 
 
 def _fernet() -> Optional[Fernet]:
@@ -127,25 +128,21 @@ def authenticate_subsonic(
     if not username:
         return None
     user = db.scalar(select(AppUser).where(AppUser.username == username))
-    if not user or not user.is_active:
-        verify_password(password or "x", _DUMMY_HASH)
-        _record_failure(client_ip=client_ip, username=username)
-        return None
-    if user.locked_until and user.locked_until > utcnow():
-        verify_password(password or "x", _DUMMY_HASH)
-        _record_failure(client_ip=client_ip, username=username)
-        return None
+    usable = bool(user and user.is_active)
+    # Web-login lockout (locked_until) intentionally does NOT apply here: the
+    # Subsonic token is a separate credential with its own per-IP limiter, and
+    # an anonymous web brute-force must not cut off the owner's music clients.
+    real_shared = decrypt_token(user.subsonic_token_enc) if usable else None
+    shared = real_shared or _DUMMY_SHARED
 
     authenticated = False
-    shared = decrypt_token(user.subsonic_token_enc)
-
-    if password and shared:
+    if password:
         # p=<token> — compare against the dedicated token only.
-        authenticated = hmac.compare_digest(password, shared)
-
-    if not authenticated and token and salt and shared:
+        authenticated = hmac.compare_digest(password.encode("utf-8"), shared.encode("utf-8"))
+    if not authenticated and token and salt:
         expected = hashlib.md5((shared + salt).encode("utf-8")).hexdigest()
-        authenticated = hmac.compare_digest(token.lower(), expected.lower())
+        authenticated = hmac.compare_digest(token.lower().encode("utf-8"), expected.encode("utf-8"))
+    authenticated = authenticated and real_shared is not None
 
     if authenticated:
         _record_success(client_ip=client_ip, username=username)

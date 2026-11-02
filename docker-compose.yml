@@ -32,7 +32,11 @@ services:
     restart: unless-stopped
     ports:
       - "8005:8005"
-      - "8211:8211/udp"
+      # UDP LAN discovery is off by default (2026-11-02 audit, M-3). To use it,
+      # set DISCOVERY_ENABLED=true in music.env and uncomment — only on a LAN
+      # host, never on an Internet-facing VPS (the Android app falls back to
+      # an HTTP /health probe anyway).
+      # - "8211:8211/udp"
     volumes:
       - ./music.env:/app/music.env:ro
       - ./cache:/app/cache
