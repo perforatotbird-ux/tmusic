@@ -10,13 +10,14 @@ import re
 from typing import Any, Dict, Optional
 from urllib.parse import unquote
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.password_work import run_password_work
 from app.core.database import get_db
+from app.api.dependencies import user_has_permission
 from app.models.auth import AppUser
 from app.models.playlist import Playlist
 from app.repositories.file_repository import FileRepository
@@ -155,8 +156,9 @@ async def _handle(
                 "username": user.username,
                 "email": user.username,
                 "scrobblingEnabled": bool(settings.lastfm_scrobble_ready),
-                "adminRole": True,
-                "settingsRole": True,
+                # M-5: reflect real RBAC instead of advertising admin to everyone.
+                "adminRole": user_has_permission(user, "admin.access"),
+                "settingsRole": user_has_permission(user, "admin.settings.manage"),
                 "downloadRole": True,
                 "uploadRole": False,
                 "playlistRole": True,
@@ -574,6 +576,9 @@ async def subsonic_entry(
     v: Optional[str] = Query(None),
     f: Optional[str] = Query(None),
 ):
+    if not settings.SUBSONIC_ENABLED:
+        # M-5: the flag used to be ignored; a disabled API now does not exist.
+        raise HTTPException(status_code=404, detail="Not Found")
     # Accept /rest/ping.view and /rest/ping
     method = unquote(method_path or "ping")
     # Merge all query params for methods that need extras

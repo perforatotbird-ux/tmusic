@@ -5,7 +5,7 @@ Industrial-grade, internet-facing music catalog and streaming server.
 Hardening (2026-09 security audit):
 - serve_spa: path traversal (C-1) fixed via resolve() + is_relative_to().
 - CSP: 'unsafe-inline' removed from script-src; deprecated X-XSS-Protection
-  header removed; HSTS emitted when COOKIE_SECURE=true (i.e. behind HTTPS).
+  header removed; HSTS emitted over HTTPS (COOKIE_SECURE=true or auto-detected).
 - /api/* sliding-window rate limit (120 req/min per IP), stricter 10 req/min
   on the auth endpoints, on top of the existing login lockout.
 - Startup self-heals the admin account from ADMIN_PASSWORD_HASH and warns
@@ -35,6 +35,7 @@ from app.core.logging_config import (
 setup_logging()
 
 from app.core.csrf import CSRF_COOKIE, csrf_check_failed
+from app.core.body_limits import BodySizeLimitMiddleware
 from app.core.database import (
     engine,
     wait_for_database,
@@ -50,7 +51,7 @@ from app.core.rate_limiter import limiter
 from app.tg.manager import tg_manager
 from app.services.cover_cache_service import cover_cache
 from app.services.bootstrap import ensure_admin_bootstrap
-from app.utils.client_ip import get_client_ip
+from app.utils.client_ip import get_client_ip, cookie_secure
 
 from app.api.auth_router import router as auth_router
 from app.api.library_router import router as library_router
@@ -184,11 +185,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Backup scheduler failed to start: %s", e)
 
+    # Loud warnings for insecure production defaults (2026-11-02 audit, M-6).
+    from app.core.config import insecure_default_warnings
+    for warning in insecure_default_warnings(settings):
+        logger.warning("SECURITY CONFIG: %s", warning)
+
     # 4. LAN Discovery Service (UDP broadcast responder for mobile clients)
-    try:
-        await discovery_service.start(http_port=settings.PORT, project_name=settings.PROJECT_NAME)
-    except Exception as e:
-        logger.warning("Discovery service failed to start: %s", e)
+    # Off by default since the 2026-11-02 audit (M-3): set DISCOVERY_ENABLED=true.
+    if settings.DISCOVERY_ENABLED:
+        try:
+            await discovery_service.start(
+                http_port=settings.PORT,
+                project_name=settings.PROJECT_NAME,
+                discovery_port=settings.DISCOVERY_PORT,
+            )
+        except Exception as e:
+            logger.warning("Discovery service failed to start: %s", e)
+    else:
+        logger.info("LAN discovery disabled (DISCOVERY_ENABLED=false).")
 
     # 5. Transcoding Service (background ffmpeg workers for non-browser audio formats)
     try:
@@ -223,6 +237,14 @@ app = FastAPI(
     redoc_url=None
 )
 
+# ─── Actual-byte request body caps, before JSON/multipart parsing ──────────
+# Uploads have explicit larger limits; ordinary API bodies stay capped at 1 MB.
+# 2026-11-02 audit (M-1): registered FIRST so it is the innermost middleware —
+# TrustedHost, CORS, rate limiting and CSRF now run before any body byte is
+# read or spooled. Very large upload paths are additionally pre-authorized
+# (see app.core.body_limits) before the body is accepted.
+app.add_middleware(BodySizeLimitMiddleware)
+
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
@@ -234,7 +256,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
             "method": request.method,
             "path": request.url.path,
             "request_id": rid,
-            "client_ip": request.client.host if request.client else None,
+            "client_ip": get_client_ip(request),
             "exc_type": type(exc).__name__,
         },
     )
@@ -260,7 +282,7 @@ async def csrf_protect_middleware(request: Request, call_next):
                 "method": request.method,
                 "path": request.url.path,
                 "status": 403,
-                "client_ip": request.client.host if request.client else None,
+                "client_ip": get_client_ip(request),
             },
         )
         missing_cookie = not request.cookies.get(CSRF_COOKIE)
@@ -350,8 +372,9 @@ async def security_headers_middleware(request: Request, call_next):
         "base-uri 'self'; "
         "frame-ancestors 'none'"
     )
-    if settings.COOKIE_SECURE:
-        # Only meaningful over HTTPS; COOKIE_SECURE=true implies an HTTPS deployment
+    if cookie_secure(request):
+        # Only meaningful over HTTPS: explicit COOKIE_SECURE=true or a request
+        # that actually arrived over HTTPS (auto mode).
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
@@ -384,7 +407,7 @@ async def access_log_middleware(request: Request, call_next):
                     "path": request.url.path,
                     "status": 500,
                     "duration_ms": duration_ms,
-                    "client_ip": request.client.host if request.client else None,
+                    "client_ip": get_client_ip(request),
                 },
             )
             raise
@@ -405,7 +428,7 @@ async def access_log_middleware(request: Request, call_next):
                 "path": path,
                 "status": status,
                 "duration_ms": duration_ms,
-                "client_ip": request.client.host if request.client else None,
+                "client_ip": get_client_ip(request),
                 "query": _safe_log_query(str(request.url.query)),
             },
         )
@@ -493,12 +516,6 @@ async def maintenance_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-# ─── Actual-byte request body caps, before JSON/multipart parsing ──────────
-# Uploads have explicit larger limits; ordinary API bodies stay capped at 1 MB.
-from app.core.body_limits import BodySizeLimitMiddleware
-
-
-app.add_middleware(BodySizeLimitMiddleware)
 
 
 # ─── Include API Routers ──────────────────────────────────────────────────────
