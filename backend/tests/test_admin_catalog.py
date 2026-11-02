@@ -683,9 +683,11 @@ def test_delete_artist_with_files_removes_track_rows_and_folder():
         assert db.scalar(select(vfs.VFile.id).where(vfs.VFile.id == t2_id)) is None
         # Trash rows are never touched.
         assert db.scalar(select(vfs.VFile.id).where(vfs.VFile.id == trashed_id)) is not None
-        # The backing folder lost its last non-trash rows and went away.
+        # Audit B-3: a trashed row still references the folder (FK), so the
+        # folder must stay until the trash is emptied — deleting it would
+        # violate the FK or orphan the trashed file.
         from app.repositories.folder_repository import FolderRepository
-        assert FolderRepository.get(db, folder_id) is None
+        assert FolderRepository.get(db, folder_id) is not None
     finally:
         try:
             db.rollback()
@@ -697,6 +699,9 @@ def test_delete_artist_with_files_removes_track_rows_and_folder():
                 db.execute(_delete(vfs.Folder).where(vfs.Folder.id == card.folder_id))
             else:
                 db.execute(_delete(vfs.VFile).where(vfs.VFile.id == trashed_id))
+                db.execute(_delete(MusicAlbum).where(MusicAlbum.folder_id == folder_id))
+                db.execute(_delete(MusicArtist).where(MusicArtist.folder_id == folder_id))
+                db.execute(_delete(vfs.Folder).where(vfs.Folder.id == folder_id))
             db.commit()
         except Exception:
             db.rollback()
