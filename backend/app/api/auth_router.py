@@ -10,9 +10,10 @@ from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
-from app.core.config import settings
 from app.core.password_work import run_password_work
 from app.core.csrf import new_csrf_token, csrf_cookie_kwargs, CSRF_COOKIE
+from app.core.login_device import DEVICE_COOKIE, device_cookie_kwargs
+from app.core.user_cache import get_attached_user, invalidate_user
 from app.core.database import get_db
 from app.api.dependencies import get_current_user, security_bearer
 from app.core.token_store import revoke_access_token
@@ -23,7 +24,7 @@ from app.schemas.auth import (
 )
 from app.services.auth_service import AuthService
 from app.services.cover_cache_service import cover_cache, is_safe_host, MAX_IMAGE_BYTES
-from app.utils.client_ip import get_client_ip
+from app.utils.client_ip import cookie_secure, get_client_ip
 from app.utils.http import cover_cache_headers
 from app.utils.time import utcnow
 
@@ -39,37 +40,45 @@ def _avatar_url(user: AppUser) -> Optional[str]:
     return None
 
 
-def _set_session_cookie(response: Response, token_resp: TokenResponse) -> None:
+def _set_session_cookie(request: Request, response: Response, token_resp: TokenResponse) -> None:
+    secure = cookie_secure(request)
     response.set_cookie(
         key="access_token",
         value=token_resp.access_token,
         max_age=token_resp.expires_in,
         httponly=True,
         samesite="lax",
-        secure=settings.COOKIE_SECURE,
+        secure=secure,
     )
     # Double-submit CSRF token (readable cookie, echoed in X-CSRF-Token header).
     response.set_cookie(
         value=new_csrf_token(),
         max_age=token_resp.expires_in,
-        **csrf_cookie_kwargs(),
+        **csrf_cookie_kwargs(request),
     )
+    # Known-device cookie (H-1): lets this browser log in even while the
+    # account is locked for untrusted clients by someone guessing passwords.
+    if token_resp.device_token:
+        response.set_cookie(value=token_resp.device_token, **device_cookie_kwargs(secure))
 
 
 @router.post("/login", response_model=TokenResponse)
 async def login(body: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     """Authenticate with username and password."""
     client_ip = get_client_ip(request)
-    token_resp, err = await run_password_work(AuthService.authenticate_by_password, db, body.username, body.password, client_ip)
+    token_resp, err = await run_password_work(
+        AuthService.authenticate_by_password, db, body.username, body.password, client_ip,
+        request.cookies.get(DEVICE_COOKIE),
+    )
     if err or not token_resp:
         raise HTTPException(status_code=401, detail=err or "Authentication failed.")
 
-    _set_session_cookie(response, token_resp)
+    _set_session_cookie(request, response, token_resp)
     return token_resp
 
 
 @router.get("/csrf")
-async def refresh_csrf(response: Response):
+async def refresh_csrf(request: Request, response: Response):
     """Re-arm the CSRF double-submit cookie.
 
     Called by the SPA when a mutation fails with code `csrf_cookie_missing`
@@ -81,7 +90,7 @@ async def refresh_csrf(response: Response):
     response.set_cookie(
         value=new_csrf_token(),
         max_age=60 * 60 * 24,
-        **csrf_cookie_kwargs(),
+        **csrf_cookie_kwargs(request),
     )
     return {"status": "ok"}
 
@@ -185,11 +194,17 @@ async def set_avatar(
     else:
         raise HTTPException(status_code=400, detail="Provide either an image file or a valid URL.")
 
-    user.avatar_key = key
-    user.avatar_version = (user.avatar_version or 0) + 1
-    user.updated_at = utcnow()
+    # B-1: get_current_user returns a detached object from user_cache, so
+    # mutating it directly was never flushed. Work on the session-bound row.
+    target = get_attached_user(db, user)
+    if target is None:
+        raise HTTPException(status_code=401, detail="User not found.")
+    target.avatar_key = key
+    target.avatar_version = (target.avatar_version or 0) + 1
+    target.updated_at = utcnow()
     db.commit()
-    return {"status": "ok", "avatar_url": _avatar_url(user)}
+    invalidate_user(target.username)
+    return {"status": "ok", "avatar_url": _avatar_url(target)}
 
 
 @router.delete("/avatar")
@@ -198,8 +213,12 @@ async def reset_avatar(
     user: AppUser = Depends(get_current_user),
 ):
     """Remove the profile avatar (falls back to the letter badge)."""
-    user.avatar_key = None
-    user.avatar_version = (user.avatar_version or 0) + 1
-    user.updated_at = utcnow()
+    target = get_attached_user(db, user)
+    if target is None:
+        raise HTTPException(status_code=401, detail="User not found.")
+    target.avatar_key = None
+    target.avatar_version = (target.avatar_version or 0) + 1
+    target.updated_at = utcnow()
     db.commit()
+    invalidate_user(target.username)
     return {"status": "ok"}
