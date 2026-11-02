@@ -15,6 +15,8 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int
     password_change_required: bool = False
+    # Known-device cookie value; set as an HttpOnly cookie, never serialized.
+    device_token: Optional[str] = Field(default=None, exclude=True)
 
 
 class UserResponse(BaseModel):

@@ -53,8 +53,22 @@ class Settings(BaseSettings):
     MAX_FAILED_LOGIN_ATTEMPTS: int = 5
     LOCKOUT_MINUTES: int = 15
     REQUIRE_AUTH: bool = True  # High security default for Internet access
-    COOKIE_SECURE: bool = False  # set True when serving HTTPS
+    # None (default) = auto: Secure cookies + HSTS whenever the request itself
+    # arrived over HTTPS (directly or via a trusted proxy's X-Forwarded-Proto).
+    # true forces Secure everywhere; false disables it (plain-HTTP LAN only).
+    COOKIE_SECURE: Optional[bool] = None
     TRUST_PROXY_HEADERS: bool = False  # set True only behind a trusted reverse proxy
+    # Number of trusted reverse proxies in front of the app. The client IP is the
+    # address appended by the outermost trusted proxy, i.e. the N-th entry from
+    # the RIGHT of X-Forwarded-For. Left-hand entries are client-controlled.
+    TRUSTED_PROXY_HOPS: int = Field(1, ge=1, le=10)
+    # Optional allowlist of proxy peer addresses/CIDRs. When non-empty, proxy
+    # headers are honored only for connections coming from these peers.
+    TRUSTED_PROXY_IPS: List[str] = []
+    # Long-lived "known device" cookie: a browser that already logged in
+    # successfully keeps logging in while the account is under a brute-force
+    # lockout triggered from elsewhere (OWASP device-cookie pattern).
+    LOGIN_DEVICE_TRUST_DAYS: int = Field(30, ge=1, le=365)
 
     # One-time admin bootstrap: Argon2id/bcrypt; each new configured hash
     # is consumed once so startup never undoes a panel password change.
@@ -136,6 +150,11 @@ class Settings(BaseSettings):
 
     # Subsonic / OpenSubsonic compatibility layer (/rest/*)
     SUBSONIC_ENABLED: bool = True
+    # UDP LAN discovery responder (mobile auto-discovery). Off by default: the
+    # Android app also finds servers via the HTTP /health probe. When enabled,
+    # only private/link-local/loopback sources get an answer.
+    DISCOVERY_ENABLED: bool = False
+    DISCOVERY_PORT: int = Field(8211, ge=1, le=65535)
     SUBSONIC_SERVER_NAME: str = "T-Music"
     SUBSONIC_API_VERSION: str = "1.16.1"
     # Auth (2026-09 audit): ONLY the per-user dedicated Subsonic token is
@@ -300,6 +319,33 @@ if not settings.REQUIRE_AUTH and (settings.ENVIRONMENT or "").lower() != "develo
         "REQUIRE_AUTH=false is allowed only with ENVIRONMENT=development: it disables "
         "all API authentication."
     )
+
+
+
+def insecure_default_warnings(cfg: "Settings") -> List[str]:
+    """Human-readable warnings for risky production settings (audit M-6)."""
+    if (cfg.ENVIRONMENT or "").lower() != "production":
+        return []
+    warnings: List[str] = []
+    if not cfg.TRUSTED_HOSTS or "*" in cfg.TRUSTED_HOSTS:
+        warnings.append(
+            'TRUSTED_HOSTS allows any Host header ("*"): set the real hostnames '
+            "to stop Host-header poisoning of generated share links."
+        )
+    if cfg.COOKIE_SECURE is False:
+        warnings.append(
+            "COOKIE_SECURE=false: session cookies are sent over plain HTTP even "
+            "when HTTPS is available. Remove the setting (auto) or set true."
+        )
+    if cfg.CORS_ALLOW_LAN:
+        warnings.append("CORS_ALLOW_LAN=true: any private-range origin gets credentialed CORS.")
+    if cfg.TRUST_PROXY_HEADERS and not cfg.TRUSTED_PROXY_IPS:
+        warnings.append(
+            "TRUST_PROXY_HEADERS=true without TRUSTED_PROXY_IPS: make sure the app "
+            "port is reachable only through the reverse proxy."
+        )
+    return warnings
+
 
 # Ensure runtime directories exist
 settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
